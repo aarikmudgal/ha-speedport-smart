@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
@@ -31,6 +32,7 @@ from .const import (
     DEFAULT_SLOW_INTERVAL,
     DEFAULT_TR064_HTTP_PORT,
     DEFAULT_TR064_HTTPS_PORT,
+    DOMAIN,
     PLATFORMS,
 )
 from .coordinator import PollGroup, SpeedportDataUpdateCoordinator
@@ -46,6 +48,8 @@ if TYPE_CHECKING:
     from homeassistant.helpers.typing import ConfigType
 
 type SpeedportConfigEntry = ConfigEntry[SpeedportHub]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
