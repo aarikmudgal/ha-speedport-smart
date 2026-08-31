@@ -12,6 +12,13 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 - Nothing yet.
 
+## [0.1.1] - 2026-08-31
+
+### Fixed
+
+- Client presence entities now report `home` or `not_home` from router
+  connectivity instead of remaining `unknown`.
+
 ## [0.1.0] - 2026-08-31
 
 ### Added
@@ -47,5 +54,6 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Diagnostics redact credentials and sensitive network, telephony, client,
   mobile, and VPN data.
 
-[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aarikmudgal/ha-speedport-smart/releases/tag/v0.1.0

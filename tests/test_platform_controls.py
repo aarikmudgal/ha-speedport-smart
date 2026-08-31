@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.components.update import UpdateEntityFeature
-from homeassistant.const import EntityCategory
+from homeassistant.const import STATE_HOME, STATE_NOT_HOME, EntityCategory
 
 from custom_components.speedport_smart.button import (
     BUTTON_DESCRIPTIONS,
@@ -225,6 +225,7 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
 
     tracker = SpeedportClientTracker(hub, "aa:bb:cc:dd:ee:ff")
     assert tracker.is_connected
+    assert tracker.state == STATE_HOME
     assert tracker.hostname == "Phone"
     assert tracker.ip_address == "192.0.2.20"
     assert tracker.source_type.value == "router"
@@ -263,6 +264,7 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
         }
     )
     assert not tracker.is_connected
+    assert tracker.state == STATE_NOT_HOME
     assert tracker.hostname is None
     assert tracker.ip_address is None
     assert tracker.mac_address is None
