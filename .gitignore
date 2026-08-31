@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+htmlcov/
+coverage.xml
+dist/
+build/
+*.egg-info/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.idea/
+.vscode/
+
+# Never commit router captures or downloaded Home Assistant diagnostics.
+config_entry-*.json
+diagnostics-*.json
+router-capture*
+*.pcap

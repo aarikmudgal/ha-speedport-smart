@@ -1,0 +1,1452 @@
+"""Capability-gated sensors for Speedport Smart."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfDataRate,
+    UnitOfFrequency,
+    UnitOfInformation,
+    UnitOfTime,
+)
+from homeassistant.core import callback
+
+from .coordinator import PollGroup
+from .entity import SpeedportDevice, SpeedportEntity
+from .platform_helpers import (
+    as_datetime,
+    as_float,
+    as_gigabytes,
+    as_int,
+    as_mbit_per_second,
+    as_percent,
+    child_collection,
+    child_item,
+    coordinator,
+    count_items,
+    speedport_child_device,
+    stable_id,
+    supported,
+    value,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+    from .hub import SpeedportHub
+
+
+@dataclass(frozen=True, kw_only=True)
+class SpeedportSensorEntityDescription(SensorEntityDescription):
+    """Describe a normalized Speedport sensor."""
+
+    data_path: str
+    capability: str
+    coordinator_group: PollGroup
+    transform: Callable[[Any], Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpeedportChildSensorDescription:
+    """Describe one optional field on a stable router child device."""
+
+    key: str
+    name: str
+    field: str
+    transform: Callable[[Any], Any] | None = None
+    device_class: SensorDeviceClass | None = None
+    native_unit_of_measurement: Any = None
+    state_class: SensorStateClass | None = None
+    suggested_display_precision: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpeedportChildSensorCollection:
+    """Describe one normalized collection of router child devices."""
+
+    kind: str
+    data_paths: tuple[str, ...]
+    coordinator_group: PollGroup
+    fields: tuple[SpeedportChildSensorDescription, ...]
+
+
+FAST = PollGroup.FAST
+NORMAL = PollGroup.NORMAL
+SLOW = PollGroup.SLOW
+
+_SIGNAL_DBM = SpeedportChildSensorDescription(
+    key="signal_strength",
+    name="Signal strength",
+    field="signal_dbm",
+    transform=as_float,
+    device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+    native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+)
+_LINK_SPEED = SpeedportChildSensorDescription(
+    key="link_speed",
+    name="Link speed",
+    field="link_speed_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+)
+_DOWNLOAD_RATE = SpeedportChildSensorDescription(
+    key="download_rate",
+    name="Download throughput",
+    field="download_rate_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=2,
+)
+_UPLOAD_RATE = SpeedportChildSensorDescription(
+    key="upload_rate",
+    name="Upload throughput",
+    field="upload_rate_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=2,
+)
+_BYTES_RECEIVED = SpeedportChildSensorDescription(
+    key="bytes_received",
+    name="Data received",
+    field="bytes_received",
+    transform=as_int,
+    device_class=SensorDeviceClass.DATA_SIZE,
+    native_unit_of_measurement=UnitOfInformation.BYTES,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+)
+_BYTES_SENT = SpeedportChildSensorDescription(
+    key="bytes_sent",
+    name="Data sent",
+    field="bytes_sent",
+    transform=as_int,
+    device_class=SensorDeviceClass.DATA_SIZE,
+    native_unit_of_measurement=UnitOfInformation.BYTES,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+)
+_TRAFFIC_FIELDS = (
+    _DOWNLOAD_RATE,
+    _UPLOAD_RATE,
+    _BYTES_RECEIVED,
+    _BYTES_SENT,
+)
+
+CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
+    SpeedportChildSensorCollection(
+        kind="client",
+        data_paths=("clients.items",),
+        coordinator_group=NORMAL,
+        fields=(
+            _SIGNAL_DBM,
+            _LINK_SPEED,
+            *_TRAFFIC_FIELDS,
+            SpeedportChildSensorDescription(
+                key="radio_band",
+                name="Radio band",
+                field="band",
+            ),
+            SpeedportChildSensorDescription(
+                key="wifi_channel",
+                name="Wi-Fi channel",
+                field="channel",
+                transform=as_int,
+            ),
+            SpeedportChildSensorDescription(
+                key="last_seen",
+                name="Last seen",
+                field="last_seen",
+                transform=as_datetime,
+                device_class=SensorDeviceClass.TIMESTAMP,
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="mesh_node",
+        data_paths=("mesh.nodes",),
+        coordinator_group=SLOW,
+        fields=(
+            _SIGNAL_DBM,
+            _LINK_SPEED,
+            *_TRAFFIC_FIELDS,
+            SpeedportChildSensorDescription(
+                key="radio_band",
+                name="Radio band",
+                field="band",
+            ),
+            SpeedportChildSensorDescription(
+                key="wifi_channel",
+                name="Wi-Fi channel",
+                field="channel",
+                transform=as_int,
+            ),
+            SpeedportChildSensorDescription(
+                key="connected_clients",
+                name="Connected clients",
+                field="client_count",
+                transform=as_int,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="role",
+                name="Mesh role",
+                field="role",
+            ),
+            SpeedportChildSensorDescription(
+                key="backhaul",
+                name="Backhaul",
+                field="backhaul",
+            ),
+            SpeedportChildSensorDescription(
+                key="uptime",
+                name="Uptime",
+                field="uptime_seconds",
+                transform=as_int,
+                device_class=SensorDeviceClass.DURATION,
+                native_unit_of_measurement=UnitOfTime.SECONDS,
+                state_class=SensorStateClass.TOTAL,
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="telephone_line",
+        data_paths=("telephony.numbers",),
+        coordinator_group=NORMAL,
+        fields=(
+            SpeedportChildSensorDescription(
+                key="call_state",
+                name="Call state",
+                field="call_state",
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="dect_handset",
+        data_paths=("dect.handsets",),
+        coordinator_group=SLOW,
+        fields=(
+            SpeedportChildSensorDescription(
+                key="battery_level",
+                name="Battery level",
+                field="battery_percent",
+                transform=as_percent,
+                device_class=SensorDeviceClass.BATTERY,
+                native_unit_of_measurement=PERCENTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            _SIGNAL_DBM,
+            SpeedportChildSensorDescription(
+                key="signal_quality",
+                name="Signal quality",
+                field="signal_percent",
+                transform=as_percent,
+                native_unit_of_measurement=PERCENTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="call_state",
+                name="Call state",
+                field="call_state",
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="ip_phone",
+        data_paths=("pbx.ip_phones",),
+        coordinator_group=SLOW,
+        fields=(
+            SpeedportChildSensorDescription(
+                key="call_state",
+                name="Call state",
+                field="call_state",
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="usb_device",
+        data_paths=("usb.items",),
+        coordinator_group=SLOW,
+        fields=(
+            SpeedportChildSensorDescription(
+                key="capacity",
+                name="Storage capacity",
+                field="total_bytes",
+                transform=as_int,
+                device_class=SensorDeviceClass.DATA_SIZE,
+                native_unit_of_measurement=UnitOfInformation.BYTES,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="used_space",
+                name="Used space",
+                field="used_bytes",
+                transform=as_int,
+                device_class=SensorDeviceClass.DATA_SIZE,
+                native_unit_of_measurement=UnitOfInformation.BYTES,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="free_space",
+                name="Free space",
+                field="free_bytes",
+                transform=as_int,
+                device_class=SensorDeviceClass.DATA_SIZE,
+                native_unit_of_measurement=UnitOfInformation.BYTES,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="storage_usage",
+                name="Storage usage",
+                field="usage_percent",
+                transform=as_percent,
+                native_unit_of_measurement=PERCENTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="temperature",
+                name="Temperature",
+                field="temperature_celsius",
+                transform=as_float,
+                device_class=SensorDeviceClass.TEMPERATURE,
+                native_unit_of_measurement="°C",
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=1,
+            ),
+            SpeedportChildSensorDescription(
+                key="media_type",
+                name="Media type",
+                field="media_type",
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="receiver",
+        data_paths=("receiver.items", "receiver"),
+        coordinator_group=NORMAL,
+        fields=(
+            SpeedportChildSensorDescription(
+                key="network_type",
+                name="Network type",
+                field="network_type",
+            ),
+            SpeedportChildSensorDescription(
+                key="operator",
+                name="Network operator",
+                field="operator",
+            ),
+            SpeedportChildSensorDescription(
+                key="rsrp",
+                name="RSRP",
+                field="rsrp_dbm",
+                transform=as_float,
+                device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+                native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=1,
+            ),
+            SpeedportChildSensorDescription(
+                key="rsrq",
+                name="RSRQ",
+                field="rsrq_db",
+                transform=as_float,
+                native_unit_of_measurement="dB",
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=1,
+            ),
+            SpeedportChildSensorDescription(
+                key="sinr",
+                name="SINR",
+                field="sinr_db",
+                transform=as_float,
+                native_unit_of_measurement="dB",
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=1,
+            ),
+            SpeedportChildSensorDescription(
+                key="rssi",
+                name="RSSI",
+                field="rssi_dbm",
+                transform=as_float,
+                device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+                native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=1,
+            ),
+            SpeedportChildSensorDescription(
+                key="band",
+                name="Radio band",
+                field="band",
+            ),
+            SpeedportChildSensorDescription(
+                key="frequency",
+                name="Frequency",
+                field="frequency_mhz",
+                transform=as_float,
+                device_class=SensorDeviceClass.FREQUENCY,
+                native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="cell_id",
+                name="Cell ID",
+                field="cell_id",
+            ),
+            *_TRAFFIC_FIELDS,
+            SpeedportChildSensorDescription(
+                key="temperature",
+                name="Temperature",
+                field="temperature_celsius",
+                transform=as_float,
+                device_class=SensorDeviceClass.TEMPERATURE,
+                native_unit_of_measurement="°C",
+                state_class=SensorStateClass.MEASUREMENT,
+                suggested_display_precision=1,
+            ),
+        ),
+    ),
+)
+
+SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
+    # Internet/WAN totals, rates, capacity, utilization, and diagnostics.
+    SpeedportSensorEntityDescription(
+        key="wan_bytes_received",
+        translation_key="wan_bytes_received",
+        data_path="wan.bytes_received",
+        capability="wan",
+        coordinator_group=FAST,
+        transform=as_gigabytes,
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.GIGABYTES,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_bytes_sent",
+        translation_key="wan_bytes_sent",
+        data_path="wan.bytes_sent",
+        capability="wan",
+        coordinator_group=FAST,
+        transform=as_gigabytes,
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.GIGABYTES,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=3,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_packets_received",
+        translation_key="wan_packets_received",
+        data_path="wan.packets_received",
+        capability="wan",
+        coordinator_group=FAST,
+        native_unit_of_measurement="packets",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_packets_sent",
+        translation_key="wan_packets_sent",
+        data_path="wan.packets_sent",
+        capability="wan",
+        coordinator_group=FAST,
+        native_unit_of_measurement="packets",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_errors_received",
+        translation_key="wan_errors_received",
+        data_path="wan.errors_received",
+        capability="wan",
+        coordinator_group=FAST,
+        native_unit_of_measurement="errors",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_errors_sent",
+        translation_key="wan_errors_sent",
+        data_path="wan.errors_sent",
+        capability="wan",
+        coordinator_group=FAST,
+        native_unit_of_measurement="errors",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_discarded_packets_received",
+        translation_key="wan_discarded_packets_received",
+        data_path="wan.discard_packets_received",
+        capability="wan",
+        coordinator_group=FAST,
+        native_unit_of_measurement="packets",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_discarded_packets_sent",
+        translation_key="wan_discarded_packets_sent",
+        data_path="wan.discard_packets_sent",
+        capability="wan",
+        coordinator_group=FAST,
+        native_unit_of_measurement="packets",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_download_rate",
+        translation_key="wan_download_rate",
+        data_path="wan.download_rate_bps",
+        capability="wan",
+        coordinator_group=FAST,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_upload_rate",
+        translation_key="wan_upload_rate",
+        data_path="wan.upload_rate_bps",
+        capability="wan",
+        coordinator_group=FAST,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_download_utilization",
+        translation_key="wan_download_utilization",
+        data_path="wan.download_utilization",
+        capability="wan",
+        coordinator_group=FAST,
+        transform=as_percent,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_upload_utilization",
+        translation_key="wan_upload_utilization",
+        data_path="wan.upload_utilization",
+        capability="wan",
+        coordinator_group=FAST,
+        transform=as_percent,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_download_capacity",
+        translation_key="wan_download_capacity",
+        data_path="internet.download_capacity_bps",
+        capability="internet",
+        coordinator_group=NORMAL,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_upload_capacity",
+        translation_key="wan_upload_capacity",
+        data_path="internet.upload_capacity_bps",
+        capability="internet",
+        coordinator_group=NORMAL,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="internet_uptime",
+        translation_key="internet_uptime",
+        data_path="internet.uptime_seconds",
+        capability="internet",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_interface",
+        translation_key="wan_interface",
+        data_path="wan.interface.name",
+        capability="wan",
+        coordinator_group=SLOW,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wan_mtu",
+        translation_key="wan_mtu",
+        data_path="internet.mtu",
+        capability="internet",
+        coordinator_group=SLOW,
+        transform=as_int,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="public_ipv4",
+        translation_key="public_ipv4",
+        data_path="internet.ipv4_address",
+        capability="internet",
+        coordinator_group=NORMAL,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="public_ipv6_prefix",
+        translation_key="public_ipv6_prefix",
+        data_path="internet.ipv6_prefix",
+        capability="internet",
+        coordinator_group=NORMAL,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # DSL/VDSL.
+    SpeedportSensorEntityDescription(
+        key="dsl_downstream",
+        translation_key="dsl_downstream",
+        data_path="dsl.downstream_bps",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_upstream",
+        translation_key="dsl_upstream",
+        data_path="dsl.upstream_bps",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_attainable_downstream",
+        translation_key="dsl_attainable_downstream",
+        data_path="dsl.attainable_downstream_bps",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_attainable_upstream",
+        translation_key="dsl_attainable_upstream",
+        data_path="dsl.attainable_upstream_bps",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_mbit_per_second,
+        device_class=SensorDeviceClass.DATA_RATE,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_snr_downstream",
+        translation_key="dsl_snr_downstream",
+        data_path="dsl.snr_downstream_db",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        native_unit_of_measurement="dB",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_snr_upstream",
+        translation_key="dsl_snr_upstream",
+        data_path="dsl.snr_upstream_db",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        native_unit_of_measurement="dB",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_attenuation_downstream",
+        translation_key="dsl_attenuation_downstream",
+        data_path="dsl.attenuation_downstream_db",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        native_unit_of_measurement="dB",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_attenuation_upstream",
+        translation_key="dsl_attenuation_upstream",
+        data_path="dsl.attenuation_upstream_db",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        native_unit_of_measurement="dB",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_crc_errors",
+        translation_key="dsl_crc_errors",
+        data_path="dsl.crc_errors",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_fec_errors",
+        translation_key="dsl_fec_errors",
+        data_path="dsl.fec_errors",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_error_seconds",
+        translation_key="dsl_error_seconds",
+        data_path="dsl.error_seconds",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dsl_profile",
+        translation_key="dsl_profile",
+        data_path="dsl.profile",
+        capability="dsl",
+        coordinator_group=SLOW,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Hybrid and mobile receiver.
+    SpeedportSensorEntityDescription(
+        key="mobile_network_type",
+        translation_key="mobile_network_type",
+        data_path="mobile.network_type",
+        capability="mobile",
+        coordinator_group=NORMAL,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_operator",
+        translation_key="mobile_operator",
+        data_path="mobile.operator",
+        capability="mobile",
+        coordinator_group=NORMAL,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_rsrp",
+        translation_key="mobile_rsrp",
+        data_path="mobile.rsrp_dbm",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_rsrq",
+        translation_key="mobile_rsrq",
+        data_path="mobile.rsrq_db",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        native_unit_of_measurement="dB",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_sinr",
+        translation_key="mobile_sinr",
+        data_path="mobile.sinr_db",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        native_unit_of_measurement="dB",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_rssi",
+        translation_key="mobile_rssi",
+        data_path="mobile.rssi_dbm",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_band",
+        translation_key="mobile_band",
+        data_path="mobile.band",
+        capability="mobile",
+        coordinator_group=NORMAL,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_frequency",
+        translation_key="mobile_frequency",
+        data_path="mobile.frequency_mhz",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.FREQUENCY,
+        native_unit_of_measurement=UnitOfFrequency.MEGAHERTZ,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_cell_id",
+        translation_key="mobile_cell_id",
+        data_path="mobile.cell_id",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lte_tunnel_bytes_received",
+        translation_key="lte_tunnel_bytes_received",
+        data_path="hybrid.lte_tunnel_bytes_received",
+        capability="hybrid",
+        coordinator_group=FAST,
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lte_tunnel_bytes_sent",
+        translation_key="lte_tunnel_bytes_sent",
+        data_path="hybrid.lte_tunnel_bytes_sent",
+        capability="hybrid",
+        coordinator_group=FAST,
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.BYTES,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    # Wi-Fi, Mesh, LAN and DHCP counts.
+    SpeedportSensorEntityDescription(
+        key="wifi_2_4_clients",
+        translation_key="wifi_2_4_clients",
+        data_path="wifi.radio_2_4.client_count",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_5_clients",
+        translation_key="wifi_5_clients",
+        data_path="wifi.radio_5.client_count",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_guest_clients",
+        translation_key="wifi_guest_clients",
+        data_path="wifi.guest.client_count",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_2_4_channel",
+        translation_key="wifi_2_4_channel",
+        data_path="wifi.radio_2_4.channel",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_5_channel",
+        translation_key="wifi_5_channel",
+        data_path="wifi.radio_5.channel",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mesh_nodes",
+        translation_key="mesh_nodes",
+        data_path="mesh.nodes",
+        capability="mesh",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mesh_clients",
+        translation_key="mesh_clients",
+        data_path="mesh.client_count",
+        capability="mesh",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="connected_clients",
+        translation_key="connected_clients",
+        data_path="clients.connected_count",
+        capability="clients",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dhcp_leases",
+        translation_key="dhcp_leases",
+        data_path="dhcp.leases",
+        capability="dhcp",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lan_linked_ports",
+        translation_key="lan_linked_ports",
+        data_path="lan.linked_port_count",
+        capability="lan",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    # Network services and access policy.
+    SpeedportSensorEntityDescription(
+        key="port_forward_rules",
+        translation_key="port_forward_rules",
+        data_path="nat.port_forward_rules",
+        capability="nat",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="upnp_mappings",
+        translation_key="upnp_mappings",
+        data_path="nat.upnp_mappings",
+        capability="nat",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ddns_provider",
+        translation_key="ddns_provider",
+        data_path="ddns.provider",
+        capability="ddns",
+        coordinator_group=SLOW,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ddns_last_update",
+        translation_key="ddns_last_update",
+        data_path="ddns.last_update",
+        capability="ddns",
+        coordinator_group=SLOW,
+        transform=as_datetime,
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="vpn_peers",
+        translation_key="vpn_peers",
+        data_path="vpn.peers",
+        capability="vpn",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="vpn_connected_peers",
+        translation_key="vpn_connected_peers",
+        data_path="vpn.connected_peer_count",
+        capability="vpn",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="parental_profiles",
+        translation_key="parental_profiles",
+        data_path="parental.profiles",
+        capability="parental",
+        coordinator_group=SLOW,
+        transform=count_items,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="parental_blocked_clients",
+        translation_key="parental_blocked_clients",
+        data_path="parental.blocked_client_count",
+        capability="parental",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+    ),
+    # Telephony, PBX and DECT.
+    SpeedportSensorEntityDescription(
+        key="telephone_numbers_registered",
+        translation_key="telephone_numbers_registered",
+        data_path="telephony.registered_number_count",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="missed_calls",
+        translation_key="missed_calls",
+        data_path="telephony.missed_call_count",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.TOTAL,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="last_call",
+        translation_key="last_call",
+        data_path="telephony.last_call.timestamp",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        transform=as_datetime,
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ip_phones",
+        translation_key="ip_phones",
+        data_path="pbx.ip_phones",
+        capability="pbx",
+        coordinator_group=SLOW,
+        transform=count_items,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dect_handsets",
+        translation_key="dect_handsets",
+        data_path="dect.handsets",
+        capability="dect",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="phonebooks",
+        translation_key="phonebooks",
+        data_path="dect.phonebooks",
+        capability="dect",
+        coordinator_group=SLOW,
+        transform=count_items,
+        entity_registry_enabled_default=False,
+    ),
+    # USB, system, firmware and diagnostics.
+    SpeedportSensorEntityDescription(
+        key="usb_devices",
+        translation_key="usb_devices",
+        data_path="usb.items",
+        capability="usb",
+        coordinator_group=SLOW,
+        transform=count_items,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+    ),
+    SpeedportSensorEntityDescription(
+        key="system_uptime",
+        translation_key="system_uptime",
+        data_path="system.uptime_seconds",
+        capability="system",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL,
+    ),
+    SpeedportSensorEntityDescription(
+        key="system_temperature",
+        translation_key="system_temperature",
+        data_path="system.temperature_celsius",
+        capability="system",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement="°C",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="system_cpu",
+        translation_key="system_cpu",
+        data_path="system.cpu_percent",
+        capability="system",
+        coordinator_group=NORMAL,
+        transform=as_percent,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="system_memory",
+        translation_key="system_memory",
+        data_path="system.memory_percent",
+        capability="system",
+        coordinator_group=NORMAL,
+        transform=as_percent,
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="request_latency",
+        translation_key="request_latency",
+        data_path="diagnostics.request_latency_ms",
+        capability="diagnostics",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement="ms",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
+    ),
+    SpeedportSensorEntityDescription(
+        key="update_failures",
+        translation_key="update_failures",
+        data_path="diagnostics.update_failures",
+        capability="diagnostics",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.TOTAL,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="last_successful_update",
+        translation_key="last_successful_update",
+        data_path="diagnostics.last_successful_update",
+        capability="diagnostics",
+        coordinator_group=NORMAL,
+        transform=as_datetime,
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+)
+
+
+def _discoverable_fixed_sensor_descriptions(
+    hub: SpeedportHub,
+    group: PollGroup,
+    known: set[str],
+) -> tuple[SpeedportSensorEntityDescription, ...]:
+    """Return newly supported fixed sensors for one polling group."""
+    return tuple(
+        description
+        for description in SENSOR_DESCRIPTIONS
+        if description.coordinator_group is group
+        and description.key not in known
+        and supported(hub, description.capability, description.data_path)
+    )
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry[SpeedportHub],
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up sensors exposed by this router."""
+    del hass
+    hub = entry.runtime_data
+    known_fixed: set[str] = set()
+
+    @callback
+    def discover_fixed_sensors(group: PollGroup) -> None:
+        descriptions = _discoverable_fixed_sensor_descriptions(hub, group, known_fixed)
+        if not descriptions:
+            return
+        known_fixed.update(description.key for description in descriptions)
+        async_add_entities(
+            SpeedportSensor(hub, description) for description in descriptions
+        )
+
+    for group in {description.coordinator_group for description in SENSOR_DESCRIPTIONS}:
+        discover_fixed_sensors(group)
+
+        @callback
+        def rediscover_fixed(group: PollGroup = group) -> None:
+            discover_fixed_sensors(group)
+
+        entry.async_on_unload(
+            coordinator(hub, group).async_add_listener(rediscover_fixed)
+        )
+
+    if hub.has_capability("diagnostics"):
+        async_add_entities([SpeedportManagementAccessSensor(hub)])
+
+    known: set[tuple[str, str, str]] = set()
+
+    @callback
+    def discover_child_sensors(group: PollGroup) -> None:
+        new_entities: list[SpeedportChildSensor] = []
+        for child_spec in CHILD_SENSOR_COLLECTIONS:
+            if child_spec.coordinator_group is not group:
+                continue
+            for item in child_collection(hub, child_spec.data_paths):
+                identifier = stable_id(item)
+                if identifier is None:
+                    continue
+                for field in child_spec.fields:
+                    marker = (child_spec.kind, identifier, field.key)
+                    if (
+                        marker in known
+                        or field.field not in item
+                        or item[field.field] is None
+                    ):
+                        continue
+                    device = speedport_child_device(child_spec.kind, item)
+                    if device is None:
+                        continue
+                    known.add(marker)
+                    new_entities.append(
+                        SpeedportChildSensor(
+                            hub,
+                            child_spec,
+                            field,
+                            identifier,
+                            device,
+                        )
+                    )
+        if new_entities:
+            async_add_entities(new_entities)
+
+    for group in {spec.coordinator_group for spec in CHILD_SENSOR_COLLECTIONS}:
+        discover_child_sensors(group)
+
+        @callback
+        def rediscover(group: PollGroup = group) -> None:
+            discover_child_sensors(group)
+
+        entry.async_on_unload(coordinator(hub, group).async_add_listener(rediscover))
+
+
+class SpeedportSensor(SpeedportEntity, SensorEntity):
+    """Sensor backed by normalized hub data."""
+
+    _attr_entity_registry_enabled_default = True
+    entity_description: SpeedportSensorEntityDescription
+
+    def __init__(
+        self,
+        hub: SpeedportHub,
+        description: SpeedportSensorEntityDescription,
+    ) -> None:
+        """Initialize sensor."""
+        super().__init__(
+            hub,
+            coordinator(hub, description.coordinator_group),
+            description.key,
+            data_path=description.data_path,
+        )
+        self.entity_description = description
+
+    @property
+    def native_value(self) -> Any:
+        """Return current normalized value."""
+        description = self.entity_description
+        return value(
+            hub=self.hub,
+            data_path=description.data_path,
+            transform=description.transform,
+        )
+
+
+class SpeedportManagementAccessSensor(SpeedportEntity, SensorEntity):
+    """Explain whether protected router data can currently be read."""
+
+    _attr_translation_key = "management_access"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hub: SpeedportHub) -> None:
+        """Initialize the always-visible management access sensor."""
+        super().__init__(
+            hub,
+            coordinator(hub, PollGroup.NORMAL),
+            "management_access",
+            data_path="management.access.state",
+        )
+        self._attr_options = [
+            "available",
+            "blocked",
+            "locked",
+            "other_session",
+            "recovering",
+            "unavailable",
+            "unknown",
+        ]
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the normalized management access state."""
+        state = self.hub.get("management.access.state")
+        return str(state) if state is not None else None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any]:
+        """Expose local ownership and safe recovery guidance."""
+        access: Any = self.hub.get("management.access", {})
+        if not isinstance(access, Mapping):
+            return {}
+        return {
+            "owner_ip_address": access.get("owner_ip_address"),
+            "retry_after_seconds": access.get("retry_after_seconds"),
+            "browser_logout_required": access.get("browser_logout_required"),
+            "last_changed": access.get("last_changed"),
+            "last_successful_update": access.get("last_successful_update"),
+        }
+
+
+class SpeedportChildSensor(SpeedportEntity, SensorEntity):
+    """Enabled sensor for one stable router child."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+
+    def __init__(
+        self,
+        hub: SpeedportHub,
+        collection_spec: SpeedportChildSensorCollection,
+        description: SpeedportChildSensorDescription,
+        identifier: str,
+        device: SpeedportDevice,
+    ) -> None:
+        """Initialize a field-backed child sensor."""
+        super().__init__(
+            hub,
+            coordinator(hub, collection_spec.coordinator_group),
+            description.key,
+            device=device,
+        )
+        self._collection_spec = collection_spec
+        self._field_description = description
+        self._child_identifier = identifier
+        self._attr_name = description.name
+        self._attr_device_class = description.device_class
+        self._attr_native_unit_of_measurement = description.native_unit_of_measurement
+        self._attr_state_class = description.state_class
+        self._attr_suggested_display_precision = description.suggested_display_precision
+
+    @property
+    def _item(self) -> Mapping[str, Any] | None:
+        """Return the current normalized child payload."""
+        return child_item(
+            self.hub,
+            self._collection_spec.data_paths,
+            self._child_identifier,
+        )
+
+    @property
+    def available(self) -> bool:
+        """Return whether this field remains available on the child."""
+        if not super().available:
+            return False
+        item = self._item
+        return (
+            item is not None
+            and self._field_description.field in item
+            and item[self._field_description.field] is not None
+        )
+
+    @property
+    def native_value(self) -> Any:
+        """Return and safely transform the current child field."""
+        item = self._item
+        if item is None:
+            return None
+        raw = item.get(self._field_description.field)
+        transform = self._field_description.transform
+        if raw is None or transform is None:
+            return raw
+        try:
+            return transform(raw)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None

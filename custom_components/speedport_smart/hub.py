@@ -1,0 +1,1281 @@
+"""Runtime owner for a Speedport Smart router."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import deque
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from datetime import UTC, datetime
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
+
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+from .api import (
+    SpeedportAuthenticationError,
+    SpeedportConnectionError,
+    SpeedportError,
+    SpeedportInvalidCredentialsError,
+    SpeedportLoginLockedError,
+    SpeedportSessionBusyError,
+    SpeedportUnsupportedError,
+)
+from .const import DOMAIN, RATE_WINDOW_SECONDS
+from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinator
+from .normalizers import normalize_feature_payload, normalize_status_payload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from homeassistant.core import HomeAssistant
+
+    from .api import SpeedportClient
+    from .models import (
+        CapabilityReport,
+        DslMetrics,
+        RouterInfo,
+        RouterStatus,
+        WanCounters,
+    )
+
+_LOGGER = logging.getLogger(__name__)
+
+NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
+    {
+        "internet",
+        "dsl",
+        "hybrid",
+        "mobile",
+        "lte",
+        "5g",
+        "receiver",
+        "wifi",
+        "clients",
+        "telephony",
+        "calls",
+        "active_calls",
+        "ip",
+    }
+)
+FAST_FAMILIES: Final[frozenset[str]] = frozenset()
+_MIN_RATE_SAMPLES: Final = 2
+_RATE_RETENTION_WINDOWS: Final = 2.0
+_WAN_TRANSIENT_GRACE_FAILURES: Final = 3
+_DSL_TRANSIENT_RETRY_SECONDS: Final = 60.0
+_DSL_UNSUPPORTED_RETRY_SECONDS: Final = 300.0
+_DSL_MAX_RETRY_SECONDS: Final = 3_600.0
+_DSL_TRANSIENT_GRACE_FAILURES: Final = 1
+_PROTECTED_RETRY_SECONDS: Final = 60.0
+_PROTECTED_MAX_RETRY_SECONDS: Final = 900.0
+_MANAGEMENT_ISSUE_KEY: Final = "management_session_blocked"
+_FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        "5g": ("mobile", "5g"),
+        "calls": ("telephony", "calls"),
+        "firmware": ("system", "firmware_details"),
+        "firewall": ("security", "firewall"),
+        "ip": ("internet", "ip"),
+        "ip_phones": ("pbx", "ip_phones"),
+        "lte": ("mobile", "lte"),
+        "parental_controls": ("parental", "configuration"),
+        "phonebook": ("telephony", "phonebook"),
+        "port_forwarding": ("nat", "port_forwarding"),
+        "upnp": ("nat", "upnp"),
+        "wifi_configuration": ("wifi", "configuration"),
+        "wireguard": ("vpn", "wireguard"),
+        "wps": ("wifi", "wps"),
+    }
+)
+_TRANSITION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "active",
+        "available",
+        "connected",
+        "enabled",
+        "firmware",
+        "online",
+        "present",
+        "registered",
+        "state",
+        "status",
+        "version",
+    }
+)
+_COMMAND_CAPABILITIES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "guest_wifi_set_enabled": "wifi",
+        "internet_reconnect": "internet",
+        "port_mapping_set_enabled": "port_forwarding",
+        "reboot": "system",
+        "reconnect": "internet",
+        "router_reboot": "system",
+        "set_guest_wifi": "wifi",
+        "set_office_wifi": "wifi",
+        "set_port_forward_rule": "port_forwarding",
+        "wifi_set_enabled": "wifi",
+        "wps": "wps",
+        "wps_start": "wps",
+    }
+)
+
+_MISSING = object()
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True, slots=True)
+class RouterIdentity:
+    """Stable router identity used by Home Assistant devices."""
+
+    identifier: str
+    model: str | None
+    firmware: str | None
+    serial_number: str | None
+    hardware_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StateTransition:
+    """One meaningful router state transition."""
+
+    path: str
+    previous: Any
+    current: Any
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _CounterSample:
+    """Monotonic WAN counter sample."""
+
+    sampled_at: float
+    received: int
+    sent: int
+
+
+class SpeedportHub:
+    """Coordinate router polling, normalization, transitions, and commands."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: SpeedportClient,
+        *,
+        fallback_identifier: str,
+        entry_id: str | None = None,
+        controls_enabled: bool = False,
+        rate_window_seconds: float = RATE_WINDOW_SECONDS,
+        monotonic_time: Callable[[], float] | None = None,
+    ) -> None:
+        """Initialize hub."""
+        self.hass = hass
+        self.client = client
+        self.controls_enabled = controls_enabled
+        self.rate_window_seconds = max(rate_window_seconds, 1.0)
+        self._monotonic_time = monotonic_time or hass.loop.time
+        self.logger = _LOGGER
+
+        self._fallback_identifier = fallback_identifier
+        self._entry_id = entry_id
+        self._router_info: RouterInfo | None = None
+        self._capability_report: CapabilityReport | None = None
+        self._capabilities: frozenset[str] = frozenset()
+        self._data: Mapping[str, Any] = MappingProxyType({})
+        self._mutable_data: dict[str, Any] = {}
+        self._coordinators: dict[PollGroup, SpeedportDataUpdateCoordinator] = {}
+        self._generation = 0
+        self._operation_lock = asyncio.Lock()
+        self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
+        self._wan_counter_probe_pending = False
+        self._wan_counter_failures = 0
+        self._dsl_metrics_failures = 0
+        self._dsl_metrics_retry_at = 0.0
+        self._transition_values: dict[str, Any] = {}
+        self._last_transitions: tuple[StateTransition, ...] = ()
+        self._endpoint_errors: dict[str, str] = {}
+        self._update_failures = 0
+        self._last_successful_update: datetime | None = None
+        self._family_data: dict[str, dict[str, Any]] = {}
+        self._management_state = "unknown"
+        self._management_owner: str | None = None
+        self._management_retry_after: int | None = None
+        self._management_changed_at = datetime.now(UTC)
+        self._management_last_success: datetime | None = None
+        self._protected_retry_at = 0.0
+        self._protected_retry_failures = 0
+        self._closed = False
+
+    @property
+    def router_info(self) -> RouterInfo | None:
+        """Return router information reported by protocol layer."""
+        return self._router_info
+
+    @property
+    def router_identity(self) -> RouterIdentity:
+        """Return stable normalized router identity."""
+        info = self._router_info
+        serial = _clean_identifier(_model_value(info, "serial_number"))
+        return RouterIdentity(
+            identifier=serial or self._fallback_identifier,
+            model=_string_or_none(_model_value(info, "model")),
+            firmware=_string_or_none(_model_value(info, "firmware")),
+            serial_number=_string_or_none(_model_value(info, "serial_number")),
+            hardware_version=_string_or_none(_model_value(info, "hardware_version")),
+        )
+
+    @property
+    def router_identifier(self) -> str:
+        """Return stable identifier suitable for entity unique IDs."""
+        return self.router_identity.identifier
+
+    @property
+    def data(self) -> Mapping[str, Any]:
+        """Return immutable merged normalized data."""
+        return self._data
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Return discovered capability names."""
+        return self._capabilities
+
+    @property
+    def capability_report(self) -> CapabilityReport | None:
+        """Return latest capability report."""
+        return self._capability_report
+
+    @property
+    def last_transitions(self) -> tuple[StateTransition, ...]:
+        """Return transitions emitted by latest update."""
+        return self._last_transitions
+
+    @property
+    def available(self) -> bool:
+        """Return whether any attached coordinator is available."""
+        return any(
+            coordinator.last_update_success
+            for coordinator in self._coordinators.values()
+        )
+
+    @property
+    def transition_signal(self) -> str:
+        """Return per-router dispatcher signal for state transitions."""
+        return f"{DOMAIN}_{self.router_identifier}_transition"
+
+    async def async_setup(self) -> None:
+        """Open protocol client and discover router capabilities."""
+        if self._closed:
+            message = "Cannot set up a closed Speedport hub"
+            raise SpeedportError(message)
+        report = await self.client.setup(allow_protected_degraded=True)
+        self._apply_capability_report(report)
+        self._router_info = self.client.router_info
+        management_error = self.client.last_management_error
+        if isinstance(management_error, SpeedportSessionBusyError):
+            self._mark_management_busy(management_error)
+        elif isinstance(management_error, SpeedportLoginLockedError):
+            self._mark_management_locked(management_error)
+        else:
+            self._set_management_access("available")
+        self._merge_data(
+            {
+                "router": _normalise_router_info(self._router_info),
+                "management": {"access": self._management_access_payload()},
+            }
+        )
+
+    async def async_close(self) -> None:
+        """Close router client exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        await self.client.close()
+
+    def attach_coordinator(
+        self, group: PollGroup, coordinator: SpeedportDataUpdateCoordinator
+    ) -> None:
+        """Attach one coordinator to hub."""
+        self._coordinators[group] = coordinator
+
+    def coordinator(self, group: PollGroup | str) -> SpeedportDataUpdateCoordinator:
+        """Return attached coordinator for group."""
+        return self._coordinators[PollGroup(group)]
+
+    @property
+    def management_issue_id(self) -> str | None:
+        """Return the per-entry repair issue identifier when available."""
+        if self._entry_id is None:
+            return None
+        return f"{_MANAGEMENT_ISSUE_KEY}_{self._entry_id}"
+
+    async def async_retry_protected_data(self) -> None:
+        """Retry read-only protected discovery after the browser session logs out."""
+        async with self._operation_lock:
+            self._set_management_access("recovering", owner=self._management_owner)
+            try:
+                report = await self.client.probe_capabilities()
+            except SpeedportSessionBusyError as err:
+                self._mark_management_busy(err)
+                raise HomeAssistantError(
+                    "Log out in the Speedport web interface before retrying"
+                ) from err
+            except SpeedportLoginLockedError as err:
+                self._mark_management_locked(err)
+                raise HomeAssistantError(
+                    "Speedport login is temporarily locked; retry after the cooldown"
+                ) from err
+            except SpeedportInvalidCredentialsError as err:
+                self._set_management_access("unavailable")
+                raise HomeAssistantError(
+                    "Speedport rejected the configured device password"
+                ) from err
+            except SpeedportError as err:
+                self._set_management_access("unavailable")
+                raise HomeAssistantError(
+                    "Protected Speedport data could not be refreshed"
+                ) from err
+
+            if not report.authenticated_json:
+                self._set_management_access("unavailable")
+                raise HomeAssistantError("Protected Speedport access was not confirmed")
+            self._apply_capability_report(report)
+            self._set_management_access("available")
+            if self._entry_id is not None:
+                self.hass.config_entries.async_schedule_reload(self._entry_id)
+
+    def has_capability(self, capability: str) -> bool:
+        """Return whether router exposes capability."""
+        return capability.casefold() in self._capabilities
+
+    def supports_command(self, command: str) -> bool:
+        """Return whether control is enabled and protocol implements command."""
+        capability = _COMMAND_CAPABILITIES.get(command)
+        handler = getattr(self.client, command, None) or getattr(
+            self.client, f"execute_{command}", None
+        )
+        return (
+            self.controls_enabled
+            and self.has_capability("authenticated_json")
+            and capability is not None
+            and self.has_capability(capability)
+            and callable(handler)
+        )
+
+    def get(
+        self,
+        path: str | Iterable[str | int],
+        default: _T | None = None,
+    ) -> Any | _T | None:
+        """Read nested normalized data using dotted string or path components."""
+        parts: Iterable[str | int]
+        parts = path.split(".") if isinstance(path, str) else path
+        current: Any = self._data
+        for part in parts:
+            if isinstance(current, Mapping):
+                if part not in current:
+                    return default
+                current = current[part]
+            elif isinstance(current, (list, tuple)) and isinstance(part, int):
+                if part >= len(current) or part < -len(current):
+                    return default
+                current = current[part]
+            else:
+                return default
+        return current
+
+    async def async_update_group(self, group: PollGroup) -> GroupSnapshot:
+        """Update one group while keeping multi-request router work serialized."""
+        async with self._operation_lock:
+            return await self._async_update_group_locked(group)
+
+    async def _async_update_group_locked(self, group: PollGroup) -> GroupSnapshot:
+        """Update one group while operation lock is held."""
+        started_at = time.perf_counter()
+        if self._closed:
+            message = "Speedport hub is closed"
+            raise SpeedportConnectionError(message)
+
+        if group is PollGroup.FAST:
+            partial = await self._async_fetch_fast()
+        elif group is PollGroup.NORMAL:
+            partial = await self._async_fetch_normal()
+        else:
+            partial = await self._async_fetch_families(
+                self._feature_families - NORMAL_FAMILIES - FAST_FAMILIES
+            )
+
+        now = datetime.now(UTC)
+        self._last_successful_update = now
+        partial = _deep_merge_dicts(
+            partial,
+            {
+                "diagnostics": {
+                    "last_successful_update": now.isoformat(),
+                    "problem": bool(self._endpoint_errors),
+                    "request_latency_ms": round(
+                        (time.perf_counter() - started_at) * 1_000,
+                        3,
+                    ),
+                    "update_failures": self._update_failures,
+                }
+            },
+        )
+        transitions = self._merge_data(partial)
+        self._generation += 1
+        snapshot = GroupSnapshot(
+            group=group,
+            data=self._data,
+            generation=self._generation,
+            updated_at=now,
+            transitions=transitions,
+        )
+        self._last_transitions = transitions
+        for transition in transitions:
+            async_dispatcher_send(self.hass, self.transition_signal, transition)
+        return snapshot
+
+    def record_update_failure(self, group: PollGroup, error: Exception) -> None:
+        """Record coordinator failure without exposing error text or router data."""
+        self._update_failures += 1
+        self._merge_data(
+            {
+                "diagnostics": {
+                    "failed_group": group.value,
+                    "last_error": type(error).__name__,
+                    "last_successful_update": (
+                        self._last_successful_update.isoformat()
+                        if self._last_successful_update
+                        else None
+                    ),
+                    "problem": True,
+                    "update_failures": self._update_failures,
+                }
+            }
+        )
+
+    def _management_access_payload(self) -> dict[str, Any]:
+        """Return normalized, UI-safe management access state."""
+        return {
+            "state": self._management_state,
+            "owner_ip_address": self._management_owner,
+            "retry_after_seconds": self._management_retry_after,
+            "last_changed": self._management_changed_at.isoformat(),
+            "last_successful_update": (
+                self._management_last_success.isoformat()
+                if self._management_last_success is not None
+                else None
+            ),
+            "browser_logout_required": self._management_state
+            in {"blocked", "other_session"},
+        }
+
+    def _set_management_access(
+        self,
+        state: str,
+        *,
+        owner: str | None = None,
+        retry_after: int | None = None,
+    ) -> None:
+        """Update management state and its actionable repair issue."""
+        now = datetime.now(UTC)
+        changed = (
+            state != self._management_state
+            or owner != self._management_owner
+            or retry_after != self._management_retry_after
+        )
+        self._management_state = state
+        self._management_owner = owner
+        self._management_retry_after = retry_after
+        if changed:
+            self._management_changed_at = now
+        if state == "available":
+            self._management_last_success = now
+            self._protected_retry_at = 0.0
+            self._protected_retry_failures = 0
+            self._delete_management_issue()
+        self._merge_data({"management": {"access": self._management_access_payload()}})
+
+    def _mark_management_busy(self, error: SpeedportSessionBusyError) -> None:
+        """Expose an occupied management lease and schedule a safe retry."""
+        self._protected_retry_failures += 1
+        delay = min(
+            _PROTECTED_RETRY_SECONDS
+            * (2 ** min(self._protected_retry_failures - 1, 4)),
+            _PROTECTED_MAX_RETRY_SECONDS,
+        )
+        self._protected_retry_at = self._monotonic_time() + delay
+        owner = error.owner or self._management_owner
+        state = "other_session" if owner is not None else "blocked"
+        self._set_management_access(state, owner=owner)
+        self._create_management_issue()
+
+    def _mark_management_locked(self, error: SpeedportLoginLockedError) -> None:
+        """Expose router-enforced login cooldown without treating it as bad auth."""
+        retry_after = error.retry_after or int(_PROTECTED_RETRY_SECONDS)
+        self._protected_retry_at = self._monotonic_time() + retry_after
+        self._set_management_access("locked", retry_after=retry_after)
+
+    def _create_management_issue(self) -> None:
+        """Create one persistent, per-entry repair for browser session contention."""
+        issue_id = self.management_issue_id
+        if issue_id is None or self._entry_id is None:
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            data={"entry_id": self._entry_id},
+            is_fixable=True,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=_MANAGEMENT_ISSUE_KEY,
+        )
+
+    def _delete_management_issue(self) -> None:
+        """Remove the browser-session repair only after protected access succeeds."""
+        issue_id = self.management_issue_id
+        if issue_id is not None:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    async def _async_retry_degraded_access(self) -> None:
+        """Periodically retry read-only discovery after a blocked startup."""
+        if self._management_state not in {"blocked", "locked", "other_session"}:
+            return
+        if self._monotonic_time() < self._protected_retry_at:
+            return
+        report = await self.client.probe_capabilities(allow_protected_degraded=True)
+        management_error = self.client.last_management_error
+        if isinstance(management_error, SpeedportSessionBusyError):
+            self._mark_management_busy(management_error)
+            return
+        if isinstance(management_error, SpeedportLoginLockedError):
+            self._mark_management_locked(management_error)
+            return
+        if not report.authenticated_json:
+            self._protected_retry_at = self._monotonic_time() + _PROTECTED_RETRY_SECONDS
+            return
+        self._apply_capability_report(report)
+        self._set_management_access("available")
+        if self._entry_id is not None:
+            self.hass.config_entries.async_schedule_reload(self._entry_id)
+
+    async def _async_fetch_fast(self) -> dict[str, Any]:
+        """Fetch status and aggregate WAN counters."""
+        status = await self.client.get_status()
+        self._router_info = status.info
+        partial, inferred_capabilities = normalize_status_payload(status)
+        self._capabilities = self._capabilities | inferred_capabilities
+
+        wan_counters_confirmed = self.has_capability("wan_counters")
+        if wan_counters_confirmed or self._wan_counter_probe_pending:
+            try:
+                counters = await self.client.get_wan_counters()
+            except SpeedportSessionBusyError as err:
+                self._counter_samples.clear()
+                self._endpoint_errors["wan_counters"] = type(err).__name__
+                self._mark_management_busy(err)
+                if wan_counters_confirmed:
+                    partial["wan"] = _deep_merge_dicts(
+                        cast("dict[str, Any]", partial.get("wan", {})),
+                        self._degraded_wan_values(),
+                    )
+            except SpeedportUnsupportedError as err:
+                self._counter_samples.clear()
+                if not wan_counters_confirmed:
+                    self._wan_counter_probe_pending = False
+                    self._endpoint_errors.pop("wan_counters", None)
+                else:
+                    self._wan_counter_failures = _WAN_TRANSIENT_GRACE_FAILURES + 1
+                    self._endpoint_errors["wan_counters"] = type(err).__name__
+                    partial["wan"] = _deep_merge_dicts(
+                        cast("dict[str, Any]", partial.get("wan", {})),
+                        self._unavailable_wan_values(),
+                    )
+            except SpeedportError as err:
+                self._counter_samples.clear()
+                self._endpoint_errors["wan_counters"] = type(err).__name__
+                if wan_counters_confirmed:
+                    partial["wan"] = _deep_merge_dicts(
+                        cast("dict[str, Any]", partial.get("wan", {})),
+                        self._degraded_wan_values(),
+                    )
+            else:
+                self._wan_counter_probe_pending = False
+                self._wan_counter_failures = 0
+                self._confirm_tr064_capability(wan_counters=True)
+                self._endpoint_errors.pop("wan_counters", None)
+                partial["wan"] = _deep_merge_dicts(
+                    cast("dict[str, Any]", partial.get("wan", {})),
+                    self._normalise_wan_counters(
+                        counters,
+                        download_capacity=status.wan_download_capacity_bps,
+                        upload_capacity=status.wan_upload_capacity_bps,
+                    ),
+                )
+
+        return partial
+
+    async def _async_fetch_normal(self) -> dict[str, Any]:
+        """Fetch medium-frequency feature data and verified DSL telemetry."""
+        await self._async_retry_degraded_access()
+        partial = await self._async_fetch_families(NORMAL_FAMILIES)
+        now = self._monotonic_time()
+        if (
+            self.has_capability("dsl")
+            and self.has_capability("tr064")
+            and now >= self._dsl_metrics_retry_at
+        ):
+            try:
+                metrics = await self.client.get_dsl_metrics()
+            except SpeedportSessionBusyError as err:
+                self._defer_dsl_metrics_retry(unsupported=False)
+                self._endpoint_errors["dsl_metrics"] = type(err).__name__
+                self._mark_management_busy(err)
+                partial = _deep_merge_dicts(
+                    partial,
+                    {"dsl": self._degraded_dsl_optional_values()},
+                )
+            except SpeedportUnsupportedError as err:
+                self._defer_dsl_metrics_retry(unsupported=True)
+                self._endpoint_errors["dsl_metrics"] = type(err).__name__
+                partial = _deep_merge_dicts(
+                    partial,
+                    {"dsl": self._unavailable_dsl_optional_values()},
+                )
+            except SpeedportError as err:
+                self._defer_dsl_metrics_retry(unsupported=False)
+                self._endpoint_errors["dsl_metrics"] = type(err).__name__
+                partial = _deep_merge_dicts(
+                    partial,
+                    {"dsl": self._degraded_dsl_optional_values()},
+                )
+            else:
+                self._dsl_metrics_failures = 0
+                self._dsl_metrics_retry_at = 0.0
+                self._confirm_tr064_capability(dsl_metrics=True)
+                self._endpoint_errors.pop("dsl_metrics", None)
+                partial = _deep_merge_dicts(
+                    partial,
+                    {"dsl": self._normalise_dsl_metrics(metrics)},
+                )
+        return partial
+
+    def _normalise_dsl_metrics(self, metrics: DslMetrics) -> dict[str, Any]:
+        """Map typed ToTR64 DSL telemetry onto the entity contract."""
+        values: dict[str, Any] = {
+            "line_index": metrics.line_index,
+            "channel_index": metrics.channel_index,
+        }
+        live_values = {
+            "state": _connection_state(metrics.status),
+            "downstream_bps": metrics.downstream_current_bps,
+            "upstream_bps": metrics.upstream_current_bps,
+        }
+        optional_values = {
+            "attainable_downstream_bps": metrics.downstream_max_bps,
+            "attainable_upstream_bps": metrics.upstream_max_bps,
+            "snr_downstream_db": metrics.downstream_noise_margin_db,
+            "snr_upstream_db": metrics.upstream_noise_margin_db,
+            "attenuation_downstream_db": metrics.downstream_attenuation_db,
+            "attenuation_upstream_db": metrics.upstream_attenuation_db,
+        }
+        values.update(
+            {key: value for key, value in live_values.items() if value is not None}
+        )
+        values.update(
+            {
+                key: value
+                for key, value in optional_values.items()
+                if value is not None or self.get(("dsl", key), _MISSING) is not _MISSING
+            }
+        )
+        return values
+
+    def _defer_dsl_metrics_retry(self, *, unsupported: bool) -> None:
+        """Back off optional DSL telemetry without disabling it permanently."""
+        self._dsl_metrics_failures += 1
+        base = (
+            _DSL_UNSUPPORTED_RETRY_SECONDS
+            if unsupported
+            else _DSL_TRANSIENT_RETRY_SECONDS
+        )
+        exponent = min(self._dsl_metrics_failures - 1, 6)
+        delay = min(base * (2**exponent), _DSL_MAX_RETRY_SECONDS)
+        self._dsl_metrics_retry_at = self._monotonic_time() + delay
+
+    def _confirm_tr064_capability(
+        self,
+        *,
+        dsl_metrics: bool = False,
+        wan_counters: bool = False,
+    ) -> None:
+        """Promote a successful ToTR64 read and retire stale busy failures."""
+        capabilities = {"tr064"}
+        if dsl_metrics:
+            capabilities.add("dsl_metrics")
+        if wan_counters:
+            capabilities.update({"wan", "wan_counters"})
+        self._capabilities = self._capabilities | capabilities
+
+        report = self._capability_report
+        if report is None:
+            return
+        failures = dict(report.failures)
+        failures.pop("tr064", None)
+        if wan_counters:
+            failures.pop("wan_counters", None)
+        self._capability_report = replace(
+            report,
+            tr064=True,
+            wan_counters=report.wan_counters or wan_counters,
+            failures=MappingProxyType(failures),
+        )
+
+    def _unavailable_dsl_optional_values(self) -> dict[str, None]:
+        """Clear only previously observed optional DSL telemetry."""
+        fields = (
+            "attainable_downstream_bps",
+            "attainable_upstream_bps",
+            "snr_downstream_db",
+            "snr_upstream_db",
+            "attenuation_downstream_db",
+            "attenuation_upstream_db",
+            "line_index",
+            "channel_index",
+        )
+        return {
+            field: None
+            for field in fields
+            if self.get(("dsl", field), _MISSING) is not _MISSING
+        }
+
+    def _degraded_dsl_optional_values(self) -> dict[str, None]:
+        """Preserve slow DSL metrics through one transient retry window."""
+        if self._dsl_metrics_failures <= _DSL_TRANSIENT_GRACE_FAILURES:
+            return {}
+        return self._unavailable_dsl_optional_values()
+
+    def _degraded_wan_values(self) -> dict[str, None]:
+        """Clear live rates now and cumulative values after bounded failures."""
+        self._wan_counter_failures += 1
+        if self._wan_counter_failures <= _WAN_TRANSIENT_GRACE_FAILURES:
+            return self._unavailable_wan_live_values()
+        return self._unavailable_wan_values()
+
+    @staticmethod
+    def _unavailable_wan_live_values() -> dict[str, None]:
+        """Clear rates that must never remain stale after a counter failure."""
+        return {
+            "download_rate_bps": None,
+            "upload_rate_bps": None,
+            "download_utilization": None,
+            "upload_utilization": None,
+        }
+
+    def _unavailable_wan_values(self) -> dict[str, None]:
+        """Clear live WAN values while retaining capability for retry."""
+        core = (
+            "bytes_received",
+            "bytes_sent",
+            "download_rate_bps",
+            "upload_rate_bps",
+            "download_utilization",
+            "upload_utilization",
+        )
+        optional = (
+            "packets_received",
+            "packets_sent",
+            "errors_received",
+            "errors_sent",
+            "discard_packets_received",
+            "discard_packets_sent",
+        )
+        return {
+            field: None
+            for field in (*core, *optional)
+            if field in core or self.get(("wan", field), _MISSING) is not _MISSING
+        }
+
+    async def _async_fetch_families(self, families: Iterable[str]) -> dict[str, Any]:
+        """Fetch feature endpoints, isolating failures between families."""
+        selected = sorted(set(families) & self._feature_families)
+        if not selected:
+            return {}
+
+        partial: dict[str, Any] = {}
+        report = self._capability_report
+        if report is None:
+            return partial
+
+        endpoint_groups: dict[tuple[str, bool, str | None], list[str]] = {}
+        for family in selected:
+            capability = report.feature_endpoints.get(family)
+            if capability is None or capability.endpoint == "data/Status.json":
+                continue
+            endpoint_groups.setdefault(
+                (
+                    capability.endpoint,
+                    capability.authenticated,
+                    capability.referer,
+                ),
+                [],
+            ).append(family)
+
+        authenticated_attempted = False
+        authenticated_blocked = False
+        ordered_endpoint_groups = sorted(
+            endpoint_groups.items(),
+            key=lambda item: (
+                item[0][1],
+                item[0][0],
+                item[0][2] or "",
+            ),
+        )
+        authenticated_families = {
+            family
+            for (_, authenticated, _), families_for_endpoint in ordered_endpoint_groups
+            if authenticated
+            for family in families_for_endpoint
+        }
+        try:
+            for (
+                endpoint,
+                authenticated,
+                referer,
+            ), endpoint_families in ordered_endpoint_groups:
+                authenticated_attempted |= authenticated
+                try:
+                    value = await self.client.get_json(
+                        endpoint,
+                        authenticated=authenticated,
+                        referer=referer,
+                    )
+                except SpeedportInvalidCredentialsError:
+                    raise
+                except SpeedportLoginLockedError as err:
+                    authenticated_blocked = True
+                    self._mark_management_locked(err)
+                    for family in authenticated_families:
+                        self._endpoint_errors[family] = type(err).__name__
+                        partial = _deep_merge_dicts(
+                            partial, self._unavailable_family_data(family)
+                        )
+                    break
+                except SpeedportAuthenticationError as err:
+                    authenticated_blocked = True
+                    self._set_management_access("unavailable")
+                    for family in authenticated_families:
+                        self._endpoint_errors[family] = type(err).__name__
+                        partial = _deep_merge_dicts(
+                            partial, self._unavailable_family_data(family)
+                        )
+                    break
+                except SpeedportSessionBusyError as err:
+                    authenticated_blocked = True
+                    self._mark_management_busy(err)
+                    for family in authenticated_families:
+                        self._endpoint_errors[family] = type(err).__name__
+                        partial = _deep_merge_dicts(
+                            partial, self._unavailable_family_data(family)
+                        )
+                    break
+                except SpeedportUnsupportedError as err:
+                    for family in endpoint_families:
+                        self._endpoint_errors[family] = type(err).__name__
+                        partial = _deep_merge_dicts(
+                            partial, self._unavailable_family_data(family)
+                        )
+                except SpeedportError as err:
+                    for family in endpoint_families:
+                        self._endpoint_errors[family] = type(err).__name__
+                        partial = _deep_merge_dicts(
+                            partial, self._unavailable_family_data(family)
+                        )
+                else:
+                    for family in endpoint_families:
+                        self._endpoint_errors.pop(family, None)
+                        normalized = normalize_feature_payload(family, value)
+                        previous = self._family_data.get(family)
+                        if previous is not None:
+                            partial = _deep_merge_dicts(
+                                partial,
+                                _removed_values(previous, normalized),
+                            )
+                        self._family_data[family] = normalized
+                        partial = _deep_merge_dicts(
+                            partial,
+                            normalized,
+                        )
+        finally:
+            if authenticated_attempted:
+                await self.client.logout()
+
+        if authenticated_attempted and not authenticated_blocked:
+            self._set_management_access("available")
+
+        return partial
+
+    def _unavailable_family_data(self, family: str) -> dict[str, Any]:
+        """Replace only values previously contributed by one family with nulls."""
+        previous = self._family_data.get(family)
+        return _null_values(previous) if previous is not None else {}
+
+    def _normalise_wan_counters(
+        self,
+        counters: WanCounters,
+        *,
+        download_capacity: int | None = None,
+        upload_capacity: int | None = None,
+    ) -> dict[str, Any]:
+        """Normalize counters and calculate non-negative monotonic rates."""
+        received = max(int(counters.bytes_received), 0)
+        sent = max(int(counters.bytes_sent), 0)
+        now = self._monotonic_time()
+        sample = _CounterSample(now, received, sent)
+
+        if self._counter_samples:
+            previous = self._counter_samples[-1]
+            if received < previous.received or sent < previous.sent:
+                self._counter_samples.clear()
+
+        self._counter_samples.append(sample)
+        while (
+            len(self._counter_samples) > _MIN_RATE_SAMPLES
+            and now - self._counter_samples[0].sampled_at
+            > self.rate_window_seconds * _RATE_RETENTION_WINDOWS
+        ):
+            self._counter_samples.popleft()
+
+        baseline = self._rate_baseline(now)
+        download_rate: float | None = None
+        upload_rate: float | None = None
+        if baseline is not None:
+            elapsed = now - baseline.sampled_at
+            received_delta = received - baseline.received
+            sent_delta = sent - baseline.sent
+            if elapsed > 0 and received_delta >= 0 and sent_delta >= 0:
+                download_rate = received_delta * 8 / elapsed
+                upload_rate = sent_delta * 8 / elapsed
+
+        interface = counters.interface
+        wan: dict[str, Any] = {
+            "bytes_received": received,
+            "bytes_sent": sent,
+            "download_rate_bps": download_rate,
+            "upload_rate_bps": upload_rate,
+            "interface": {
+                "index": interface.index,
+                "alias": interface.alias,
+                "name": interface.name,
+                "status": interface.status,
+            },
+        }
+        for field_name in (
+            "packets_received",
+            "packets_sent",
+            "errors_received",
+            "errors_sent",
+            "discard_packets_received",
+            "discard_packets_sent",
+        ):
+            value = getattr(counters, field_name, None)
+            if value is not None:
+                wan[field_name] = max(int(value), 0)
+            elif self.get(("wan", field_name), _MISSING) is not _MISSING:
+                wan[field_name] = None
+        if download_capacity is None:
+            download_capacity = self.get("internet.download_capacity_bps")
+        if upload_capacity is None:
+            upload_capacity = self.get("internet.upload_capacity_bps")
+        wan["download_utilization"] = _utilization(download_rate, download_capacity)
+        wan["upload_utilization"] = _utilization(upload_rate, upload_capacity)
+        return wan
+
+    def _rate_baseline(self, now: float) -> _CounterSample | None:
+        """Choose oldest sample within rolling rate window."""
+        if len(self._counter_samples) < _MIN_RATE_SAMPLES:
+            return None
+        eligible = [
+            sample
+            for sample in self._counter_samples
+            if 0 < now - sample.sampled_at <= self.rate_window_seconds
+        ]
+        return eligible[0] if eligible else self._counter_samples[-2]
+
+    async def async_execute(
+        self,
+        command: str,
+        *,
+        verify_group: PollGroup = PollGroup.NORMAL,
+        **parameters: Any,
+    ) -> Any:
+        """Run an explicitly allowed command and verify state through polling."""
+        if not self.controls_enabled:
+            message = "Router controls are disabled"
+            raise HomeAssistantError(message)
+        if not self.supports_command(command):
+            message = f"Unsupported router command: {command}"
+            raise HomeAssistantError(message)
+
+        handler = getattr(self.client, command, None)
+        if handler is None:
+            handler = getattr(self.client, f"execute_{command}", None)
+        if not callable(handler):
+            message = f"Router does not expose command: {command}"
+            raise SpeedportUnsupportedError(message)
+
+        async with self._operation_lock:
+            try:
+                result = await handler(**parameters)
+                await self._async_update_group_locked(verify_group)
+                coordinator = self._coordinators.get(verify_group)
+                if coordinator is not None:
+                    coordinator.async_set_updated_data(
+                        GroupSnapshot(
+                            group=verify_group,
+                            data=self._data,
+                            generation=self._generation,
+                            updated_at=datetime.now(UTC),
+                            transitions=self._last_transitions,
+                        )
+                    )
+                return result
+            finally:
+                await self.client.logout()
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return plain diagnostic data; diagnostics module performs redaction."""
+        return {
+            "router": _normalise_router_info(self._router_info),
+            "capabilities": sorted(self._capabilities),
+            "capability_report": _thaw(self._capability_report),
+            "data": _thaw(self._data),
+            "endpoint_errors": dict(self._endpoint_errors),
+            "polling": {
+                group.value: {
+                    "available": coordinator.last_update_success,
+                    "last_exception": (
+                        type(coordinator.last_exception).__name__
+                        if coordinator.last_exception
+                        else None
+                    ),
+                    "update_interval_seconds": (
+                        coordinator.update_interval.total_seconds()
+                        if coordinator.update_interval
+                        else None
+                    ),
+                }
+                for group, coordinator in self._coordinators.items()
+            },
+        }
+
+    @property
+    def _feature_families(self) -> frozenset[str]:
+        """Return semantic families exposed by capability report."""
+        report = self._capability_report
+        if report is None:
+            return frozenset()
+        return frozenset(str(name).casefold() for name in report.feature_endpoints)
+
+    def _apply_capability_report(self, report: CapabilityReport) -> None:
+        """Store report and flatten it to stable semantic capability names."""
+        self._capability_report = report
+        wan_counter_failure = report.failures.get("wan_counters", "")
+        self._wan_counter_probe_pending = (
+            not report.wan_counters
+            and wan_counter_failure.startswith("SpeedportSessionBusyError:")
+        )
+        capabilities = {str(name).casefold() for name in report.feature_endpoints}
+        capabilities.update(
+            _FAMILY_ROUTES[family][0] for family in capabilities & _FAMILY_ROUTES.keys()
+        )
+        if report.status_json:
+            capabilities.update({"status", "system", "diagnostics", "events"})
+        if report.tr064:
+            capabilities.add("tr064")
+        if report.wan_counters:
+            capabilities.update({"wan_counters", "wan"})
+        if report.authenticated_json:
+            capabilities.add("authenticated_json")
+        self._capabilities = frozenset(capabilities)
+
+    def _merge_data(self, partial: Mapping[str, Any]) -> tuple[StateTransition, ...]:
+        """Deep-merge normalized data and collect meaningful state transitions."""
+        previous_values = dict(self._transition_values)
+        self._mutable_data = _deep_merge_dicts(self._mutable_data, _thaw(partial))
+        self._data = cast("Mapping[str, Any]", _freeze(self._mutable_data))
+        current_values = dict(_iter_transition_values(self._data))
+        occurred_at = datetime.now(UTC)
+        transitions = tuple(
+            StateTransition(path, previous_values[path], current, occurred_at)
+            for path, current in current_values.items()
+            if path in previous_values and previous_values[path] != current
+        )
+        if transitions:
+            latest = transitions[-1]
+            self._mutable_data["events"] = {
+                "last": {
+                    "path": latest.path,
+                    "previous": latest.previous,
+                    "current": latest.current,
+                    "occurred_at": latest.occurred_at.isoformat(),
+                }
+            }
+            self._data = cast("Mapping[str, Any]", _freeze(self._mutable_data))
+        self._transition_values = current_values
+        return transitions
+
+
+def _normalise_router_info(info: RouterInfo | None) -> dict[str, Any]:
+    """Normalize protocol router information."""
+    return {
+        "model": _model_value(info, "model"),
+        "firmware": _model_value(info, "firmware"),
+        "serial_number": _model_value(info, "serial_number"),
+        "hardware_version": _model_value(info, "hardware_version"),
+    }
+
+
+def _normalise_status(status: RouterStatus) -> dict[str, Any]:
+    """Normalize core status model into stable platform-facing paths."""
+    normalized, _ = normalize_status_payload(status)
+    return normalized
+
+
+def _utilization(rate: float | None, capacity: Any) -> float | None:
+    """Calculate clamped utilization ratio."""
+    if rate is None or not isinstance(capacity, (int, float)) or capacity <= 0:
+        return None
+    return min(max(rate / capacity * 100, 0.0), 100.0)
+
+
+def _connection_state(value: Any) -> bool | str | None:
+    """Normalize equivalent router connection-state spellings."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().casefold()
+    if normalized in {"1", "connected", "online", "up"}:
+        return True
+    if normalized in {"0", "disconnected", "down", "offline"}:
+        return False
+    return str(value).strip() or None
+
+
+def _model_value(model: Any, name: str) -> Any:
+    """Read typed model field safely."""
+    return getattr(model, name, None) if model is not None else None
+
+
+def _string_or_none(value: Any) -> str | None:
+    """Normalize optional string."""
+    if value is None:
+        return None
+    value_string = str(value).strip()
+    return value_string or None
+
+
+def _clean_identifier(value: Any) -> str | None:
+    """Normalize router identifier without changing its stable value."""
+    value_string = _string_or_none(value)
+    if value_string is None:
+        return None
+    return "".join(
+        character
+        for character in value_string
+        if character.isalnum() or character in "-_"
+    )
+
+
+def _deep_merge_dicts(
+    base: Mapping[str, Any], update: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Deep merge mappings while replacing non-mapping leaves."""
+    merged = {str(key): _thaw(value) for key, value in base.items()}
+    for key, value in update.items():
+        normalized_key = str(key)
+        existing = merged.get(normalized_key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[normalized_key] = _deep_merge_dicts(existing, value)
+        else:
+            merged[normalized_key] = _thaw(value)
+    return merged
+
+
+def _null_values(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Preserve discovered paths while making their stale values unavailable."""
+    return {
+        str(key): _null_values(item) if isinstance(item, Mapping) else None
+        for key, item in value.items()
+    }
+
+
+def _removed_values(
+    previous: Mapping[str, Any], current: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Null only previously observed fields omitted by a successful refresh."""
+    removed: dict[str, Any] = {}
+    for key, previous_value in previous.items():
+        if key not in current:
+            removed[str(key)] = (
+                _null_values(previous_value)
+                if isinstance(previous_value, Mapping)
+                else None
+            )
+            continue
+        current_value = current[key]
+        if isinstance(previous_value, Mapping) and isinstance(current_value, Mapping):
+            nested = _removed_values(previous_value, current_value)
+            if nested:
+                removed[str(key)] = nested
+    return removed
+
+
+def _freeze(value: Any) -> Any:
+    """Recursively freeze normalized runtime data."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, list | tuple):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_freeze(item) for item in value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _freeze(asdict(value))
+    return value
+
+
+def _thaw(value: Any) -> Any:
+    """Convert models and immutable structures to plain diagnostics-safe data."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _thaw(getattr(value, field.name)) for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {str(key): _thaw(item) for key, item in value.items()}
+    if isinstance(value, list | tuple | set | frozenset):
+        return [_thaw(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _iter_transition_values(
+    value: Any, prefix: tuple[str, ...] = ()
+) -> Iterable[tuple[str, Any]]:
+    """Yield state-like scalar values used for transition events."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if str(key).casefold() == "raw":
+                continue
+            yield from _iter_transition_values(item, (*prefix, str(key)))
+        return
+    if isinstance(value, tuple):
+        return
+    if prefix and prefix[-1].casefold() in _TRANSITION_KEYS:
+        yield ".".join(prefix), value

@@ -1,0 +1,8 @@
+{
+  "name": "Telekom Speedport Smart",
+  "country": "DE",
+  "filename": "speedport_smart.zip",
+  "hide_default_branch": true,
+  "zip_release": true,
+  "homeassistant": "2025.12.0"
+}

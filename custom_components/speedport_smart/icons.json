@@ -1,0 +1,23 @@
+{
+  "entity": {
+    "sensor": {
+      "management_access": {
+        "default": "mdi:account-lock",
+        "state": {
+          "available": "mdi:account-lock-open",
+          "blocked": "mdi:account-alert",
+          "locked": "mdi:account-lock",
+          "other_session": "mdi:web",
+          "recovering": "mdi:account-sync",
+          "unavailable": "mdi:account-off",
+          "unknown": "mdi:account-question"
+        }
+      }
+    },
+    "button": {
+      "retry_protected_data": {
+        "default": "mdi:account-sync"
+      }
+    }
+  }
+}

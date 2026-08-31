@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/aarikmudgal/ha-speedport-smart/security/advisories/new
+    about: Report vulnerabilities privately through GitHub Security Advisories.
+  - name: Installation and troubleshooting
+    url: https://github.com/aarikmudgal/ha-speedport-smart#installation
+    about: Review setup requirements and common fixes before opening an issue.

@@ -1,0 +1,242 @@
+{
+  "title": "Telekom Speedport Smart",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Telekom Speedport Smart",
+        "description": "Connect directly to your router. Before continuing, use **Logout** in any open Speedport web interface; closing only the tab or window may leave its session active.",
+        "data": {
+          "host": "Host",
+          "password": "Router password",
+          "use_https": "Use HTTPS",
+          "verify_ssl": "Verify TLS certificate"
+        },
+        "data_description": {
+          "host": "Router hostname or IP address, usually speedport.ip.",
+          "password": "Required for protected read-only router data. The password stays in Home Assistant.",
+          "use_https": "Use encrypted router and ToTR64 endpoints.",
+          "verify_ssl": "Enable only when the router certificate is trusted by Home Assistant."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Telekom Speedport Smart",
+        "description": "Enter the current router password.",
+        "data": {
+          "password": "Router password"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Telekom Speedport Smart",
+        "description": "Update the local router connection settings.",
+        "data": {
+          "host": "Host",
+          "password": "Router password",
+          "use_https": "Use HTTPS",
+          "verify_ssl": "Verify TLS certificate"
+        },
+        "data_description": {
+          "host": "Router hostname or IP address.",
+          "password": "Leave unchanged to keep the current password.",
+          "use_https": "Use encrypted router and ToTR64 endpoints.",
+          "verify_ssl": "Enable only when the router certificate is trusted by Home Assistant."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the router.",
+      "invalid_auth": "The router rejected the credentials.",
+      "router_busy": "Another router management session is active. Use **Logout** in the Speedport web interface, then retry; closing only the tab or window may leave the session active.",
+      "unknown": "Unexpected error. Check the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This router is already configured.",
+      "reauth_successful": "Reauthentication completed.",
+      "reconfigure_successful": "Router configuration updated.",
+      "wrong_account": "The detected router does not match this configuration entry."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Telekom Speedport Smart options",
+        "description": "Supported entities and controls are enabled by default. Missing router capabilities are omitted; temporary read failures show affected entities as unavailable. Controls run only after a deliberate user action. Polling below router refresh cadence adds load without improving accuracy.",
+        "data": {
+          "enable_controls": "Show supported router controls",
+          "fast_interval": "Fast polling interval",
+          "normal_interval": "Normal polling interval",
+          "slow_interval": "Slow polling interval"
+        },
+        "data_description": {
+          "enable_controls": "Show only implemented controls supported by this router. They remain idle until you explicitly use them and never run automatically.",
+          "fast_interval": "Seconds between WAN counter and live-state updates (1–60). One second is best-effort; 5 seconds is recommended for router reliability.",
+          "normal_interval": "Seconds between status, Wi-Fi, client and telephony updates.",
+          "slow_interval": "Seconds between configuration, topology and firmware updates."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wan_bytes_received": { "name": "WAN data received" },
+      "wan_bytes_sent": { "name": "WAN data sent" },
+      "wan_packets_received": { "name": "WAN packets received" },
+      "wan_packets_sent": { "name": "WAN packets sent" },
+      "wan_errors_received": { "name": "WAN receive errors" },
+      "wan_errors_sent": { "name": "WAN send errors" },
+      "wan_discarded_packets_received": { "name": "WAN received packets discarded" },
+      "wan_discarded_packets_sent": { "name": "WAN sent packets discarded" },
+      "wan_download_rate": { "name": "Download rate" },
+      "wan_upload_rate": { "name": "Upload rate" },
+      "wan_download_utilization": { "name": "Download utilization" },
+      "wan_upload_utilization": { "name": "Upload utilization" },
+      "wan_download_capacity": { "name": "Download capacity" },
+      "wan_upload_capacity": { "name": "Upload capacity" },
+      "internet_uptime": { "name": "Internet uptime" },
+      "wan_interface": { "name": "WAN interface" },
+      "wan_mtu": { "name": "WAN MTU" },
+      "public_ipv4": { "name": "Public IPv4 address" },
+      "public_ipv6_prefix": { "name": "Public IPv6 prefix" },
+      "dsl_downstream": { "name": "DSL downstream" },
+      "dsl_upstream": { "name": "DSL upstream" },
+      "dsl_attainable_downstream": { "name": "DSL attainable downstream" },
+      "dsl_attainable_upstream": { "name": "DSL attainable upstream" },
+      "dsl_snr_downstream": { "name": "DSL downstream SNR" },
+      "dsl_snr_upstream": { "name": "DSL upstream SNR" },
+      "dsl_attenuation_downstream": { "name": "DSL downstream attenuation" },
+      "dsl_attenuation_upstream": { "name": "DSL upstream attenuation" },
+      "dsl_crc_errors": { "name": "DSL CRC errors" },
+      "dsl_fec_errors": { "name": "DSL FEC corrections" },
+      "dsl_error_seconds": { "name": "DSL error seconds" },
+      "dsl_profile": { "name": "DSL profile" },
+      "mobile_network_type": { "name": "Mobile network type" },
+      "mobile_operator": { "name": "Mobile operator" },
+      "mobile_rsrp": { "name": "Mobile RSRP" },
+      "mobile_rsrq": { "name": "Mobile RSRQ" },
+      "mobile_sinr": { "name": "Mobile SINR" },
+      "mobile_rssi": { "name": "Mobile RSSI" },
+      "mobile_band": { "name": "Mobile band" },
+      "mobile_frequency": { "name": "Mobile frequency" },
+      "mobile_cell_id": { "name": "Mobile cell ID" },
+      "lte_tunnel_bytes_received": { "name": "LTE tunnel data received" },
+      "lte_tunnel_bytes_sent": { "name": "LTE tunnel data sent" },
+      "wifi_2_4_clients": { "name": "2.4 GHz Wi-Fi clients" },
+      "wifi_5_clients": { "name": "5 GHz Wi-Fi clients" },
+      "wifi_guest_clients": { "name": "Guest Wi-Fi clients" },
+      "wifi_2_4_channel": { "name": "2.4 GHz Wi-Fi channel" },
+      "wifi_5_channel": { "name": "5 GHz Wi-Fi channel" },
+      "mesh_nodes": { "name": "Mesh nodes" },
+      "mesh_clients": { "name": "Mesh clients" },
+      "connected_clients": { "name": "Connected clients" },
+      "dhcp_leases": { "name": "DHCP leases" },
+      "lan_linked_ports": { "name": "Linked LAN ports" },
+      "port_forward_rules": { "name": "Port forwarding rules" },
+      "upnp_mappings": { "name": "UPnP mappings" },
+      "ddns_provider": { "name": "Dynamic DNS provider" },
+      "ddns_last_update": { "name": "Dynamic DNS last update" },
+      "vpn_peers": { "name": "VPN peers" },
+      "vpn_connected_peers": { "name": "Connected VPN peers" },
+      "parental_profiles": { "name": "Parental-control profiles" },
+      "parental_blocked_clients": { "name": "Blocked clients" },
+      "telephone_numbers_registered": { "name": "Registered telephone numbers" },
+      "missed_calls": { "name": "Missed calls" },
+      "last_call": { "name": "Last call" },
+      "ip_phones": { "name": "IP phones" },
+      "dect_handsets": { "name": "DECT handsets" },
+      "phonebooks": { "name": "Phonebooks" },
+      "usb_devices": { "name": "USB devices" },
+      "system_uptime": { "name": "System uptime" },
+      "system_temperature": { "name": "System temperature" },
+      "system_cpu": { "name": "CPU utilization" },
+      "system_memory": { "name": "Memory utilization" },
+      "request_latency": { "name": "Request latency" },
+      "update_failures": { "name": "Update failures" },
+      "last_successful_update": { "name": "Last successful update" },
+      "management_access": {
+        "name": "Management access",
+        "state": {
+          "available": "Available",
+          "blocked": "Session blocked",
+          "locked": "Temporarily locked",
+          "other_session": "Browser session active",
+          "recovering": "Retrying",
+          "unavailable": "Unavailable",
+          "unknown": "Unknown"
+        }
+      }
+    },
+    "binary_sensor": {
+      "internet_connected": { "name": "Internet" },
+      "dsl_connected": { "name": "DSL" },
+      "hybrid_connected": { "name": "Hybrid" },
+      "mobile_connected": { "name": "Mobile network" },
+      "wifi_2_4_enabled": { "name": "2.4 GHz Wi-Fi" },
+      "wifi_5_enabled": { "name": "5 GHz Wi-Fi" },
+      "guest_wifi_enabled": { "name": "Guest Wi-Fi" },
+      "office_wifi_enabled": { "name": "Office Wi-Fi" },
+      "mesh_enabled": { "name": "Mesh" },
+      "dhcp_enabled": { "name": "DHCP server" },
+      "upnp_enabled": { "name": "UPnP" },
+      "ddns_connected": { "name": "Dynamic DNS" },
+      "vpn_connected": { "name": "VPN" },
+      "parental_controls_enabled": { "name": "Parental controls" },
+      "telephony_registered": { "name": "Telephony" },
+      "active_call": { "name": "Active call" },
+      "dect_enabled": { "name": "DECT" },
+      "firewall_enabled": { "name": "Firewall" },
+      "dns_rebind_protection": { "name": "DNS rebind protection" },
+      "remote_management": { "name": "Remote management" },
+      "usb_connected": { "name": "USB device" },
+      "firmware_update_available": { "name": "Firmware update available" },
+      "router_problem": { "name": "Router problem" }
+    },
+    "switch": {
+      "wifi": { "name": "Wi-Fi" },
+      "guest_wifi": { "name": "Guest Wi-Fi" },
+      "office_wifi": { "name": "Office Wi-Fi" },
+      "upnp": { "name": "UPnP" },
+      "ddns": { "name": "Dynamic DNS" },
+      "vpn": { "name": "VPN" },
+      "parental_controls": { "name": "Parental controls" },
+      "media_server": { "name": "Media server" },
+      "port_forward_rule": { "name": "Port forwarding rule" },
+      "client_internet_access": { "name": "Internet access" }
+    },
+    "button": {
+      "retry_protected_data": { "name": "Retry protected data (log out of the router first)" },
+      "wps": { "name": "Start WPS" },
+      "reconnect_internet": { "name": "Reconnect internet" },
+      "restart_dsl": { "name": "Restart DSL" },
+      "reboot_router": { "name": "Reboot router" },
+      "update_ddns": { "name": "Update Dynamic DNS" },
+      "restart_vpn": { "name": "Restart VPN" },
+      "optimize_mesh": { "name": "Optimize Mesh" }
+    },
+    "update": {
+      "firmware": { "name": "Firmware" }
+    }
+  },
+  "issues": {
+    "management_session_blocked": {
+      "title": "A Speedport web session is blocking protected router data",
+      "description": "Another Speedport web session is holding the router's management access, so protected integration data is temporarily unavailable. In the Speedport web interface, select **Logout** before retrying. Closing the browser tab or window may leave the session active. Telekom Speedport Smart will retry access; it will not force the other session to disconnect.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Log out of the Speedport web interface",
+            "description": "Before continuing, use the **Logout** action in the Speedport web interface. Closing the browser tab or window may leave the management session active. After you have logged out, select **Submit** to retry by reloading Telekom Speedport Smart. This does not force the browser session to disconnect."
+          }
+        }
+      }
+    }
+  },
+  "repairs": {
+    "flow": {
+      "step": {
+        "init": {
+          "title": "Resolve Telekom Speedport Smart issue",
+          "description": "Resolve `{issue}` outside Home Assistant, then select **Submit** to reload the integration."
+        }
+      }
+    }
+  }
+}

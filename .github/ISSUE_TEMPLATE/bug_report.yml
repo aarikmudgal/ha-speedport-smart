@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a reproducible problem with Telekom Speedport Smart.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Never post router passwords, session tokens,
+        public IP addresses, serial numbers, raw router responses, or unreviewed
+        diagnostics and logs. Remove phone numbers, MAC addresses, SSIDs, client
+        names, SIM identifiers, and VPN data before submitting.
+
+  - type: input
+    id: integration-version
+    attributes:
+      label: Integration version
+      placeholder: 0.2.0 or 0.2.0-beta.123.1
+    validations:
+      required: true
+
+  - type: input
+    id: home-assistant-version
+    attributes:
+      label: Home Assistant version
+      placeholder: 2026.8.0
+    validations:
+      required: true
+
+  - type: input
+    id: router
+    attributes:
+      label: Router model and firmware
+      placeholder: Speedport Smart 4R Typ A, firmware 010152.5.0.001.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Release channel
+      options:
+        - Stable
+        - Beta from a feat/* branch
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: What happened, and which entities or controls were affected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Relevant logs or diagnostics
+      description: Review and redact the content before pasting it.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials, tokens, raw router data, network and telephony identifiers, and other private data.
+          required: true
+        - label: I searched existing issues for the same problem.
+          required: true

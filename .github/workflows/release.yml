@@ -1,0 +1,200 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+      - "feat/*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-telekom-speedport-smart
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish tested release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Check out tested source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out trusted release tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          path: tooling
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Resolve release metadata
+        id: metadata
+        run: >-
+          python tooling/scripts/release_metadata.py
+          --repository-root source
+          --channel auto
+          --branch "$SOURCE_BRANCH"
+          --run-number "${{ github.run_number }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Build deterministic release assets
+        run: |
+          mkdir -p "$RUNNER_TEMP/telekom-speedport-smart-release"
+          python tooling/scripts/build_release.py \
+            --repository-root source \
+            --version "${{ steps.metadata.outputs.version }}" \
+            --output "$RUNNER_TEMP/telekom-speedport-smart-release/speedport_smart.zip" \
+            --checksums "$RUNNER_TEMP/telekom-speedport-smart-release/SHA256SUMS"
+
+      - name: Check for an existing tag or release
+        id: existing
+        shell: bash
+        env:
+          EXPECT_PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+          LOCAL_ARCHIVE: ${{ runner.temp }}/telekom-speedport-smart-release/speedport_smart.zip
+          STABLE_TAG: v${{ steps.metadata.outputs.base_version }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EXPECT_PRERELEASE" == "true" ]]; then
+            stable_error="$RUNNER_TEMP/stable-tag-error"
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$STABLE_TAG" >/dev/null 2>"$stable_error"; then
+              echo "Stable tag $STABLE_TAG already exists; bump the feature branch base version before publishing a beta." >&2
+              exit 1
+            elif ! grep -q "HTTP 404" "$stable_error"; then
+              cat "$stable_error" >&2
+              exit 1
+            fi
+          fi
+
+          tag_exists=false
+          tag_error="$RUNNER_TEMP/tag-error"
+          if tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>"$tag_error")"; then
+            tag_exists=true
+            tag_type="$(jq -r '.object.type' <<<"$tag_json")"
+            tag_sha="$(jq -r '.object.sha' <<<"$tag_json")"
+            while [[ "$tag_type" == "tag" ]]; do
+              tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")"
+              tag_type="$(jq -r '.object.type' <<<"$tag_json")"
+              tag_sha="$(jq -r '.object.sha' <<<"$tag_json")"
+            done
+            if [[ "$tag_type" != "commit" ]]; then
+              echo "Release tag $TAG does not resolve to a commit." >&2
+              exit 1
+            fi
+            if [[ "$EXPECT_PRERELEASE" == "true" && "$tag_sha" != "$SOURCE_SHA" ]]; then
+              echo "Beta tag $TAG already targets $tag_sha, not tested commit $SOURCE_SHA." >&2
+              exit 1
+            fi
+          elif ! grep -q "HTTP 404" "$tag_error"; then
+            cat "$tag_error" >&2
+            exit 1
+          fi
+
+          release_error="$RUNNER_TEMP/release-error"
+          if release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>"$release_error")"; then
+            actual_prerelease="$(jq -r '.prerelease' <<<"$release_json")"
+            is_draft="$(jq -r '.draft' <<<"$release_json")"
+            if [[ "$tag_exists" != "true" || "$is_draft" != "false" || "$actual_prerelease" != "$EXPECT_PRERELEASE" ]]; then
+              echo "Existing release $TAG conflicts with the expected channel or state." >&2
+              exit 1
+            fi
+            for asset in speedport_smart.zip SHA256SUMS; do
+              if ! jq -e --arg asset "$asset" '.assets[] | select(.name == $asset)' <<<"$release_json" >/dev/null; then
+                echo "Existing release $TAG is missing asset $asset." >&2
+                exit 1
+              fi
+            done
+            existing_assets="$RUNNER_TEMP/existing-$TAG"
+            mkdir -p "$existing_assets"
+            gh release download "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern SHA256SUMS \
+              --pattern speedport_smart.zip \
+              --dir "$existing_assets"
+            declared_digest="$(awk '$2 == "speedport_smart.zip" {print $1}' "$existing_assets/SHA256SUMS")"
+            released_digest="$(sha256sum "$existing_assets/speedport_smart.zip" | awk '{print $1}')"
+            if [[ ! "$declared_digest" =~ ^[0-9a-f]{64}$ || "$released_digest" != "$declared_digest" ]]; then
+              echo "Release $TAG archive does not match its published SHA256SUMS." >&2
+              exit 1
+            fi
+            if ! python tooling/scripts/compare_release.py \
+              --published "$existing_assets/speedport_smart.zip" \
+              --candidate "$LOCAL_ARCHIVE"; then
+              echo "Release $TAG content differs from this commit; bump the source version." >&2
+              exit 1
+            fi
+            if [[ "$EXPECT_PRERELEASE" == "false" && "$tag_sha" != "$SOURCE_SHA" ]]; then
+              echo "Stable release $TAG already exists for this unchanged source version; tested commit $SOURCE_SHA is a successful no-op."
+            else
+              echo "Release $TAG already exists with the expected assets; nothing to publish."
+            fi
+            echo "skip=true" >>"$GITHUB_OUTPUT"
+          elif grep -q "HTTP 404" "$release_error"; then
+            if [[ "$tag_exists" == "true" ]]; then
+              echo "Tag $TAG exists without a complete GitHub release; refusing the collision." >&2
+              exit 1
+            fi
+            echo "skip=false" >>"$GITHUB_OUTPUT"
+          else
+            cat "$release_error" >&2
+            exit 1
+          fi
+          echo "tag_exists=$tag_exists" >>"$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        if: steps.existing.outputs.skip != 'true'
+        shell: bash
+        env:
+          ARCHIVE: ${{ runner.temp }}/telekom-speedport-smart-release/speedport_smart.zip
+          CHECKSUMS: ${{ runner.temp }}/telekom-speedport-smart-release/SHA256SUMS
+          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+          RELEASE_NAME: ${{ steps.metadata.outputs.release_name }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          TAG_EXISTS: ${{ steps.existing.outputs.tag_exists }}
+        run: |
+          set -euo pipefail
+          args=(release create "$TAG" "$ARCHIVE" "$CHECKSUMS" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_NAME" \
+            --generate-notes)
+
+          if [[ "$TAG_EXISTS" == "true" ]]; then
+            args+=(--verify-tag)
+          else
+            args+=(--target "$SOURCE_SHA")
+          fi
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+
+          gh "${args[@]}"

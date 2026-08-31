@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/*"
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Minimum Home Assistant, frontend, and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install -e '.[test]'
+
+      - name: Lint Python
+        run: ruff check .
+
+      - name: Check Python formatting
+        run: ruff format --check .
+
+      - name: Type-check integration
+        run: mypy custom_components/speedport_smart
+
+      - name: Validate English translations
+        run: python scripts/check_translations.py
+
+      - name: Validate repository and release metadata
+        run: python scripts/release_metadata.py
+
+      - name: Check frontend syntax
+        run: node --check custom_components/speedport_smart/frontend/speedport-smart-panel.js
+
+      - name: Run tests
+        run: pytest
+
+      - name: Build and verify HACS release assets
+        run: |
+          python scripts/build_release.py \
+            --output build/speedport_smart.zip \
+            --checksums build/SHA256SUMS
+          python scripts/compare_release.py \
+            --published build/speedport_smart.zip \
+            --candidate build/speedport_smart.zip
+
+  current-home-assistant:
+    name: Current Home Assistant compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install current Home Assistant test dependencies
+        run: python -m pip install -e . -r requirements-test-current.txt
+
+      - name: Run tests against current Home Assistant
+        run: pytest
+
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate with Hassfest
+        uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master, 2026-08-31
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate with HACS
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main, 2026-08-31
+        with:
+          category: integration
