@@ -218,23 +218,12 @@
   "issues": {
     "management_session_blocked": {
       "title": "A Speedport web session is blocking protected router data",
-      "description": "Another Speedport web session is holding the router's management access, so protected integration data is temporarily unavailable. In the Speedport web interface, select **Logout** before retrying. Closing the browser tab or window may leave the session active. Telekom Speedport Smart will retry access; it will not force the other session to disconnect.",
       "fix_flow": {
         "step": {
           "init": {
             "title": "Log out of the Speedport web interface",
             "description": "Before continuing, use the **Logout** action in the Speedport web interface. Closing the browser tab or window may leave the management session active. After you have logged out, select **Submit** to retry by reloading Telekom Speedport Smart. This does not force the browser session to disconnect."
           }
-        }
-      }
-    }
-  },
-  "repairs": {
-    "flow": {
-      "step": {
-        "init": {
-          "title": "Resolve Telekom Speedport Smart issue",
-          "description": "Resolve `{issue}` outside Home Assistant, then select **Submit** to reload the integration."
         }
       }
     }

@@ -86,7 +86,7 @@ jobs:
           cache: pip
 
       - name: Install current Home Assistant test dependencies
-        run: python -m pip install -e . -r requirements-test-current.txt
+        run: python -m pip install -r requirements-test-current.txt
 
       - name: Run tests against current Home Assistant
         run: pytest

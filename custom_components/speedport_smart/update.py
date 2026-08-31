@@ -45,8 +45,10 @@ class SpeedportFirmwareUpdate(SpeedportEntity, UpdateEntity):
             "firmware",
             data_path="system.latest_firmware",
         )
+        if supported(hub, "system", "system.firmware_update_progress"):
+            self._attr_supported_features |= UpdateEntityFeature.PROGRESS
         if hub.supports_command("firmware_update"):
-            self._attr_supported_features = UpdateEntityFeature.INSTALL
+            self._attr_supported_features |= UpdateEntityFeature.INSTALL
 
     @property
     def installed_version(self) -> str | None:
@@ -67,10 +69,20 @@ class SpeedportFirmwareUpdate(SpeedportEntity, UpdateEntity):
         return str(raw) if raw is not None else None
 
     @property
-    def in_progress(self) -> bool | int | None:
+    def in_progress(self) -> bool | None:
         """Return firmware installation progress."""
         raw = self.hub.get("system.firmware_update_progress")
-        if isinstance(raw, bool | int):
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, int | float):
+            return raw > 0
+        return None
+
+    @property
+    def update_percentage(self) -> int | float | None:
+        """Return firmware installation percentage."""
+        raw = self.hub.get("system.firmware_update_progress")
+        if isinstance(raw, int | float) and not isinstance(raw, bool):
             return raw
         return None
 

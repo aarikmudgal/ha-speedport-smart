@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_component
 
 from custom_components.speedport_smart import (
     _async_reload_entry,
@@ -63,7 +64,13 @@ async def test_setup_unload_and_reload(
     """Lifecycle stores hub in runtime_data and closes it only after unload."""
     entry = _entry()
     entry.add_to_hass(hass)
+    for dependency in ("frontend", "http", "panel_custom", "websocket_api"):
+        mock_component(hass, dependency)
     with (
+        patch(
+            "custom_components.speedport_smart.async_register_panel",
+            AsyncMock(),
+        ),
         patch(
             "custom_components.speedport_smart.SpeedportClient",
             return_value=mock_speedport_client,
@@ -78,9 +85,10 @@ async def test_setup_unload_and_reload(
             AsyncMock(),
         ) as forward,
     ):
-        assert await async_setup_entry(hass, entry)
+        assert await hass.config_entries.async_setup(entry.entry_id)
 
     hub = entry.runtime_data
+    assert entry.state is ConfigEntryState.LOADED
     assert hub.controls_enabled
     assert hub.coordinator(PollGroup.FAST).update_interval == timedelta(seconds=6)
     assert hub.coordinator(PollGroup.NORMAL).update_interval == timedelta(seconds=31)
@@ -93,7 +101,8 @@ async def test_setup_unload_and_reload(
         "async_unload_platforms",
         AsyncMock(return_value=True),
     ) as unload:
-        assert await async_unload_entry(hass, entry)
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    assert entry.state is ConfigEntryState.NOT_LOADED
     unload.assert_awaited_once_with(entry, PLATFORMS)
     mock_speedport_client.close.assert_awaited_once()
 

@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
+from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.const import EntityCategory
 
 from custom_components.speedport_smart.button import (
@@ -323,8 +324,9 @@ async def test_firmware_update_metadata_is_read_only_without_command(
     assert entity.installed_version == "010152.5.0.001.0"
     assert entity.latest_version == "010152.6.0.001.0"
     assert entity.release_url == "https://example.invalid/release"
-    assert entity.in_progress == 25
-    assert entity.supported_features == 0
+    assert entity.in_progress is True
+    assert entity.update_percentage == 25
+    assert entity.supported_features == UpdateEntityFeature.PROGRESS
     entry = MagicMock(runtime_data=hub)
     added: list[SpeedportFirmwareUpdate] = []
     await async_setup_updates(hass, entry, added.extend)
@@ -333,7 +335,9 @@ async def test_firmware_update_metadata_is_read_only_without_command(
     hub.supports_command = MagicMock(return_value=True)
     hub.async_execute = AsyncMock()
     writable = SpeedportFirmwareUpdate(hub)
-    assert writable.supported_features
+    assert writable.supported_features == (
+        UpdateEntityFeature.PROGRESS | UpdateEntityFeature.INSTALL
+    )
     await writable.async_install("010152.6.0.001.0", backup=False)
     hub.async_execute.assert_awaited_once_with(
         "firmware_update",
@@ -345,3 +349,4 @@ async def test_firmware_update_metadata_is_read_only_without_command(
         {"system": {"firmware_update_progress": "unknown"}}
     )
     assert writable.in_progress is None
+    assert writable.update_percentage is None
