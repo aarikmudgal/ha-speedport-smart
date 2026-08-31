@@ -70,24 +70,19 @@ These settings cannot be proven by files in a local checkout.
 
 ## Brand delivery
 
-Current HACS validation accepts the bundled
-**custom_components/speedport_smart/brand/icon.png** directly. Because this
-integration also supports Home Assistant 2025.12, submitting the same assets to
-Home Assistant Brands is recommended for consistent icon delivery on versions
-before local custom-integration brand support:
+The release archive includes **brand/icon.png** and **brand/icon@2x.png** in the
+integration directory. This is the supported delivery method for custom
+integrations starting with Home Assistant 2026.3, where local assets take
+precedence over the Brands CDN.
 
-~~~text
-home-assistant/brands/
-└── custom_integrations/
-    └── speedport_smart/
-        ├── icon.png
-        └── icon@2x.png
-~~~
+The **custom_integrations** folder in **home-assistant/brands** is now legacy,
+so do not open a new Brands pull request for this custom integration. On Home
+Assistant 2025.12 through 2026.2 the integration remains functional, but its
+locally bundled icon may be shown as a generic placeholder. Verify icon
+presentation on the current Home Assistant and HACS versions during the clean
+install smoke test.
 
-That is a separate pull request to
-**https://github.com/home-assistant/brands**. Follow its current image
-requirements and trademark guidance. The bundled brand directory remains
-required for the integration package.
+Reference: **https://developers.home-assistant.io/docs/core/integration/brand_images/**
 
 ## First stable release
 
