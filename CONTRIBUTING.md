@@ -32,7 +32,7 @@ Python 3.13.2 or newer is required.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e '.[test]'
+python -m pip install '.[test]'
 ~~~
 
 Run the local quality gates before opening a pull request:
