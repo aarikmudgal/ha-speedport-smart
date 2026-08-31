@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.device_tracker.config_entry import TrackerEntity
 from homeassistant.components.device_tracker.const import SourceType
+from homeassistant.const import STATE_HOME, STATE_NOT_HOME
 from homeassistant.core import callback
 
 from .coordinator import PollGroup
@@ -105,6 +106,11 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
             return as_bool(item.get("connected", item.get("active", True)))
         except ValueError:
             return False
+
+    @property
+    def state(self) -> str:
+        """Return the network-derived Home Assistant presence state."""
+        return STATE_HOME if self.is_connected else STATE_NOT_HOME
 
     @property
     def source_type(self) -> SourceType:

@@ -10,7 +10,8 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Changed
 
-- Nothing yet.
+- Client presence entities now report `home` or `not_home` from router
+  connectivity instead of remaining `unknown`.
 
 ## [0.1.0] - 2026-08-31
 
