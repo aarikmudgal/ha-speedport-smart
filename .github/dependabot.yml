@@ -26,9 +26,12 @@ updates:
       python-development-dependencies:
         dependency-type: development
     ignore:
-      # These exact pins intentionally test different Home Assistant releases.
+      # These exact fixture pins intentionally test separate HA releases.
       - dependency-name: pytest-homeassistant-custom-component
+      # HA 2025.12's aiodns 3.x cannot use pycares 5's breaking API.
       - dependency-name: pycares
+        update-types:
+          - version-update:semver-major
     labels:
       - dependencies
     open-pull-requests-limit: 5
