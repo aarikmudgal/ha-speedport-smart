@@ -25,6 +25,9 @@ updates:
     groups:
       python-development-dependencies:
         dependency-type: development
+    ignore:
+      # These exact pins intentionally test different Home Assistant releases.
+      - dependency-name: pytest-homeassistant-custom-component
     labels:
       - dependencies
     open-pull-requests-limit: 5
