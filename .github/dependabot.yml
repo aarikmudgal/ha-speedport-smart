@@ -28,6 +28,7 @@ updates:
     ignore:
       # These exact pins intentionally test different Home Assistant releases.
       - dependency-name: pytest-homeassistant-custom-component
+      - dependency-name: pycares
     labels:
       - dependencies
     open-pull-requests-limit: 5
