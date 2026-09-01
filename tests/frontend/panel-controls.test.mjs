@@ -50,6 +50,16 @@ const RETRY_META = Object.freeze({
   translation_key: "retry_protected_data",
 });
 
+const RECONNECT_META = Object.freeze({
+  confirmation: "confirm",
+  control: true,
+  disruptive: true,
+  domain: "button",
+  entity_id: "button.speedport_reconnect_internet",
+  risk: "disruptive",
+  translation_key: "reconnect_internet",
+});
+
 function pendingAction(overrides = {}) {
   return {
     actionLabel: "Turn off",
@@ -150,6 +160,26 @@ test("protected-data retry remains callable during management backoff", async ()
   assert.deepEqual(fixture.calls, [
     ["button", "press", { entity_id: RETRY_META.entity_id }],
   ]);
+});
+
+test("reconnect confirmation warns that telephones and emergency calls are unavailable", () => {
+  for (const [language, expected] of [
+    ["en", [/all telephones connected to this router/, /emergency calls/]],
+    ["de", [/alle an diesem Router angeschlossenen Telefone/, /Notrufe/]],
+  ]) {
+    const fixture = panelFixture({
+      meta: RECONNECT_META,
+      pending: null,
+      state: "unknown",
+    });
+    fixture.panel._hass.language = language;
+
+    fixture.panel._prepareAction(RECONNECT_META.entity_id);
+
+    for (const fragment of expected) {
+      assert.match(fixture.panel._pendingAction?.message, fragment);
+    }
+  }
 });
 
 test("retry-key collisions never prepare or execute a control", async () => {

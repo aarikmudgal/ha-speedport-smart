@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=10";
+import { keepDialogFocus } from "./accessibility.js?schema=11";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=10";
+} from "./controls.js?schema=11";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=10";
+} from "./entity-state.js?schema=11";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=10";
+} from "./render-state.js?schema=11";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=10";
+} from "./translations.js?schema=11";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 10;
+const PANEL_SCHEMA_VERSION = 11;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -726,7 +726,7 @@ export const ADMIN_IA = Object.freeze([
       icon: "mdi:phone-outline",
       features: [
         fixedAdminFeature("telephony_analog_sockets", {
-          capabilities: ["telephony", "analog_telephony"],
+          capabilities: ["telephony", "analog"],
         }),
       ],
     }),
@@ -2440,6 +2440,11 @@ export class SpeedportSmartPanel extends HTMLElement {
             : "confirm.select",
         { label },
       );
+    } else if (
+      meta.domain === "button" &&
+      meta.translation_key === "reconnect_internet"
+    ) {
+      message = this._t("confirm.reconnect");
     } else if (
       meta.domain === "button" &&
       meta.translation_key === "retry_protected_data"

@@ -249,6 +249,10 @@ test("fixed Administration manifest places reviewed controls and collections", (
     "switch:wifi",
     "text:client_name",
   ]);
+  const analogFeature = ADMIN_IA.flatMap((area) => area.subsections)
+    .flatMap((subsection) => subsection.features)
+    .find((feature) => feature.id === "telephony_analog_sockets");
+  assert.deepEqual(analogFeature.capabilities, ["telephony", "analog"]);
   assert.deepEqual(adminPlacementFor(CONFIG_META), {
     areaId: "network",
     subsectionId: "network_wifi",
