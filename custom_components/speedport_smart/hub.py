@@ -69,6 +69,8 @@ FAST_FAMILIES: Final[frozenset[str]] = frozenset()
 _MIN_RATE_SAMPLES: Final = 2
 _RATE_RETENTION_WINDOWS: Final = 2.0
 _WAN_TRANSIENT_GRACE_FAILURES: Final = 3
+_WAN_BUSY_RETRY_SECONDS: Final = 5.0
+_WAN_BUSY_MAX_RETRY_SECONDS: Final = 60.0
 _DSL_TRANSIENT_RETRY_SECONDS: Final = 60.0
 _DSL_UNSUPPORTED_RETRY_SECONDS: Final = 300.0
 _DSL_MAX_RETRY_SECONDS: Final = 3_600.0
@@ -192,6 +194,7 @@ class SpeedportHub:
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
         self._wan_counter_probe_pending = False
         self._wan_counter_failures = 0
+        self._wan_counter_retry_at = 0.0
         self._dsl_metrics_failures = 0
         self._dsl_metrics_retry_at = 0.0
         self._transition_values: dict[str, Any] = {}
@@ -701,17 +704,25 @@ class SpeedportHub:
         self._capabilities = self._capabilities | inferred_capabilities
 
         wan_counters_confirmed = self.has_capability("wan_counters")
-        wan_retry_deferred = (
+        management_retry_deferred = (
             self._management_state
             in {"blocked", "locked", "other_session", "unavailable"}
             and self._monotonic_time() < self._protected_retry_at
         )
-        if wan_retry_deferred:
+        wan_retry_deferred = self._monotonic_time() < self._wan_counter_retry_at
+        if management_retry_deferred:
             self._counter_samples.clear()
             if wan_counters_confirmed:
                 partial["wan"] = _deep_merge_dicts(
                     cast("dict[str, Any]", partial.get("wan", {})),
                     self._unavailable_wan_values(),
+                )
+        elif wan_retry_deferred:
+            self._counter_samples.clear()
+            if wan_counters_confirmed:
+                partial["wan"] = _deep_merge_dicts(
+                    cast("dict[str, Any]", partial.get("wan", {})),
+                    self._unavailable_wan_live_values(),
                 )
         elif wan_counters_confirmed or self._wan_counter_probe_pending:
             try:
@@ -719,17 +730,16 @@ class SpeedportHub:
             except SpeedportSessionBusyError as err:
                 self._counter_samples.clear()
                 self._endpoint_errors["wan_counters"] = type(err).__name__
-                self._mark_management_busy(err)
-                partial = self._invalidate_authenticated_families(
-                    partial, error_name=type(err).__name__
-                )
+                degraded = self._degraded_wan_values()
+                self._defer_wan_counter_retry()
                 if wan_counters_confirmed:
                     partial["wan"] = _deep_merge_dicts(
                         cast("dict[str, Any]", partial.get("wan", {})),
-                        self._unavailable_wan_values(),
+                        degraded,
                     )
             except SpeedportUnsupportedError as err:
                 self._counter_samples.clear()
+                self._wan_counter_retry_at = 0.0
                 if not wan_counters_confirmed:
                     self._wan_counter_probe_pending = False
                     self._endpoint_errors.pop("wan_counters", None)
@@ -751,6 +761,7 @@ class SpeedportHub:
             else:
                 self._wan_counter_probe_pending = False
                 self._wan_counter_failures = 0
+                self._wan_counter_retry_at = 0.0
                 self._confirm_tr064_capability(wan_counters=True)
                 self._endpoint_errors.pop("wan_counters", None)
                 partial["wan"] = _deep_merge_dicts(
@@ -779,10 +790,6 @@ class SpeedportHub:
             except SpeedportSessionBusyError as err:
                 self._defer_dsl_metrics_retry(unsupported=False)
                 self._endpoint_errors["dsl_metrics"] = type(err).__name__
-                self._mark_management_busy(err)
-                partial = self._invalidate_authenticated_families(
-                    partial, error_name=type(err).__name__
-                )
                 partial = _deep_merge_dicts(
                     partial,
                     {"dsl": self._unavailable_dsl_optional_values()},
@@ -854,6 +861,15 @@ class SpeedportHub:
         exponent = min(self._dsl_metrics_failures - 1, 6)
         delay = min(base * (2**exponent), _DSL_MAX_RETRY_SECONDS)
         self._dsl_metrics_retry_at = self._monotonic_time() + delay
+
+    def _defer_wan_counter_retry(self) -> None:
+        """Back off a transient ToTR64 counter lease without blocking web access."""
+        exponent = min(max(self._wan_counter_failures - 1, 0), 4)
+        delay = min(
+            _WAN_BUSY_RETRY_SECONDS * (2**exponent),
+            _WAN_BUSY_MAX_RETRY_SECONDS,
+        )
+        self._wan_counter_retry_at = self._monotonic_time() + delay
 
     def _confirm_tr064_capability(
         self,

@@ -171,21 +171,28 @@ async def test_rate_delta_and_counter_reset(
     assert reset_data["upload_rate_bps"] is None
 
 
-async def test_fast_wan_poll_respects_management_session_backoff(
+async def test_fast_wan_busy_uses_telemetry_backoff_only(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """A busy management lease is not hammered by every fast poll."""
+    """A busy ToTR64 lease backs off counters without blocking web controls."""
+    now = [100.0]
     mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
         "busy"
     )
-    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: now[0],
+    )
     await hub.async_setup()
 
     await hub.async_update_group(PollGroup.FAST)
-    assert hub.get("management.access.state") == "blocked"
+    assert hub.get("management.access.state") == "available"
     assert hub.get("wan.download_rate_bps") is None
     assert mock_speedport_client.get_wan_counters.await_count == 1
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
 
     mock_speedport_client.get_wan_counters.side_effect = None
     mock_speedport_client.get_wan_counters.return_value = WanCounters(
@@ -197,7 +204,12 @@ async def test_fast_wan_poll_respects_management_session_backoff(
     await hub.async_update_group(PollGroup.FAST)
 
     assert mock_speedport_client.get_wan_counters.await_count == 1
-    assert hub.get("management.access.state") == "blocked"
+    assert hub.get("management.access.state") == "available"
+
+    now[0] = 106.0
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_wan_counters.await_count == 2
+    assert hub.get("management.access.state") == "available"
 
 
 async def test_transitions_and_fallback_identity(
@@ -441,8 +453,11 @@ async def test_protected_failure_invalidates_every_poll_group_immediately(
     hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
     mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
 
-    await hub.async_update_group(PollGroup.NORMAL)
+    with patch.object(hub, "_create_management_issue") as create_issue:
+        await hub.async_update_group(PollGroup.NORMAL)
 
+    assert hub.get("management.access.state") == "blocked"
+    create_issue.assert_called_once_with()
     assert hub.get("wifi.enabled") is None
     assert hub.get("nat.port_forwarding_enabled") is None
     assert hub.get("internet.state") is True
@@ -456,11 +471,11 @@ async def test_protected_failure_invalidates_every_poll_group_immediately(
     slow_coordinator.async_set_updated_data.assert_not_called()
 
 
-async def test_fast_wan_busy_invalidates_protected_poll_groups_immediately(
+async def test_fast_wan_busy_preserves_protected_poll_groups(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """A busy WAN counter request cannot leave protected family caches usable."""
+    """A busy ToTR64 counter request degrades only live WAN telemetry."""
     mock_speedport_client.setup.return_value = CapabilityReport(
         status_json=True,
         tr064=True,
@@ -511,37 +526,37 @@ async def test_fast_wan_busy_invalidates_protected_poll_groups_immediately(
         "busy"
     )
 
-    await hub.async_update_group(PollGroup.FAST)
+    with patch.object(hub, "_create_management_issue") as create_issue:
+        await hub.async_update_group(PollGroup.FAST)
 
-    assert hub.get("management.access.state") == "blocked"
-    for path in (
-        "wan.bytes_received",
-        "wan.bytes_sent",
-        "wan.packets_received",
-        "wan.packets_sent",
-        "wan.errors_received",
-        "wan.errors_sent",
-        "wan.download_rate_bps",
-        "wan.upload_rate_bps",
-    ):
-        assert hub.get(path) is None
-    assert hub.get("wifi.enabled") is None
-    assert hub.get("nat.port_forwarding_enabled") is None
+    assert hub.get("management.access.state") == "available"
+    create_issue.assert_not_called()
+    assert hub.get("wan.bytes_received") == 10_000
+    assert hub.get("wan.bytes_sent") == 5_000
+    assert hub.get("wan.packets_received") == 100
+    assert hub.get("wan.packets_sent") == 50
+    assert hub.get("wan.errors_received") == 2
+    assert hub.get("wan.errors_sent") == 1
+    assert hub.get("wan.download_rate_bps") is None
+    assert hub.get("wan.upload_rate_bps") is None
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("nat.port_forwarding_enabled") is True
     assert hub.get("internet.state") is True
-    normal_coordinator.async_set_updated_data.assert_called_once()
-    slow_coordinator.async_set_updated_data.assert_called_once()
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+    normal_coordinator.async_set_updated_data.assert_not_called()
+    slow_coordinator.async_set_updated_data.assert_not_called()
 
     counter_requests = mock_speedport_client.get_wan_counters.await_count
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == counter_requests
-    assert hub.get("wan.bytes_received") is None
+    assert hub.get("wan.bytes_received") == 10_000
 
 
-async def test_dsl_busy_invalidates_protected_poll_groups_immediately(
+async def test_dsl_busy_degrades_only_dsl_telemetry(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """A busy DSL request cannot republish fresh-looking protected families."""
+    """A busy ToTR64 DSL request does not block the web management session."""
     mock_speedport_client.setup.return_value = CapabilityReport(
         status_json=True,
         tr064=True,
@@ -595,16 +610,19 @@ async def test_dsl_busy_invalidates_protected_poll_groups_immediately(
         "busy"
     )
 
-    await hub.async_update_group(PollGroup.NORMAL)
+    with patch.object(hub, "_create_management_issue") as create_issue:
+        await hub.async_update_group(PollGroup.NORMAL)
 
-    assert hub.get("management.access.state") == "blocked"
-    assert hub.get("wifi.enabled") is None
-    assert hub.get("nat.port_forwarding_enabled") is None
+    assert hub.get("management.access.state") == "available"
+    create_issue.assert_not_called()
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("nat.port_forwarding_enabled") is True
     assert hub.get("internet.state") is True
     assert hub.get("dsl.downstream_bps") == 204_413_000
     assert hub.get("dsl.snr_downstream_db") is None
     assert hub.get("dsl.attainable_downstream_bps") is None
-    slow_coordinator.async_set_updated_data.assert_called_once()
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+    slow_coordinator.async_set_updated_data.assert_not_called()
 
 
 async def test_invalid_credentials_clear_other_poll_groups_before_reauth(
