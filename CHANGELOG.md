@@ -17,6 +17,11 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   validation.
 - German integration and dashboard translations.
 - Expanded management safety, dashboard, and protocol regression coverage.
+- Adaptive WAN-counter polling that learns the fastest proven cadence, exposes
+  its live mode and state, and backs off safely when the router reports a busy
+  telemetry lease.
+- A bounded, GET-only developer utility for sanitized UPnP/TR-064 service
+  descriptor inventory.
 
 ### Changed
 
@@ -37,9 +42,11 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   allowance and is not inverted into an unproven pause control.
 - Write controls now require both a current capability and the exact reviewed
   Smart 4R Typ A firmware contract; unknown firmware remains read-only.
-- Known session contention immediately clears cumulative WAN and optional DSL
-  telemetry, while indeterminate command timeouts back off before another
-  action can be sent.
+- WAN and public-status polling use independent due times, so a failure in one
+  source cannot starve the other. Confirmed cumulative WAN counters retain
+  their last sample while live rates and interface state become unavailable.
+- Fixed controls and telemetry entities discovered after a degraded startup
+  are added without requiring an integration reload.
 - Dynamic child entities use localized names, distinct port-forwarding rules
   retain their router-provided labels, and invalid legacy client names remain
   safely read-only.

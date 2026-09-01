@@ -15,6 +15,14 @@ Official sources:
 - [Speedport Smart series support page](https://www.telekom.de/hilfe/geraete/router/speedport/smart-serie).
 - [Telekom manual configuration guide](https://www.telekom.de/hilfe/hilfe-bei-stoerungen/speedport-manuell-konfigurieren).
 
+Official developer and protocol sources:
+
+- [Broadband Forum TR-064 Issue 2](https://www.broadband-forum.org/pdfs/tr-064-2-0-0.pdf), the current LAN-side CPE configuration architecture.
+- [UPnP ConfigurationManagement:2](https://www.upnp.org/specs/dm/UPnP-dm-ConfigurationManagement-v2-Service-20120216.pdf) and [BasicManagement:2](https://upnp.org/specs/dm/UPnP-dm-BasicManagement-v2-Service.pdf), which define generic configuration and maintenance actions used by TR-064 Issue 2.
+- [Broadband Forum TR-181 Device:2](https://device-data-model.broadband-forum.org/), which defines standard router data-model objects and writable attributes, but not a Speedport endpoint catalogue.
+- [UPnP Internet Gateway Device 2](https://openconnectivity.org/developer/specifications/upnp-resources/upnp/internet-gateway-device-igd-v-2-0/), including standardized WAN, port-mapping, IPv6 pinhole, DHCP/LAN, routing, and WLAN service descriptions.
+- [Telekom's public developer catalogue](https://developer.telekom.com/en/products), which does not publish a Speedport-local management API.
+
 The official sources document the web interface and user-visible behavior. They do not publish the private `data/*.json` request contracts used by the interface. Endpoint evidence from the current repository and the following public projects is reverse-engineering evidence, not an official Telekom API:
 
 - [Andre0512/speedport-api](https://github.com/Andre0512/speedport-api/blob/main/speedport/api.py)
@@ -25,6 +33,8 @@ Evidence labels used in the tables:
 | Label | Meaning |
 | --- | --- |
 | `OFF` | The official manual documents the feature. This proves that the firmware UI has the feature, not its HTTP request contract. |
+| `SPEC` | An official protocol specification defines an action or writable object. This proves only that a conforming device may expose it. |
+| `ADVERTISED` | The connected router's device description and SCPD list the exact service, action, arguments, and control URL. Advertisement still does not prove authorization or successful execution. |
 | `REPO` | The current integration has an exact request implementation and state handling for the stated subset. |
 | `PUB` | A non-official public implementation or downloaded web resource suggests an endpoint or field. It remains a candidate until checked on the target firmware. |
 | `GET` | A sanitized, authenticated, read-only local response is still required. Login and logout requests are allowed; no setting or action request is sent. |
@@ -32,6 +42,38 @@ Evidence labels used in the tables:
 | `ROUNDTRIP` | One explicit, user-authorized reversible change and restoration is required after `GET` and `FORM` are complete. |
 | `MAINT` | A user-authorized maintenance-window validation, current backup, and recovery procedure are required. |
 | `VARIANT` | Capability gating must be checked on another relevant model, firmware, provider, or hardware state. |
+
+## Developer/API evidence boundary
+
+TR-064 Issue 2 uses the generic `ConfigurationManagement:2` actions
+`SetValues`, `CreateInstance`, `DeleteInstance`, and `SetAttributes`. The
+service specification marks these mutators optional, permits authorization to
+reject them, and allows LAN management to expose only a subset of the provider
+data model. `BasicManagement:2` similarly defines maintenance and diagnostic
+actions, but an action is not available merely because the standard names it.
+
+UPnP IGD defines service-specific actions such as WAN reconnect, port-mapping
+creation and deletion, IPv6 pinholes, DHCP/LAN setters, and WLAN setters. They
+are candidates only when this router advertises the matching service and SCPD.
+The live device description supplies `serviceType`, `SCPDURL`, and
+`controlURL`; the SCPD supplies the authoritative action and argument list.
+Advertisement is still below executable proof because authentication, current
+state, or firmware policy may reject a conforming action.
+
+No public Telekom developer manual was found for the Speedport
+`data/*.json` interface. The Smart 4R manual also does not publish a TR-064
+port, service list, SCPD, authentication scheme, or action catalogue. A Smart
+4 Plus manual documents TR-064 on TCP 5543 and 8443, but that is family context
+and is not evidence for Smart 4R Typ A. Proprietary JSON routes therefore stay
+firmware-specific and unsupported until independently proven.
+
+The current exact-firmware GET-only traversal is graph-complete but not
+write-complete: it inspected 49 pages and 54 assets and found 15 browser POST
+call sites, while retaining no complete save form. Static names and request
+shapes cannot prove authorization, positive acknowledgement, stable identity,
+or readback. A write becomes supported only after `ADVERTISED` or exact local
+route proof, a complete form, positive acknowledgement semantics, independent
+readback, and the required user-authorized roundtrip.
 
 Write blockers used below:
 
