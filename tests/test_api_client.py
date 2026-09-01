@@ -472,6 +472,59 @@ def test_observed_schema_inventory_is_strictly_bounded() -> None:
     assert client.observed_feature_schema["mesh"] == ()
 
 
+def test_all_default_probe_candidate_metadata_is_privacy_safe() -> None:
+    """Every built-in candidate can be named without host or response data."""
+    session = _FakeSession()
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+
+    for family, candidates in DEFAULT_FEATURE_CANDIDATES.items():
+        for candidate in candidates:
+            client._observe_candidate_data(family, candidate, {})  # noqa: SLF001
+
+    snapshot = client.observed_candidate_schema
+    assert set(snapshot) == set(DEFAULT_FEATURE_CANDIDATES)
+    for family, candidates in DEFAULT_FEATURE_CANDIDATES.items():
+        assert {
+            (
+                candidate["endpoint"],
+                candidate["authenticated"],
+                candidate["referer"],
+            )
+            for candidate in snapshot[family]
+        } == {
+            (candidate.endpoint, candidate.authenticated, candidate.referer)
+            for candidate in candidates
+        }
+        assert all(candidate["schema"] == () for candidate in snapshot[family])
+
+    assert "speedport.ip" not in repr(snapshot)
+    assert session.requests == []
+
+
+def test_observed_candidate_schema_metadata_is_strictly_bounded() -> None:
+    """Candidate diagnostics cap entries globally and within each family."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+
+    for family_index in range(24):
+        family = f"candidate_{family_index}"
+        for endpoint_index in range(10):
+            candidate = EndpointCapability(
+                family,
+                f"data/Candidate{family_index}_{endpoint_index}.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+            )
+            client._observe_candidate_data(  # noqa: SLF001
+                family,
+                candidate,
+                {"energy": True},
+            )
+
+    snapshot = client.observed_candidate_schema
+    assert sum(len(candidates) for candidates in snapshot.values()) == 128
+    assert all(len(candidates) <= 8 for candidates in snapshot.values())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "base_kwargs"),
@@ -2198,6 +2251,201 @@ async def test_probe_rejects_detail_evidence_the_normalizer_does_not_consume(
 
     assert family not in report.feature_endpoints
     assert family in report.failures
+
+
+@pytest.mark.asyncio
+async def test_probe_records_only_safe_successful_candidate_schemas() -> None:
+    """Probe diagnostics retain successful structures, never values or failures."""
+    candidates = {
+        "energy": (
+            EndpointCapability(
+                "energy",
+                "data/EnergyPreview.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("power",),
+            ),
+            EndpointCapability(
+                "energy",
+                "data/Energy.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("energy",),
+            ),
+            EndpointCapability(
+                "energy",
+                "data/EnergyUnused.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("energy",),
+            ),
+        ),
+        "logs": (
+            EndpointCapability(
+                "logs",
+                "data/SystemMessages.json",
+                authenticated=True,
+                referer="html/content/config/system_messages.html",
+                evidence_keys=("message",),
+            ),
+        ),
+        "unsafe_metadata": (
+            EndpointCapability(
+                "unsafe_metadata",
+                "data/aabbccddeeff.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("energy",),
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        if endpoint == "data/EnergyPreview.json":
+            return {
+                "status": "private-value",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "hostname": "private-client",
+                        "aa:bb:cc:dd:ee:ff": "private-mac-key",
+                    }
+                ],
+                "router_password": "private-password",
+            }
+        if endpoint == "data/Energy.json":
+            return {
+                "energy": {"enabled": True, "id": "private-identifier"},
+                "serial_number": "private-serial",
+            }
+        if endpoint == "data/SystemMessages.json":
+            raise SpeedportUnsupportedError("endpoint unavailable")
+        if endpoint == "data/aabbccddeeff.json":
+            return {"energy": True}
+        raise AssertionError(f"Unexpected candidate read: {endpoint}")
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(side_effect=feature_payload)) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    snapshot = client.observed_candidate_schema
+    assert "energy" in report.feature_endpoints
+    assert "logs" in report.failures
+    assert tuple(snapshot) == ("energy",)
+    assert get.await_count == 4
+    assert "data/EnergyUnused.json" not in {
+        call_args.args[0] for call_args in get.await_args_list
+    }
+    assert [candidate["endpoint"] for candidate in snapshot["energy"]] == [
+        "data/EnergyPreview.json",
+        "data/Energy.json",
+    ]
+    assert snapshot["energy"][0]["referer"] == "html/content/config/energy.html"
+    assert snapshot["energy"][0]["authenticated"] is True
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in snapshot["energy"][0]["schema"]  # type: ignore[union-attr]
+    } == {
+        ("status", "string"),
+        ("rows", "array"),
+        ("rows[]", "object"),
+        ("rows[].enabled", "boolean"),
+    }
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in snapshot["energy"][1]["schema"]  # type: ignore[union-attr]
+    } == {
+        ("energy", "object"),
+        ("energy.enabled", "boolean"),
+    }
+    rendered = repr(snapshot)
+    for forbidden in (
+        "private-value",
+        "private-client",
+        "private-mac-key",
+        "private-password",
+        "private-identifier",
+        "private-serial",
+        "hostname",
+        "router_password",
+        "serial_number",
+        "aa:bb:cc:dd:ee:ff",
+        "data/SystemMessages.json",
+        "data/EnergyUnused.json",
+        "data/aabbccddeeff.json",
+    ):
+        assert forbidden not in rendered
+
+    with pytest.raises(TypeError):
+        snapshot["energy"][0]["endpoint"] = "changed"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot["energy"][0]["schema"][0]["path"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_probe_replaces_candidate_schema_snapshot() -> None:
+    """A repeated probe must not retain fields absent from the latest response."""
+    candidate = EndpointCapability(
+        "energy",
+        "data/Energy.json",
+        authenticated=True,
+        referer="html/content/config/energy.html",
+        evidence_keys=("energy",),
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"energy": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    client._observe_candidate_data(  # noqa: SLF001 - seed the previous probe
+        "energy",
+        candidate,
+        {"energy": {"enabled": True}},
+    )
+    first = client.observed_candidate_schema
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"energy": {"available": True}}),
+        ),
+    ):
+        await client.probe_capabilities()
+        second = client.observed_candidate_schema
+
+    assert {
+        descriptor["path"]
+        for descriptor in first["energy"][0]["schema"]  # type: ignore[union-attr]
+    } == {"energy", "energy.enabled"}
+    assert {
+        descriptor["path"]
+        for descriptor in second["energy"][0]["schema"]  # type: ignore[union-attr]
+    } == {"energy", "energy.available"}
 
 
 @pytest.mark.asyncio

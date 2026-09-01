@@ -549,6 +549,7 @@ def test_public_overview_read_only_descriptions_are_capability_gated() -> None:
         "device_password_changed": "system.device_password_changed",
         "initial_setup_completed": "system.initial_setup_completed",
         "receiver_esim_supported": "receiver.esim_supported",
+        "wifi_enabled": "wifi.enabled",
     }
 
     for key, data_path in sensor_paths.items():
@@ -610,6 +611,7 @@ async def test_normalized_read_only_metadata_entities(
                 "lte_tunnel": False,
             },
             "wifi": {
+                "enabled": True,
                 "wps_status": "idle",
                 "mac_filter_enabled": True,
                 "schedule_enabled": False,
@@ -650,6 +652,7 @@ async def test_normalized_read_only_metadata_entities(
         "hybrid_enabled": ("hybrid.enabled", True),
         "hybrid_dsl_tunnel": ("hybrid.dsl_tunnel", True),
         "hybrid_lte_tunnel": ("hybrid.lte_tunnel", False),
+        "wifi_enabled": ("wifi.enabled", True),
         "wifi_wps_active": ("wifi.wps_status", False),
         "wifi_mac_filter_enabled": ("wifi.mac_filter_enabled", True),
         "wifi_schedule_enabled": ("wifi.schedule_enabled", False),

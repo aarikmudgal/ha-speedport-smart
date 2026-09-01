@@ -350,6 +350,15 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
+        key="wifi_enabled",
+        translation_key="wifi_enabled",
+        data_path="wifi.enabled",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
         key="wifi_2_4_enabled",
         translation_key="wifi_2_4_enabled",
         data_path="wifi.radio_2_4.enabled",

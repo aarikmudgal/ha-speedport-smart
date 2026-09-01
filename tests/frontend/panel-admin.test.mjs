@@ -176,6 +176,29 @@ test("Dashboard and Administration use disjoint entity sets", () => {
   );
 });
 
+test("global Wi-Fi state remains reporting while its writable switch is a control", () => {
+  const wifiState = {
+    ...CONFIG_META,
+    capability_group: "wireless_general",
+    domain: "binary_sensor",
+    entity_id: "binary_sensor.speedport_wifi_enabled",
+    translation_key: "wifi_enabled",
+  };
+  const wifiControl = {
+    ...CONTROL_META,
+    disruptive: false,
+    domain: "switch",
+    entity_id: "switch.speedport_wifi",
+    risk: "normal",
+    translation_key: "wifi",
+  };
+
+  assert.deepEqual(splitPanelEntities([wifiState, wifiControl]), {
+    controls: [wifiControl],
+    reporting: [wifiState],
+  });
+});
+
 test("fixed Administration manifest places reviewed controls and collections", () => {
   assert.deepEqual(
     ADMIN_IA.map((area) => area.id),

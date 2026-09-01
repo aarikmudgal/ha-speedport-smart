@@ -1537,12 +1537,16 @@ class SpeedportHub:
         observed_schema: object = self.client.observed_feature_schema
         if not isinstance(observed_schema, Mapping):
             observed_schema = MappingProxyType({})
+        observed_candidate_schema: object = self.client.observed_candidate_schema
+        if not isinstance(observed_candidate_schema, Mapping):
+            observed_candidate_schema = MappingProxyType({})
         return {
             "router": _normalise_router_info(self._router_info),
             "capabilities": sorted(self._capabilities),
             "capability_report": _thaw(self._capability_report),
             "data": _thaw(self._data),
             "observed_feature_schema": _thaw(observed_schema),
+            "observed_candidate_schema": _thaw(observed_candidate_schema),
             "endpoint_errors": dict(self.endpoint_errors),
             "telemetry": {
                 "public_status": {

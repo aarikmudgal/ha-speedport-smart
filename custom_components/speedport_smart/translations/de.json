@@ -400,6 +400,7 @@
       "hybrid_dsl_tunnel": { "name": "Hybrid-DSL-Tunnel" },
       "hybrid_lte_tunnel": { "name": "Hybrid-LTE-Tunnel" },
       "mobile_connected": { "name": "Mobilfunknetz" },
+      "wifi_enabled": { "name": "WLAN" },
       "wifi_2_4_enabled": { "name": "2,4-GHz-WLAN" },
       "wifi_5_enabled": { "name": "5-GHz-WLAN" },
       "guest_wifi_enabled": { "name": "Gäste-WLAN" },

@@ -192,6 +192,7 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "mobile_nr_band": "mobile_radio",
     "mobile_lte_band": "mobile_radio",
     # Wi-Fi radios, access policy, WPS, and schedule metadata.
+    "wifi_enabled": "wireless_general",
     "wifi_band_mode": "wireless_radios",
     "wifi_2_4_encryption_mode": "wireless_2_4",
     "wifi_2_4_visible": "wireless_2_4",

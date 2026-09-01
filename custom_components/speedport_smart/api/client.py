@@ -122,10 +122,18 @@ _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
 _OBSERVED_SCHEMA_MAX_DEPTH: Final = 6
 _OBSERVED_SCHEMA_MAX_FIELDS: Final = 128
 _OBSERVED_SCHEMA_MAX_FAMILIES: Final = 64
+_OBSERVED_SCHEMA_MAX_CANDIDATES: Final = 128
+_OBSERVED_SCHEMA_MAX_CANDIDATES_PER_FAMILY: Final = 8
 _OBSERVED_SCHEMA_MAX_ARRAY_ITEMS: Final = 8
 _OBSERVED_SCHEMA_MAX_MAPPING_ITEMS: Final = 256
 _OBSERVED_SCHEMA_MAX_NAME_LENGTH: Final = 64
 _OBSERVED_SCHEMA_SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]*(?:\[\])?$")
+_OBSERVED_SCHEMA_ENDPOINT = re.compile(
+    r"^data/(?P<name>[A-Za-z][A-Za-z0-9_-]{0,63})\.json$"
+)
+_OBSERVED_SCHEMA_REFERER = re.compile(
+    r"^html/content/(?P<path>[a-z0-9_-]+(?:/[a-z0-9_-]+){0,4})\.html$"
+)
 _OBSERVED_SCHEMA_ARRAY_INDEX = re.compile(r"\[\d+\]")
 _OBSERVED_SCHEMA_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
 _OBSERVED_SCHEMA_MAC = re.compile(r"(?i)^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$")
@@ -1285,6 +1293,10 @@ class SpeedportClient:
         }
         self._selected_endpoints: dict[str, EndpointCapability] = {}
         self._observed_feature_schema: dict[str, tuple[tuple[str, str], ...]] = {}
+        self._observed_candidate_schema: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ] = {}
         self._wan_interface: WanInterface | None = None
         self._wan_optional_counter_faults: set[int] = set()
         self._dsl_parameter_names: tuple[str, ...] | None = None
@@ -1331,6 +1343,31 @@ class SpeedportClient:
                     for path, shape in fields
                 )
                 for family, fields in self._observed_feature_schema.items()
+            }
+        )
+
+    @property
+    def observed_candidate_schema(
+        self,
+    ) -> Mapping[str, tuple[Mapping[str, object], ...]]:
+        """Return immutable value-free schemas for successful probe candidates."""
+        return MappingProxyType(
+            {
+                family: tuple(
+                    MappingProxyType(
+                        {
+                            "endpoint": endpoint,
+                            "authenticated": authenticated,
+                            "referer": referer,
+                            "schema": tuple(
+                                MappingProxyType({"path": path, "shape": shape})
+                                for path, shape in fields
+                            ),
+                        }
+                    )
+                    for (endpoint, authenticated, referer), fields in candidates.items()
+                )
+                for family, candidates in self._observed_candidate_schema.items()
             }
         )
 
@@ -1735,6 +1772,55 @@ class SpeedportClient:
             known.add(descriptor)
         self._observed_feature_schema[safe_family] = tuple(merged)
 
+    def _observe_candidate_data(
+        self,
+        family: str,
+        candidate: EndpointCapability,
+        data: Mapping[str, Any],
+        *,
+        inventory: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ]
+        | None = None,
+    ) -> None:
+        """Record one successful capability-probe response without its values."""
+        metadata = _safe_observed_candidate_metadata(family, candidate)
+        if metadata is None:
+            return
+        observed_candidates = (
+            self._observed_candidate_schema if inventory is None else inventory
+        )
+        safe_family, endpoint, authenticated, referer = metadata
+        family_candidates = observed_candidates.get(safe_family)
+        if family_candidates is None:
+            if len(observed_candidates) >= _OBSERVED_SCHEMA_MAX_FAMILIES:
+                return
+            family_candidates = {}
+            observed_candidates[safe_family] = family_candidates
+
+        candidate_key = (endpoint, authenticated, referer)
+        if candidate_key not in family_candidates:
+            if len(family_candidates) >= _OBSERVED_SCHEMA_MAX_CANDIDATES_PER_FAMILY:
+                return
+            total_candidates = sum(
+                len(observed) for observed in observed_candidates.values()
+            )
+            if total_candidates >= _OBSERVED_SCHEMA_MAX_CANDIDATES:
+                return
+
+        current = family_candidates.get(candidate_key, ())
+        merged = list(current)
+        known = set(current)
+        for descriptor in _describe_observed_schema(data):
+            if descriptor in known:
+                continue
+            if len(merged) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                break
+            merged.append(descriptor)
+            known.add(descriptor)
+        family_candidates[candidate_key] = tuple(merged)
+
     async def get_parameter_values(
         self, names: Sequence[str]
     ) -> dict[str, ParameterValue]:
@@ -1883,6 +1969,10 @@ class SpeedportClient:
         self, *, allow_protected_degraded: bool = False
     ) -> CapabilityReport:
         """Probe only read endpoints and record independent failures."""
+        observed_candidate_schema: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ] = {}
         failures: dict[str, str] = {}
         selected: dict[str, EndpointCapability] = {}
         status_ok = False
@@ -1934,6 +2024,13 @@ class SpeedportClient:
                             if authenticated:
                                 authenticated_ok = True
                     endpoint_data, error = endpoint_results[cache_key]
+                    if error is None and endpoint_data is not None:
+                        self._observe_candidate_data(
+                            family,
+                            candidate,
+                            endpoint_data,
+                            inventory=observed_candidate_schema,
+                        )
                     if (
                         error is None
                         and endpoint_data is not None
@@ -2018,6 +2115,7 @@ class SpeedportClient:
                 feature_endpoints=MappingProxyType(dict(selected)),
                 failures=MappingProxyType(failures),
             )
+            self._observed_candidate_schema = observed_candidate_schema
             return self._capabilities
         finally:
             await self.logout()
@@ -2905,6 +3003,34 @@ def _describe_observed_schema(
         if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
             break
     return tuple(descriptors)
+
+
+def _safe_observed_candidate_metadata(
+    family: str,
+    candidate: EndpointCapability,
+) -> tuple[str, str, bool, str | None] | None:
+    """Accept only fixed local firmware paths that cannot contain identifiers."""
+    safe_family = _safe_observed_schema_name(family)
+    if safe_family != family:
+        return None
+
+    endpoint_match = _OBSERVED_SCHEMA_ENDPOINT.fullmatch(candidate.endpoint)
+    if (
+        endpoint_match is None
+        or _safe_observed_schema_name(endpoint_match.group("name").casefold()) is None
+    ):
+        return None
+
+    referer = candidate.referer
+    if referer is not None:
+        referer_match = _OBSERVED_SCHEMA_REFERER.fullmatch(referer)
+        if referer_match is None or any(
+            _safe_observed_schema_name(component) is None
+            for component in referer_match.group("path").split("/")
+        ):
+            return None
+
+    return safe_family, candidate.endpoint, candidate.authenticated, referer
 
 
 def _safe_observed_schema_name(raw_name: str) -> str | None:

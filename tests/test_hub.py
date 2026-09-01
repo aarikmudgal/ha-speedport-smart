@@ -136,17 +136,57 @@ def test_observed_schema_is_diagnostics_only_and_copy_safe(
     mock_speedport_client.observed_feature_schema = MappingProxyType(
         {"wifi": (MappingProxyType({"path": "rows[].enabled", "shape": "boolean"}),)}
     )
+    mock_speedport_client.observed_candidate_schema = MappingProxyType(
+        {
+            "wifi": (
+                MappingProxyType(
+                    {
+                        "endpoint": "data/WLANBasic.json",
+                        "authenticated": True,
+                        "referer": "html/content/network/wlan_basic.html",
+                        "schema": (
+                            MappingProxyType(
+                                {"path": "rows[].enabled", "shape": "boolean"}
+                            ),
+                        ),
+                    }
+                ),
+            )
+        }
+    )
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
 
     first = hub.diagnostics()
 
     assert "observed_feature_schema" not in hub.data
+    assert "observed_candidate_schema" not in hub.data
     assert first["observed_feature_schema"] == {
         "wifi": [{"path": "rows[].enabled", "shape": "boolean"}]
     }
+    assert first["observed_candidate_schema"] == {
+        "wifi": [
+            {
+                "endpoint": "data/WLANBasic.json",
+                "authenticated": True,
+                "referer": "html/content/network/wlan_basic.html",
+                "schema": [{"path": "rows[].enabled", "shape": "boolean"}],
+            }
+        ]
+    }
     first["observed_feature_schema"]["wifi"][0]["path"] = "changed"
+    first["observed_candidate_schema"]["wifi"][0]["schema"][0]["path"] = "changed"
     assert hub.diagnostics()["observed_feature_schema"] == {
         "wifi": [{"path": "rows[].enabled", "shape": "boolean"}]
+    }
+    assert hub.diagnostics()["observed_candidate_schema"] == {
+        "wifi": [
+            {
+                "endpoint": "data/WLANBasic.json",
+                "authenticated": True,
+                "referer": "html/content/network/wlan_basic.html",
+                "schema": [{"path": "rows[].enabled", "shape": "boolean"}],
+            }
+        ]
     }
 
 

@@ -192,6 +192,7 @@
       }
     },
     "binary_sensor": {
+      "wifi_enabled": { "default": "mdi:wifi" },
       "wifi_wps_enabled": { "default": "mdi:wifi-plus" },
       "lan_ipv6_enabled": { "default": "mdi:ip-network" },
       "wifi_wps_disabled_by_firmware": { "default": "mdi:wifi-alert" },
