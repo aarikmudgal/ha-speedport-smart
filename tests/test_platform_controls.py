@@ -1221,7 +1221,6 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
                         "mac": "AA:BB:CC:DD:EE:FF",
                         "hostname": "Phone",
                         "ipv4": "192.0.2.20",
-                        "configured_reserved_ipv4": "192.0.2.55",
                         "connected": True,
                         "medium": "wifi",
                         "internet_paused": False,
@@ -1293,7 +1292,6 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
     )
     assert tracker.mac_address == "AA:BB:CC:DD:EE:FF"
     assert tracker.extra_state_attributes == {
-        "configured_reserved_ipv4": "192.0.2.55",
         "medium": "wifi",
         "internet_paused": False,
         "internet_access_allowed": True,

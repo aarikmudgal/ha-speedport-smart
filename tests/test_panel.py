@@ -7,12 +7,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import Unauthorized
+
 from custom_components.speedport_smart.panel import (
+    _PANEL_ADMIN_READ_WS_TYPE,
     _PROTECTED_READ_ONLY_GROUP_BY_KEY,
     _access_source_for_entity,
     _capability_panel_data,
     _entity_panel_data,
     _permission_scoped_access_sources,
+    websocket_panel_admin_read,
 )
 
 _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
@@ -114,6 +120,129 @@ _PROTECTED_BINARY_KEYS = {
     "easy_support_enabled",
     "lan_ipv6_enabled",
 }
+
+
+def _admin_read_message() -> dict[str, object]:
+    """Return one valid admin read command message."""
+    return {
+        "id": 7,
+        "type": _PANEL_ADMIN_READ_WS_TYPE,
+        "entry_id": "entry-1",
+    }
+
+
+def test_admin_read_websocket_requires_home_assistant_admin() -> None:
+    """Non-admin users cannot reach config-entry or cached router data."""
+    hass = MagicMock()
+    connection = MagicMock()
+    connection.user.is_admin = False
+
+    with pytest.raises(Unauthorized):
+        websocket_panel_admin_read(hass, connection, _admin_read_message())
+
+    hass.config_entries.async_get_entry.assert_not_called()
+    connection.send_result.assert_not_called()
+
+
+def test_admin_read_websocket_returns_cached_projection_without_router_io() -> None:
+    """Admin reads use only the loaded hub snapshot and never its client."""
+    client = MagicMock()
+    hub = SimpleNamespace(
+        capability_report=SimpleNamespace(),
+        client=client,
+        data={"clients": {"items": ({"name": "Laptop", "connected": True},)}},
+    )
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        domain="speedport_smart",
+        state=ConfigEntryState.LOADED,
+        runtime_data=hub,
+    )
+    hass = MagicMock()
+    hass.config_entries.async_get_entry.return_value = entry
+    connection = MagicMock()
+    connection.user.is_admin = True
+
+    websocket_panel_admin_read(hass, connection, _admin_read_message())
+
+    connection.send_result.assert_called_once_with(
+        7,
+        {
+            "schema_version": 1,
+            "entry_id": "entry-1",
+            "sections": [
+                {
+                    "id": "clients",
+                    "source": "protected_json",
+                    "rows": [{"name": "Laptop", "connected": True}],
+                    "truncated": False,
+                }
+            ],
+        },
+    )
+    assert client.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    ("entry", "error_code"),
+    [
+        (None, "entry_not_found"),
+        (
+            SimpleNamespace(
+                entry_id="entry-1",
+                domain="another_domain",
+                state=ConfigEntryState.LOADED,
+            ),
+            "entry_not_found",
+        ),
+        (
+            SimpleNamespace(
+                entry_id="entry-1",
+                domain="speedport_smart",
+                state=ConfigEntryState.NOT_LOADED,
+            ),
+            "entry_not_loaded",
+        ),
+    ],
+)
+def test_admin_read_websocket_rejects_invalid_or_unloaded_entries(
+    entry: object,
+    error_code: str,
+) -> None:
+    """The admin endpoint is scoped to one currently loaded integration entry."""
+    hass = MagicMock()
+    hass.config_entries.async_get_entry.return_value = entry
+    connection = MagicMock()
+    connection.user.is_admin = True
+
+    websocket_panel_admin_read(hass, connection, _admin_read_message())
+
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args.args[:2] == (7, error_code)
+    connection.send_result.assert_not_called()
+
+
+def test_admin_read_websocket_rejects_loaded_entry_without_runtime_hub() -> None:
+    """A transitional loaded state cannot expose a missing runtime snapshot."""
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        domain="speedport_smart",
+        state=ConfigEntryState.LOADED,
+        runtime_data=None,
+    )
+    hass = MagicMock()
+    hass.config_entries.async_get_entry.return_value = entry
+    connection = MagicMock()
+    connection.user.is_admin = True
+
+    websocket_panel_admin_read(hass, connection, _admin_read_message())
+
+    connection.send_error.assert_called_once_with(
+        7,
+        "entry_not_loaded",
+        "Speedport Smart config entry is not loaded",
+    )
+    connection.send_result.assert_not_called()
 
 
 def test_panel_metadata_prefers_only_explicit_user_entity_name() -> None:

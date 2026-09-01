@@ -11,13 +11,18 @@ import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.websocket_api.decorators import websocket_command
+from homeassistant.components.websocket_api.decorators import (
+    require_admin,
+    websocket_command,
+)
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .management import ManagementRisk, get_entity_write_contract
+from .panel_read import admin_read_payload
 
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api.connection import ActiveConnection
@@ -32,13 +37,14 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 7
+PANEL_SCHEMA_VERSION: Final = 8
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
 _FRONTEND_FILE: Final = "speedport-smart-panel.js"
 _PANEL_DATA_KEY: Final = f"{DOMAIN}_frontend_panel"
 _PANEL_WS_TYPE: Final = f"{DOMAIN}/panel"
+_PANEL_ADMIN_READ_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/admin_read"
 
 _PUBLIC_STATUS_KEYS: Final = frozenset(
     {
@@ -212,6 +218,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 
     if not panel_state.get("websocket_registered"):
         websocket_api.async_register_command(hass, websocket_panel_info)
+        websocket_api.async_register_command(hass, websocket_panel_admin_read)
         panel_state["websocket_registered"] = True
 
     if panel_state.get("panel_owned"):
@@ -284,6 +291,49 @@ def websocket_panel_info(
             "schema_version": PANEL_SCHEMA_VERSION,
             "routers": routers,
         },
+    )
+
+
+@websocket_command(
+    {
+        vol.Required("type"): _PANEL_ADMIN_READ_WS_TYPE,
+        vol.Required("entry_id"): str,
+    }
+)
+@require_admin
+@callback
+def websocket_panel_admin_read(
+    hass: HomeAssistant,
+    connection: ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return an administrator-only projection of cached normalized lists."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN:
+        connection.send_error(
+            msg["id"],
+            "entry_not_found",
+            "Speedport Smart config entry not found",
+        )
+        return
+    if entry.state is not ConfigEntryState.LOADED:
+        connection.send_error(
+            msg["id"],
+            "entry_not_loaded",
+            "Speedport Smart config entry is not loaded",
+        )
+        return
+    hub = _loaded_hub(entry)
+    if hub is None:
+        connection.send_error(
+            msg["id"],
+            "entry_not_loaded",
+            "Speedport Smart config entry is not loaded",
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        admin_read_payload(hub.data, entry_id=entry.entry_id),
     )
 
 

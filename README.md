@@ -143,13 +143,23 @@ The panel:
 
 - follows the active Home Assistant light or dark theme
 - adapts to desktop and mobile layouts
+- separates reporting into **Dashboard** and reviewed controls into
+  **Administration**, without duplicating entities between the two views
 - groups data hierarchically by connection, bandwidth, DSL, mobile, Wi-Fi,
-  clients, telephony, router services, management, and controls
+  clients, telephony, router services, and management capability
 - groups child-device entities into individual device cards
 - uses live Home Assistant entity states; router names and values are not
   hardcoded
 - respects the signed-in user's entity permissions
 - asks for confirmation before executing a router-changing action
+
+Home Assistant administrators can also open reviewed structured details for
+clients, Mesh nodes, forwarding rules, VPN peers, telephony, USB devices, and
+mobile receivers. These details are projected from the integration's existing
+cached normalized state: opening the view does not send another router request.
+The response is allowlisted, bounded, loaded only on demand, kept in browser
+memory, and cleared when the router selection, connection, or administrator
+access changes. It is never written to browser storage.
 
 All entities remain available through the standard **Devices & services**
 pages for dashboards, automations, history, and statistics. Disabling an entity

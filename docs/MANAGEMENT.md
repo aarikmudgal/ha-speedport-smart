@@ -165,6 +165,26 @@ Assistant, or cannot be verified safely.
 
 ## Structured admin operation contract
 
+The native panel already provides a separate **Administration** view. Reviewed
+native entities appear there as ordinary Home Assistant controls, while the
+main **Dashboard** remains a reporting surface. An administrator-only WebSocket
+read method can additionally project bounded, allowlisted fields from the
+integration's current normalized cache for these collections:
+
+- clients and Mesh nodes
+- existing port-forward rules and VPN peers
+- telephone lines, DECT handsets, and IP phones
+- USB devices and mobile receivers
+
+This cached read method cannot contact the router and cannot execute an action.
+It accepts only a loaded Speedport config-entry ID, returns only fixed scalar
+fields, limits each collection to 256 source rows, and never exposes raw source
+records, internal row identifiers, request details, passwords, keys, or other
+secret material. The frontend requests it only when an administrator opens the
+Administration view, keeps it only in memory, and clears it when access or the
+selected router changes. This read surface is deliberately separate from the
+future mutation contract below.
+
 A structured editor will be added only with its first fully proven operation;
 the integration does not ship an empty generic executor. Native scalar and
 bounded action entities continue to use ordinary Home Assistant services.

@@ -18,6 +18,9 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - An offline, stdin-only browser-capture sanitizer that verifies one explicit
   reversible scalar apply/readback/rollback sequence and emits only bounded,
   privacy-safe contract evidence.
+- Separate Dashboard and Administration views in the native Home Assistant
+  panel, with administrator-only, on-demand structured details projected from
+  the existing normalized cache without additional router traffic.
 
 ### Fixed
 
@@ -36,6 +39,9 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Raw HAR bodies, browser headers, authentication material, router origins,
   subscriber identifiers, and non-allowlisted values never enter sanitized
   control-contract evidence.
+- Administrator structured details use fixed field allowlists and collection
+  limits, remain browser-memory-only, and are cleared on router, connection, or
+  permission changes.
 
 ## [0.2.0] - 2026-09-01
 

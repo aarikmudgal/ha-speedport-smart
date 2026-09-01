@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=7";
+import { keepDialogFocus } from "./accessibility.js?schema=8";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,25 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=7";
+} from "./controls.js?schema=8";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=7";
+} from "./entity-state.js?schema=8";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=7";
+} from "./render-state.js?schema=8";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=7";
+} from "./translations.js?schema=8";
 
 const API_TYPE = "speedport_smart/panel";
-const PANEL_SCHEMA_VERSION = 7;
+const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
+const ADMIN_READ_SCHEMA_VERSION = 1;
+const PANEL_SCHEMA_VERSION = 8;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -44,7 +46,7 @@ const WAN_CUMULATIVE_KEYS = new Set([
   "wan_packets_sent",
 ]);
 const WAN_RATE_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
-const SECTION_ORDER = [
+const DASHBOARD_SECTION_ORDER = [
   "connection",
   "bandwidth",
   "dsl",
@@ -54,7 +56,6 @@ const SECTION_ORDER = [
   "telephony",
   "system",
   "management",
-  "controls",
 ];
 const SECTION_INFO = {
   connection: {
@@ -171,6 +172,186 @@ const CHILD_KIND_INFO = {
   usb_device: { labelKey: "child.usb_device", icon: "mdi:usb" },
 };
 
+const ADMIN_COMMON_DEVICE_FIELDS = [
+  "name",
+  "hostname",
+  "manufacturer",
+  "model",
+  "firmware",
+  "hardware_version",
+  "serial",
+  "mac",
+];
+const ADMIN_TRAFFIC_FIELDS = [
+  "link_speed_bps",
+  "download_rate_bps",
+  "upload_rate_bps",
+  "download_link_speed_bps",
+  "upload_link_speed_bps",
+  "bytes_received",
+  "bytes_sent",
+];
+export const ADMIN_READ_SECTION_ORDER = Object.freeze([
+  "clients",
+  "mesh_nodes",
+  "port_forward_rules",
+  "vpn_peers",
+  "telephone_lines",
+  "dect_handsets",
+  "ip_phones",
+  "usb_devices",
+  "receivers",
+]);
+const ADMIN_READ_SECTION_INFO = Object.freeze({
+  clients: {
+    titleKey: "admin.section.clients",
+    icon: "mdi:devices",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "ipv4",
+      "configured_reserved_ipv4",
+      "reserved_ipv4",
+      "ipv6",
+      "connected",
+      "medium",
+      "wifi_generation",
+      "signal_dbm",
+      ...ADMIN_TRAFFIC_FIELDS,
+      "access_point",
+      "mesh_node",
+      "band",
+      "channel",
+      "last_seen",
+      "parental_profile",
+      "internet_paused",
+      "internet_access_allowed",
+      "fixed_dhcp",
+      "uses_dhcp",
+      "uses_rule",
+    ],
+  },
+  mesh_nodes: {
+    titleKey: "admin.section.mesh_nodes",
+    icon: "mdi:access-point-network",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "connected",
+      "parent",
+      "device_type",
+      "ipv4",
+      "wifi_enabled",
+      ...ADMIN_TRAFFIC_FIELDS,
+      "signal_dbm",
+      "band",
+      "channel",
+      "client_count",
+      "role",
+      "backhaul",
+      "uptime_seconds",
+      "linked_lan_port_count",
+    ],
+  },
+  port_forward_rules: {
+    titleKey: "admin.section.port_forward_rules",
+    icon: "mdi:router-network",
+    fields: ["name", "active"],
+  },
+  vpn_peers: {
+    titleKey: "admin.section.vpn_peers",
+    icon: "mdi:vpn",
+    fields: ["connected", "last_handshake"],
+  },
+  telephone_lines: {
+    titleKey: "admin.section.telephone_lines",
+    icon: "mdi:phone-classic",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "registered",
+      "enabled",
+      "active_call",
+      "call_state",
+    ],
+  },
+  dect_handsets: {
+    titleKey: "admin.section.dect_handsets",
+    icon: "mdi:phone-wireless",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "connected",
+      "registered",
+      "active_call",
+      "charging",
+      "battery_percent",
+      "signal_dbm",
+      "signal_percent",
+      "call_state",
+      "paging",
+    ],
+  },
+  ip_phones: {
+    titleKey: "admin.section.ip_phones",
+    icon: "mdi:deskphone",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "connected",
+      "registered",
+      "active_call",
+      "call_state",
+    ],
+  },
+  usb_devices: {
+    titleKey: "admin.section.usb_devices",
+    icon: "mdi:usb",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "connected",
+      "mounted",
+      "total_bytes",
+      "used_bytes",
+      "free_bytes",
+      "usage_percent",
+      "temperature_celsius",
+      "media_type",
+    ],
+  },
+  receivers: {
+    titleKey: "admin.section.receivers",
+    icon: "mdi:access-point-network",
+    fields: [
+      ...ADMIN_COMMON_DEVICE_FIELDS,
+      "connected",
+      ...ADMIN_TRAFFIC_FIELDS,
+      "network_type",
+      "operator",
+      "rsrp_dbm",
+      "rsrq_db",
+      "sinr_db",
+      "rssi_dbm",
+      "band",
+      "frequency_mhz",
+      "cell_id",
+      "temperature_celsius",
+    ],
+  },
+});
+export const ADMIN_READ_SECTION_FIELDS = Object.freeze(
+  Object.fromEntries(
+    ADMIN_READ_SECTION_ORDER.map((sectionId) => [
+      sectionId,
+      Object.freeze([...ADMIN_READ_SECTION_INFO[sectionId].fields]),
+    ]),
+  ),
+);
+export const ADMIN_READ_FIELD_KEYS = Object.freeze([
+  ...new Set(
+    ADMIN_READ_SECTION_ORDER.flatMap(
+      (sectionId) => ADMIN_READ_SECTION_INFO[sectionId].fields,
+    ),
+  ),
+]);
+const MAX_ADMIN_READ_ROWS = 256;
+const MAX_ADMIN_READ_TEXT_LENGTH = 256;
+
 const DECIMAL_DATA_FACTORS = {
   B: 1,
   kB: 1_000,
@@ -284,6 +465,140 @@ function humanize(value) {
   return String(value ?? "")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+export function splitPanelEntities(entities) {
+  const reporting = [];
+  const controls = [];
+  for (const entity of Array.isArray(entities) ? entities : []) {
+    if (entity?.section === "controls") controls.push(entity);
+    else reporting.push(entity);
+  }
+  return { controls, reporting };
+}
+
+export function normalizeAdminReadPayload(payload, entryId) {
+  if (
+    payload?.schema_version !== ADMIN_READ_SCHEMA_VERSION ||
+    payload?.entry_id !== entryId ||
+    !Array.isArray(payload?.sections) ||
+    payload.sections.length > ADMIN_READ_SECTION_ORDER.length
+  ) {
+    return undefined;
+  }
+
+  const seen = new Set();
+  const sections = [];
+  for (const section of payload.sections) {
+    const sectionId = section?.id;
+    const info = ADMIN_READ_SECTION_INFO[sectionId];
+    if (
+      !info ||
+      seen.has(sectionId) ||
+      section.source !== "protected_json" ||
+      !Array.isArray(section.rows) ||
+      typeof section.truncated !== "boolean"
+    ) {
+      return undefined;
+    }
+    seen.add(sectionId);
+
+    const rows = [];
+    for (const rawRow of section.rows.slice(0, MAX_ADMIN_READ_ROWS)) {
+      if (!rawRow || typeof rawRow !== "object" || Array.isArray(rawRow)) {
+        continue;
+      }
+      const row = {};
+      for (const field of info.fields) {
+        if (!Object.hasOwn(rawRow, field)) continue;
+        const value = rawRow[field];
+        if (typeof value === "string") {
+          row[field] = value.slice(0, MAX_ADMIN_READ_TEXT_LENGTH);
+        } else if (
+          typeof value === "boolean" ||
+          (typeof value === "number" && Number.isFinite(value))
+        ) {
+          row[field] = value;
+        }
+      }
+      if (Object.keys(row).length) rows.push(row);
+    }
+    sections.push({
+      id: sectionId,
+      rows,
+      source: "protected_json",
+      truncated: section.truncated || section.rows.length > MAX_ADMIN_READ_ROWS,
+    });
+  }
+
+  sections.sort(
+    (left, right) =>
+      ADMIN_READ_SECTION_ORDER.indexOf(left.id) -
+      ADMIN_READ_SECTION_ORDER.indexOf(right.id),
+  );
+  return {
+    schema_version: ADMIN_READ_SCHEMA_VERSION,
+    entry_id: entryId,
+    sections,
+  };
+}
+
+function formatAdminReadBytes(value, locale) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return String(value);
+  const units = ["B", "kB", "MB", "GB", "TB"];
+  let display = numeric;
+  let unitIndex = 0;
+  while (display >= 1_000 && unitIndex < units.length - 1) {
+    display /= 1_000;
+    unitIndex += 1;
+  }
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(display)} ${units[unitIndex]}`;
+}
+
+export function formatAdminReadValue(field, value, locale, language) {
+  if (typeof value === "boolean") {
+    return panelTranslate(
+      language,
+      value ? "admin.value.yes" : "admin.value.no",
+    );
+  }
+  if (typeof value === "number") {
+    const formatter = new Intl.NumberFormat(locale, {
+      maximumFractionDigits: 2,
+    });
+    if (field.includes("bytes")) return formatAdminReadBytes(value, locale);
+    if (field.endsWith("_bps")) {
+      return `${formatter.format(value / 1_000_000)} Mbit/s`;
+    }
+    if (field.endsWith("_percent") || field === "usage_percent") {
+      return `${formatter.format(value)} %`;
+    }
+    if (field.endsWith("_seconds")) {
+      return (
+        formatPanelDurationSeconds(value, locale, language) ||
+        `${formatter.format(value)} s`
+      );
+    }
+    if (field.endsWith("_celsius")) return `${formatter.format(value)} °C`;
+    if (field.endsWith("_dbm")) return `${formatter.format(value)} dBm`;
+    if (field.endsWith("_db")) return `${formatter.format(value)} dB`;
+    if (field.endsWith("_mhz")) return `${formatter.format(value)} MHz`;
+    return formatter.format(value);
+  }
+  if (
+    typeof value === "string" &&
+    ["last_seen", "last_handshake"].includes(field)
+  ) {
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) {
+      return new Intl.DateTimeFormat(locale, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(timestamp);
+    }
+  }
+  return String(value ?? "");
 }
 
 function formatTransferredData(state, locale) {
@@ -671,6 +986,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._narrow = false;
     this._metadata = undefined;
     this._selectedEntry = undefined;
+    this._activeView = "dashboard";
+    this._adminRead = undefined;
+    this._adminReadEntry = undefined;
+    this._adminReadLoading = false;
+    this._adminReadError = "";
+    this._adminReadRequest = 0;
     this._loading = false;
     this._loadError = "";
     this._pendingAction = undefined;
@@ -688,8 +1009,25 @@ export class SpeedportSmartPanel extends HTMLElement {
   set hass(value) {
     const previous = this._hass;
     const firstAssignment = !previous;
+    const userContextChanged = Boolean(
+      previous &&
+        (previous.user?.id !== value.user?.id ||
+          previous.user?.is_admin !== value.user?.is_admin),
+    );
     const shouldRender = this._shouldRenderForHass(previous, value);
     this._hass = value;
+    if (userContextChanged) {
+      this._clearAdminRead();
+      if (
+        this._activeView === "administration" &&
+        value.user?.is_admin === true
+      ) {
+        const router = this._currentRouter();
+        if (router?.entry_state === "loaded") {
+          this._loadAdminRead(router.entry_id);
+        }
+      }
+    }
     if (firstAssignment) this._loadMetadata();
     if (shouldRender) this._scheduleRender();
   }
@@ -709,6 +1047,14 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   connectedCallback() {
     if (this._hass && !this._metadata) this._loadMetadata();
+    if (
+      this._activeView === "administration" &&
+      this._hass?.user?.is_admin === true &&
+      !this._adminRead
+    ) {
+      const entryId = this._currentRouter()?.entry_id;
+      if (entryId) this._loadAdminRead(entryId);
+    }
     if (!this._refreshTimer) {
       this._refreshTimer = window.setInterval(
         () => this._loadMetadata(),
@@ -723,18 +1069,21 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._refreshTimer = undefined;
     if (this._renderFrame) window.cancelAnimationFrame(this._renderFrame);
     this._renderFrame = undefined;
+    this._clearAdminRead();
   }
 
   _shouldRenderForHass(previous, next) {
-    if (this._pendingAction) return false;
     if (
       !previous ||
       !this._metadata ||
+      previous.user?.id !== next.user?.id ||
+      previous.user?.is_admin !== next.user?.is_admin ||
       previous.language !== next.language ||
       previous.locale !== next.locale
     ) {
       return true;
     }
+    if (this._pendingAction) return false;
     return this._metadata.routers.some((router) =>
       router.entities.some(
         (entity) =>
@@ -756,6 +1105,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._loading = true;
     this._loadError = "";
     try {
+      const previousRouter = this._currentRouter();
       const metadata = await this._hass.connection.sendMessagePromise({
         type: API_TYPE,
       });
@@ -765,12 +1115,31 @@ export class SpeedportSmartPanel extends HTMLElement {
       ) {
         throw new Error("Unsupported dashboard metadata");
       }
+      const previousEntry = this._selectedEntry;
       this._metadata = metadata;
       const entryIds = new Set(metadata.routers.map((router) => router.entry_id));
       if (!this._selectedEntry || !entryIds.has(this._selectedEntry)) {
         this._selectedEntry = metadata.routers[0]?.entry_id;
       }
+      const selectedRouter = metadata.routers.find(
+        (candidate) => candidate.entry_id === this._selectedEntry,
+      );
+      const selectionChanged = previousEntry !== this._selectedEntry;
+      const selectedEntryLoaded = selectedRouter?.entry_state === "loaded";
+      if (selectionChanged || !selectedEntryLoaded) {
+        this._clearAdminRead();
+      }
+      if (
+        selectedEntryLoaded &&
+        (selectionChanged || previousRouter?.entry_state !== "loaded") &&
+        this._activeView === "administration" &&
+        this._hass?.user?.is_admin === true &&
+        this._selectedEntry
+      ) {
+        this._loadAdminRead(this._selectedEntry);
+      }
     } catch (_error) {
+      this._clearAdminRead();
       this._loadError = "error.metadata_unavailable";
     } finally {
       this._loading = false;
@@ -784,6 +1153,102 @@ export class SpeedportSmartPanel extends HTMLElement {
       routers.find((router) => router.entry_id === this._selectedEntry) ||
       routers[0]
     );
+  }
+
+  _canShowAdministration(router = this._currentRouter()) {
+    return (
+      this._hass?.user?.is_admin === true ||
+      splitPanelEntities(router?.entities).controls.length > 0
+    );
+  }
+
+  _clearAdminRead() {
+    this._adminReadRequest += 1;
+    this._adminRead = undefined;
+    this._adminReadEntry = undefined;
+    this._adminReadLoading = false;
+    this._adminReadError = "";
+  }
+
+  async _loadAdminRead(entryId, { force = false } = {}) {
+    if (
+      this._hass?.user?.is_admin !== true ||
+      !entryId ||
+      this._currentRouter()?.entry_id !== entryId ||
+      (this._adminReadLoading && !force) ||
+      (!force && this._adminReadEntry === entryId && this._adminRead)
+    ) {
+      return;
+    }
+
+    const request = ++this._adminReadRequest;
+    this._adminReadLoading = true;
+    this._adminReadError = "";
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise({
+        type: ADMIN_READ_API_TYPE,
+        entry_id: entryId,
+      });
+      if (
+        request !== this._adminReadRequest ||
+        this._currentRouter()?.entry_id !== entryId
+      ) {
+        return;
+      }
+      const normalized = normalizeAdminReadPayload(payload, entryId);
+      if (!normalized) throw new Error("Unsupported administrator data");
+      this._adminRead = normalized;
+      this._adminReadEntry = entryId;
+    } catch (_error) {
+      if (
+        request === this._adminReadRequest &&
+        this._currentRouter()?.entry_id === entryId
+      ) {
+        this._adminReadError = "error.admin_read_unavailable";
+      }
+    } finally {
+      if (request === this._adminReadRequest) {
+        this._adminReadLoading = false;
+        if (!this._pendingAction) this._render();
+      }
+    }
+  }
+
+  _selectRouter(entryId) {
+    if (!entryId || entryId === this._selectedEntry) return;
+    this._clearAdminRead();
+    this._selectedEntry = entryId;
+    this._pendingAction = undefined;
+    this._notice = "";
+    this._noticeKind = "status";
+    if (
+      this._activeView === "administration" &&
+      this._hass?.user?.is_admin === true
+    ) {
+      this._loadAdminRead(entryId);
+    } else {
+      this._render();
+    }
+  }
+
+  _selectView(view) {
+    if (
+      !["dashboard", "administration"].includes(view) ||
+      (view === "administration" && !this._canShowAdministration())
+    ) {
+      return;
+    }
+    this._activeView = view;
+    this._notice = "";
+    if (view === "administration" && this._hass?.user?.is_admin === true) {
+      const entryId = this._currentRouter()?.entry_id;
+      if (entryId) {
+        this._loadAdminRead(entryId);
+        return;
+      }
+    }
+    this._render();
   }
 
   _entityMetadata(entityId) {
@@ -917,11 +1382,18 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (!target) return;
 
     if (target.dataset.router) {
-      this._selectedEntry = target.dataset.router;
-      this._pendingAction = undefined;
-      this._notice = "";
-      this._noticeKind = "status";
-      this._render();
+      this._selectRouter(target.dataset.router);
+      return;
+    }
+    if (target.dataset.view) {
+      this._selectView(target.dataset.view);
+      return;
+    }
+    if (target.dataset.adminRefresh !== undefined) {
+      const entryId = this._currentRouter()?.entry_id;
+      if (entryId && this._hass?.user?.is_admin === true) {
+        this._loadAdminRead(entryId, { force: true });
+      }
       return;
     }
     if (target.dataset.refresh !== undefined) {
@@ -1827,6 +2299,238 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
+  _adminFieldLabel(field) {
+    const key = `admin.field.${field}`;
+    const translated = this._t(key);
+    return translated === key ? humanize(field) : translated;
+  }
+
+  _renderAdminReadRow(sectionId, row, index) {
+    const info = ADMIN_READ_SECTION_INFO[sectionId];
+    const titleField = [
+      "name",
+      "hostname",
+      "model",
+      "operator",
+      "mac",
+      "ipv4",
+    ].find((field) => typeof row[field] === "string" && row[field].length > 0);
+    const title = titleField
+      ? row[titleField]
+      : this._t("admin.item", { index: index + 1 });
+    const values = info.fields
+      .filter((field) => Object.hasOwn(row, field))
+      .map(
+        (field) => `
+          <div class="admin-read-value">
+            <dt>${escapeHtml(this._adminFieldLabel(field))}</dt>
+            <dd>${escapeHtml(formatAdminReadValue(field, row[field], this._locale(), this._language()))}</dd>
+          </div>
+        `,
+      )
+      .join("");
+    return `
+      <article class="admin-read-row">
+        <h4>${escapeHtml(title)}</h4>
+        <dl>${values}</dl>
+      </article>
+    `;
+  }
+
+  _renderAdminReadSection(sectionId, section) {
+    const info = ADMIN_READ_SECTION_INFO[sectionId];
+    const observed = Boolean(section);
+    const rows = section?.rows || [];
+    const status = observed
+      ? this._t("admin.count.rows", { count: rows.length })
+      : this._t("admin.status.not_observed");
+    const content = !observed
+      ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.not_observed"))}</p>`
+      : rows.length === 0
+        ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.no_details"))}</p>`
+        : `<div class="admin-read-rows">${rows
+            .map((row, index) => this._renderAdminReadRow(sectionId, row, index))
+            .join("")}</div>`;
+    const truncated = section?.truncated
+      ? `<p class="admin-read-warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.truncated"))}</p>`
+      : "";
+    return `
+      <details class="admin-read-section ${observed ? "observed" : "not-observed"}">
+        <summary>
+          <span class="admin-read-section-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(info.icon)}"></ha-icon></span>
+          <span>
+            <strong>${escapeHtml(this._t(info.titleKey))}</strong>
+            <small>${escapeHtml(status)}</small>
+          </span>
+          <ha-icon class="admin-read-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
+        </summary>
+        <div class="admin-read-section-content">
+          ${truncated}
+          ${content}
+        </div>
+      </details>
+    `;
+  }
+
+  _renderAdminRead(router) {
+    if (this._hass?.user?.is_admin !== true) {
+      return `
+        <section class="admin-read-overview restricted">
+          <ha-icon icon="mdi:shield-lock-outline" aria-hidden="true"></ha-icon>
+          <div>
+            <h2>${escapeHtml(this._t("admin.read.title"))}</h2>
+            <p>${escapeHtml(this._t("admin.read.admin_only"))}</p>
+          </div>
+        </section>
+      `;
+    }
+
+    const payload =
+      this._adminReadEntry === router.entry_id ? this._adminRead : undefined;
+    const sections = new Map(
+      (payload?.sections || []).map((section) => [section.id, section]),
+    );
+    const error = this._adminReadError
+      ? `<div class="admin-read-error" role="alert"><ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon><span>${escapeHtml(this._t(this._adminReadError))}</span></div>`
+      : "";
+    const content = payload
+      ? `<div class="admin-read-sections">${ADMIN_READ_SECTION_ORDER.map(
+          (sectionId) =>
+            this._renderAdminReadSection(sectionId, sections.get(sectionId)),
+        ).join("")}</div>`
+      : this._adminReadLoading
+        ? `<div class="admin-read-loading" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.loading"))}</div>`
+        : `<div class="admin-read-empty-state"><p>${escapeHtml(this._t("admin.read.unavailable"))}</p></div>`;
+
+    return `
+      <section class="admin-read-overview">
+        <header>
+          <div>
+            <span class="kicker">${escapeHtml(this._t("admin.read.kicker"))}</span>
+            <h2>${escapeHtml(this._t("admin.read.title"))}</h2>
+            <p>${escapeHtml(this._t("admin.read.subtitle"))}</p>
+          </div>
+          <button
+            class="icon-button"
+            data-admin-refresh
+            title="${escapeHtml(this._t("action.refresh_admin_read"))}"
+            aria-label="${escapeHtml(this._t("action.refresh_admin_read"))}"
+            ${this._adminReadLoading ? "disabled" : ""}
+          >
+            <ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon>
+          </button>
+        </header>
+        ${error}
+        ${content}
+      </section>
+    `;
+  }
+
+  _renderAdministration(router, controls, accessSourceStates) {
+    const controlSection = this._renderSection(
+      "controls",
+      controls,
+      router,
+      accessSourceStates,
+    );
+    return `
+      <div class="administration-view">
+        <section class="administration-intro">
+          <span class="kicker">${escapeHtml(this._t("administration.kicker"))}</span>
+          <h2>${escapeHtml(this._t("administration.title"))}</h2>
+          <p>${escapeHtml(this._t("administration.subtitle"))}</p>
+        </section>
+        ${
+          controlSection ||
+          `<section class="dashboard-section administration-empty"><h2>${escapeHtml(this._t("administration.no_controls.title"))}</h2><p>${escapeHtml(this._t("administration.no_controls.body"))}</p></section>`
+        }
+        ${this._renderAdminRead(router)}
+      </div>
+    `;
+  }
+
+  _renderDashboard(router, reporting, accessSourceStates) {
+    const heroEntities = reporting.filter((entity) =>
+      HERO_KEYS.has(entity.translation_key),
+    );
+    const sectionEntities = {};
+    for (const entity of reporting) {
+      if (HERO_KEYS.has(entity.translation_key)) continue;
+      const section = SECTION_INFO[entity.section] ? entity.section : "system";
+      if (!sectionEntities[section]) sectionEntities[section] = [];
+      sectionEntities[section].push(entity);
+    }
+    const sections = DASHBOARD_SECTION_ORDER.map((section) =>
+      this._renderSection(
+        section,
+        sectionEntities[section] || [],
+        router,
+        accessSourceStates,
+      ),
+    ).join("");
+    const hero = heroEntities.length
+      ? `<section class="hero-metrics">${heroEntities
+          .map((entity) =>
+            this._renderEntity(entity, {
+              hero: true,
+              sourceState: accessSourceStates[entity.access_source],
+            }),
+          )
+          .join("")}</section>`
+      : "";
+    return `
+      <section class="access-overview">
+        <header>
+          <div>
+            <span class="kicker">${escapeHtml(this._t("access.kicker"))}</span>
+            <h2>${escapeHtml(this._t("access.title"))}</h2>
+          </div>
+          <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">
+            <ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon>
+          </button>
+        </header>
+        <div class="source-grid">
+          ${(router.access_sources || [])
+            .map((source) =>
+              this._renderSource(accessSourceStates[source.id] || source),
+            )
+            .join("")}
+        </div>
+        ${this._renderCapabilities(router)}
+      </section>
+      ${hero}
+      <div class="sections">${sections}</div>
+    `;
+  }
+
+  _renderViewTabs(router) {
+    const administration = this._canShowAdministration(router)
+      ? `
+        <button
+          data-view="administration"
+          class="${this._activeView === "administration" ? "active" : ""}"
+          ${this._activeView === "administration" ? 'aria-current="page"' : ""}
+        >
+          <ha-icon icon="mdi:cog-outline" aria-hidden="true"></ha-icon>
+          ${escapeHtml(this._t("view.administration"))}
+        </button>
+      `
+      : "";
+    return `
+      <nav class="view-tabs" aria-label="${escapeHtml(this._t("view.tabs.label"))}">
+        <button
+          data-view="dashboard"
+          class="${this._activeView === "dashboard" ? "active" : ""}"
+          ${this._activeView === "dashboard" ? 'aria-current="page"' : ""}
+        >
+          <ha-icon icon="mdi:view-dashboard-outline" aria-hidden="true"></ha-icon>
+          ${escapeHtml(this._t("view.dashboard"))}
+        </button>
+        ${administration}
+      </nav>
+    `;
+  }
+
   _renderConfirmation() {
     const pending = this._pendingAction;
     if (!pending) return "";
@@ -2008,9 +2712,13 @@ export class SpeedportSmartPanel extends HTMLElement {
       return;
     }
 
-    const heroEntities = router.entities.filter((entity) =>
-      HERO_KEYS.has(entity.translation_key),
-    );
+    const { controls, reporting } = splitPanelEntities(router.entities);
+    if (
+      this._activeView === "administration" &&
+      !this._canShowAdministration(router)
+    ) {
+      this._activeView = "dashboard";
+    }
     const accessSourceStates = Object.fromEntries(
       (router.access_sources || []).map((source) => [source.id, source]),
     );
@@ -2020,13 +2728,6 @@ export class SpeedportSmartPanel extends HTMLElement {
         router.entities,
         this._hass?.states,
       );
-    }
-    const sectionEntities = {};
-    for (const entity of router.entities) {
-      if (HERO_KEYS.has(entity.translation_key)) continue;
-      const section = SECTION_INFO[entity.section] ? entity.section : "system";
-      if (!sectionEntities[section]) sectionEntities[section] = [];
-      sectionEntities[section].push(entity);
     }
     const internetMeta = router.entities.find(
       (entity) => entity.translation_key === "internet_connected",
@@ -2056,14 +2757,10 @@ export class SpeedportSmartPanel extends HTMLElement {
         `
         : "";
 
-    const sections = SECTION_ORDER.map((section) =>
-      this._renderSection(
-        section,
-        sectionEntities[section] || [],
-        router,
-        accessSourceStates,
-      ),
-    ).join("");
+    const viewContent =
+      this._activeView === "administration"
+        ? this._renderAdministration(router, controls, accessSourceStates)
+        : this._renderDashboard(router, reporting, accessSourceStates);
     const notice = this._notice
       ? `<div class="notice" role="${this._noticeKind}" aria-live="${this._noticeKind === "alert" ? "assertive" : "polite"}"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._notice)}</div>`
       : "";
@@ -2097,43 +2794,10 @@ export class SpeedportSmartPanel extends HTMLElement {
         </header>
 
         ${routerTabs}
+        ${this._renderViewTabs(router)}
         ${notice}
         ${this._renderManagement(router)}
-
-        <section class="access-overview">
-          <header>
-            <div>
-              <span class="kicker">${escapeHtml(this._t("access.kicker"))}</span>
-              <h2>${escapeHtml(this._t("access.title"))}</h2>
-            </div>
-            <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">
-              <ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon>
-            </button>
-          </header>
-          <div class="source-grid">
-            ${(router.access_sources || [])
-              .map((source) =>
-                this._renderSource(accessSourceStates[source.id] || source),
-              )
-              .join("")}
-          </div>
-          ${this._renderCapabilities(router)}
-        </section>
-
-        ${
-          heroEntities.length
-            ? `<section class="hero-metrics">${heroEntities
-                .map((entity) =>
-                  this._renderEntity(entity, {
-                    hero: true,
-                    sourceState: accessSourceStates[entity.access_source],
-                  }),
-                )
-                .join("")}</section>`
-            : ""
-        }
-
-        <div class="sections">${sections}</div>
+        ${viewContent}
 
         <footer>
           <span>Telekom Speedport Smart</span>
@@ -2363,6 +3027,37 @@ export class SpeedportSmartPanel extends HTMLElement {
           border-color: var(--sp-magenta);
           background: var(--sp-magenta);
         }
+        .view-tabs {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 6px;
+          width: min(100%, 620px);
+          margin: 22px auto 0;
+          padding: 5px;
+          border: 1px solid var(--sp-border);
+          border-radius: 16px;
+          background: var(--sp-surface-soft);
+        }
+        .view-tabs button {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          min-height: 46px;
+          padding: 10px 16px;
+          color: var(--sp-muted);
+          border: 0;
+          border-radius: 11px;
+          background: transparent;
+          cursor: pointer;
+          font-weight: 700;
+        }
+        .view-tabs button.active {
+          color: var(--sp-text);
+          background: var(--sp-surface);
+          box-shadow: 0 4px 16px rgba(0,0,0,.08);
+        }
+        .view-tabs ha-icon { --mdc-icon-size: 20px; }
         .notice {
           display: flex;
           align-items: center;
@@ -2438,6 +3133,171 @@ export class SpeedportSmartPanel extends HTMLElement {
           border-radius: 12px;
           background: transparent;
           cursor: pointer;
+        }
+        .administration-view { width: 100%; min-width: 0; }
+        .administration-intro,
+        .admin-read-overview {
+          width: 100%;
+          margin-top: 24px;
+          padding: clamp(18px, 3vw, 28px);
+          border: 1px solid var(--sp-border);
+          border-radius: 22px;
+          background: var(--sp-surface);
+          box-shadow: 0 10px 32px rgba(0,0,0,.045);
+        }
+        .administration-intro h2,
+        .admin-read-overview h2 {
+          margin: 5px 0 4px;
+          font-size: 22px;
+        }
+        .administration-intro p,
+        .admin-read-overview header p,
+        .administration-empty p {
+          margin: 0;
+          color: var(--sp-muted);
+          line-height: 1.5;
+        }
+        .admin-read-overview > header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 18px;
+          margin-bottom: 18px;
+        }
+        .admin-read-overview.restricted {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: center;
+          gap: 16px;
+        }
+        .admin-read-overview.restricted > ha-icon {
+          color: var(--sp-muted);
+          --mdc-icon-size: 30px;
+        }
+        .admin-read-error,
+        .admin-read-warning {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          padding: 12px 14px;
+          color: var(--sp-error);
+          border: 1px solid color-mix(in srgb, var(--sp-error) 35%, var(--sp-border));
+          border-radius: 12px;
+          background: color-mix(in srgb, var(--sp-error) 7%, var(--sp-surface));
+        }
+        .admin-read-error { margin-bottom: 14px; }
+        .admin-read-warning { margin: 0 0 12px; color: var(--sp-warning); }
+        .admin-read-error ha-icon,
+        .admin-read-warning ha-icon { flex: none; --mdc-icon-size: 19px; }
+        .admin-read-loading,
+        .admin-read-empty-state {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 12px;
+          min-height: 120px;
+          color: var(--sp-muted);
+          text-align: center;
+        }
+        .admin-read-loading .loading-mark {
+          display: flex;
+          align-items: flex-end;
+          gap: 3px;
+          height: 18px;
+        }
+        .admin-read-loading .loading-mark i {
+          width: 5px;
+          height: 5px;
+          border-radius: 1px;
+          background: var(--sp-magenta);
+        }
+        .admin-read-loading .loading-mark i:nth-child(2) { height: 15px; }
+        .admin-read-sections {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+        }
+        .admin-read-section {
+          min-width: 0;
+          border: 1px solid var(--sp-border);
+          border-radius: 16px;
+          background: var(--sp-surface-soft);
+        }
+        .admin-read-section[open] { grid-column: 1 / -1; }
+        .admin-read-section.not-observed { opacity: .72; }
+        .admin-read-section summary {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 11px;
+          min-height: 64px;
+          padding: 12px 14px;
+          cursor: pointer;
+          list-style: none;
+        }
+        .admin-read-section summary::-webkit-details-marker { display: none; }
+        .admin-read-section summary strong,
+        .admin-read-section summary small { display: block; }
+        .admin-read-section summary small {
+          margin-top: 2px;
+          color: var(--sp-muted);
+          font-size: 11px;
+        }
+        .admin-read-section-icon {
+          display: grid;
+          place-items: center;
+          width: 36px;
+          height: 36px;
+          color: var(--sp-magenta);
+          border-radius: 11px;
+          background: var(--sp-surface);
+        }
+        .admin-read-section-icon ha-icon { --mdc-icon-size: 21px; }
+        .admin-read-chevron {
+          color: var(--sp-muted);
+          transition: transform .16s ease;
+          --mdc-icon-size: 20px;
+        }
+        .admin-read-section[open] .admin-read-chevron { transform: rotate(180deg); }
+        .admin-read-section-content {
+          padding: 0 14px 14px;
+          border-top: 1px solid var(--sp-border);
+        }
+        .admin-read-empty { margin: 14px 0 0; color: var(--sp-muted); }
+        .admin-read-rows {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+          gap: 12px;
+          padding-top: 14px;
+        }
+        .admin-read-row {
+          min-width: 0;
+          padding: 14px;
+          border: 1px solid var(--sp-border);
+          border-radius: 13px;
+          background: var(--sp-surface);
+        }
+        .admin-read-row h4 {
+          margin: 0 0 12px;
+          overflow-wrap: anywhere;
+          font-size: 14px;
+        }
+        .admin-read-row dl {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 9px 12px;
+          margin: 0;
+        }
+        .admin-read-value { min-width: 0; }
+        .admin-read-value dt {
+          color: var(--sp-muted);
+          font-size: 10px;
+          font-weight: 700;
+        }
+        .admin-read-value dd {
+          margin: 3px 0 0;
+          overflow-wrap: anywhere;
+          font-size: 12px;
         }
         .source-grid {
           display: grid;
@@ -2992,6 +3852,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           .dashboard-section { grid-column: auto; }
           .entity-source-group { flex-basis: 100%; }
           .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .admin-read-sections { grid-template-columns: 1fr; }
+          .admin-read-section[open] { grid-column: auto; }
         }
         @media (max-width: 680px) {
           .shell { padding: 12px; }
@@ -3002,7 +3864,9 @@ export class SpeedportSmartPanel extends HTMLElement {
           .hero-metrics { grid-template-columns: 1fr; }
           .management-alert { grid-template-columns: auto 1fr; }
           .management-alert .state-pill { grid-column: 2; justify-self: start; }
-          .access-overview, .dashboard-section { margin-top: 14px; padding: 16px; border-radius: 17px; }
+          .access-overview, .dashboard-section, .administration-intro, .admin-read-overview { margin-top: 14px; padding: 16px; border-radius: 17px; }
+          .view-tabs { width: 100%; margin-top: 14px; }
+          .admin-read-overview > header { align-items: flex-start; }
           .section-heading p { display: none; }
           .entity-source-heading { grid-template-columns: auto 1fr; }
           .entity-source-status { grid-column: 2; justify-self: start; }
@@ -3017,6 +3881,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           .confirm-dialog { padding: 22px; }
           .confirm-actions { flex-direction: column-reverse; }
           .confirm-actions button { width: 100%; }
+          .view-tabs button { padding-inline: 9px; }
+          .admin-read-row dl { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; }
