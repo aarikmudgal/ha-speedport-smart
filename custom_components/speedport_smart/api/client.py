@@ -2103,7 +2103,11 @@ def _select_managed_device_row(
                 "Managed-device row contains unproven firmware fields"
             )
         row_mac = row.get("mdevice_mac")
-        if row_mac in (None, "") or _mac_token(value=row_mac) != expected_mac:
+        if (
+            row_mac is None
+            or row_mac == ""
+            or _mac_token(value=row_mac) != expected_mac
+        ):
             continue
         matches.append({field: row[field] for field in form.fields})
 

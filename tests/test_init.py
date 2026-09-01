@@ -120,6 +120,8 @@ async def test_setup_enables_only_integration_disabled_entities_without_commands
     """Setup migrates old defaults without commands or overriding user choice."""
     entry = _entry()
     entry.add_to_hass(hass)
+    for dependency in ("frontend", "http", "panel_custom", "websocket_api"):
+        mock_component(hass, dependency)
     registry = er.async_get(hass)
     integration_disabled = registry.async_get_or_create(
         "sensor",
@@ -138,6 +140,10 @@ async def test_setup_enables_only_integration_disabled_entities_without_commands
 
     with (
         patch(
+            "custom_components.speedport_smart.async_register_panel",
+            AsyncMock(),
+        ),
+        patch(
             "custom_components.speedport_smart.SpeedportClient",
             return_value=mock_speedport_client,
         ),
@@ -151,7 +157,7 @@ async def test_setup_enables_only_integration_disabled_entities_without_commands
             AsyncMock(),
         ),
     ):
-        assert await async_setup_entry(hass, entry)
+        assert await hass.config_entries.async_setup(entry.entry_id)
 
     assert registry.async_get(integration_disabled.entity_id).disabled_by is None
     assert (
