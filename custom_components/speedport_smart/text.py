@@ -46,13 +46,15 @@ async def async_setup_entry(
     """Discover rename controls only for proven managed-device rows."""
     del hass
     hub = entry.runtime_data
-    if not hub.controls_enabled or not hub.supports_command("rename_client"):
+    if not hub.controls_enabled:
         return
 
     known: set[str] = set()
 
     @callback
     def discover_clients() -> None:
+        if not hub.supports_command("rename_client"):
+            return
         entities: list[SpeedportClientNameText] = []
         for item in collection(hub, "clients.items"):
             identifier = stable_id(item)

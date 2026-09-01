@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.const import EntityCategory
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
@@ -118,12 +119,30 @@ async def async_setup_entry(
     async_add_entities([SpeedportRetryProtectedDataButton(hub)])
     if not hub.controls_enabled:
         return
-    async_add_entities(
-        SpeedportCommandButton(hub, description)
-        for description in BUTTON_DESCRIPTIONS
-        if hub.supports_command(description.command)
-        and supported(hub, description.capability, description.data_path)
-    )
+    known: set[str] = set()
+
+    @callback
+    def discover_buttons() -> None:
+        entities: list[ButtonEntity] = []
+        for description in BUTTON_DESCRIPTIONS:
+            if description.key in known:
+                continue
+            if not hub.supports_command(description.command) or not supported(
+                hub, description.capability, description.data_path
+            ):
+                continue
+            known.add(description.key)
+            entities.append(SpeedportCommandButton(hub, description))
+        if entities:
+            async_add_entities(entities)
+
+    discover_buttons()
+    for group in dict.fromkeys(
+        description.coordinator_group for description in BUTTON_DESCRIPTIONS
+    ):
+        entry.async_on_unload(
+            coordinator(hub, group).async_add_listener(discover_buttons)
+        )
 
 
 class SpeedportCommandButton(SpeedportEntity, ButtonEntity):

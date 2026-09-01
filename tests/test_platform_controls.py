@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -24,6 +24,7 @@ from custom_components.speedport_smart.button import (
 )
 from custom_components.speedport_smart.const import DOMAIN
 from custom_components.speedport_smart.coordinator import (
+    GroupSnapshot,
     PollGroup,
     SpeedportDataUpdateCoordinator,
 )
@@ -135,6 +136,8 @@ async def test_select_setup_requires_reviewed_identity_capabilities_and_readback
     await async_setup_selects(hass, entry, unreviewed.extend)
 
     assert unreviewed == []
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
 
 
 @pytest.mark.parametrize(
@@ -865,7 +868,138 @@ async def test_platform_setup_gates_controls_and_discovers_dynamic_entities(
     assert any(
         isinstance(entity, SpeedportRetryProtectedDataButton) for entity in buttons
     )
-    assert entry.async_on_unload.call_count == 3
+    assert entry.async_on_unload.call_count == 7
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
+
+
+async def test_reviewed_controls_register_after_protected_capability_recovery(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A degraded platform start must not permanently omit reviewed controls."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = frozenset({"status", "system"})  # noqa: SLF001
+    entry = MagicMock(runtime_data=hub)
+    switches: list[Any] = []
+    buttons: list[Any] = []
+    selects: list[Any] = []
+    texts: list[Any] = []
+
+    await async_setup_switches(hass, entry, switches.extend)
+    await async_setup_buttons(hass, entry, buttons.extend)
+    await async_setup_selects(hass, entry, selects.extend)
+    await async_setup_texts(hass, entry, texts.extend)
+
+    assert switches == []
+    assert selects == []
+    assert texts == []
+    assert len(buttons) == 1
+    assert isinstance(buttons[0], SpeedportRetryProtectedDataButton)
+
+    client = {
+        "id": "aa:bb:cc:dd:ee:ff",
+        "source_kind": "addmdevice",
+        "source_row_id": "row-1",
+        "managed_form_supported": True,
+        "mac": "AA:BB:CC:DD:EE:FF",
+        "name": "Phone",
+        "ipv4": "192.0.2.10",
+        "connected": True,
+        "fixed_dhcp": False,
+        "uses_dhcp": True,
+        "uses_rule": 0,
+    }
+    hub._capabilities = hub.capabilities | {  # noqa: SLF001
+        "authenticated_json",
+        "clients",
+        "connection_privacy",
+        "hybrid",
+        "internet",
+        "nat",
+        "port_forwarding",
+        "receiver",
+        "wifi",
+        "wps",
+    }
+    hub._merge_data(  # noqa: SLF001
+        {
+            "wifi": {
+                "enabled": True,
+                "guest": {"enabled": False},
+                "office": {"enabled": True},
+                "wps_status": "idle",
+            },
+            "internet": {"privacy_level": 1, "state": "online"},
+            "hybrid": {"enabled": True},
+            "receiver": {"led_mode": 0},
+            "clients": {"items": [client]},
+            "nat": {
+                "port_forward_rules": [
+                    {
+                        "id": "rule-1",
+                        "name": "HTTPS",
+                        "active": True,
+                        "_identity_fingerprint": _PORT_FORWARD_FINGERPRINT,
+                    }
+                ]
+            },
+        }
+    )
+    snapshot = GroupSnapshot(
+        group=PollGroup.NORMAL,
+        data=hub.data,
+        generation=1,
+        updated_at=datetime.now(UTC),
+    )
+    hub.coordinator(PollGroup.NORMAL).async_set_updated_data(snapshot)
+    hub.coordinator(PollGroup.SLOW).async_set_updated_data(
+        GroupSnapshot(
+            group=PollGroup.SLOW,
+            data=hub.data,
+            generation=1,
+            updated_at=datetime.now(UTC),
+        )
+    )
+
+    fixed_switch_keys = {
+        entity.entity_description.key
+        for entity in switches
+        if isinstance(entity, SpeedportCommandSwitch)
+    }
+    assert fixed_switch_keys == {
+        "guest_wifi",
+        "hybrid_bonding",
+        "office_wifi",
+        "wifi",
+    }
+    assert sum(isinstance(item, SpeedportPortForwardSwitch) for item in switches) == 1
+    assert (
+        sum(isinstance(item, SpeedportClientFixedDhcpSwitch) for item in switches) == 1
+    )
+    assert {
+        entity.entity_description.key
+        for entity in buttons
+        if isinstance(entity, SpeedportCommandButton)
+    } == {"reboot_router", "reconnect_internet", "wps"}
+    assert {entity.entity_description.key for entity in selects} == {
+        "internet_privacy_level_control",
+        "receiver_led_mode_control",
+    }
+    assert len(texts) == 1
+    assert isinstance(texts[0], SpeedportClientNameText)
+
+    counts = (len(switches), len(buttons), len(selects), len(texts))
+    hub.coordinator(PollGroup.NORMAL).async_set_updated_data(snapshot)
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()
 

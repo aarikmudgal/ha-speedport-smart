@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.const import EntityCategory
+from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
@@ -77,12 +78,30 @@ async def async_setup_entry(
     if not getattr(hub, "controls_enabled", False):
         return
 
-    async_add_entities(
-        SpeedportCommandSelect(hub, description)
-        for description in SELECT_DESCRIPTIONS
-        if hub.supports_command(description.command)
-        and supported(hub, description.capability, description.data_path)
-    )
+    known: set[str] = set()
+
+    @callback
+    def discover_selects() -> None:
+        entities: list[SelectEntity] = []
+        for description in SELECT_DESCRIPTIONS:
+            if description.key in known:
+                continue
+            if not hub.supports_command(description.command) or not supported(
+                hub, description.capability, description.data_path
+            ):
+                continue
+            known.add(description.key)
+            entities.append(SpeedportCommandSelect(hub, description))
+        if entities:
+            async_add_entities(entities)
+
+    discover_selects()
+    for group in dict.fromkeys(
+        description.coordinator_group for description in SELECT_DESCRIPTIONS
+    ):
+        entry.async_on_unload(
+            coordinator(hub, group).async_add_listener(discover_selects)
+        )
 
 
 class SpeedportCommandSelect(SpeedportEntity, SelectEntity):

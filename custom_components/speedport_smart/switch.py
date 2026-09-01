@@ -140,14 +140,41 @@ async def async_setup_entry(
     if not getattr(hub, "controls_enabled", False):
         return
 
-    async_add_entities(
-        SpeedportCommandSwitch(hub, description)
-        for description in SWITCH_DESCRIPTIONS
-        if hub.supports_command(description.command)
-        and supported(hub, description.capability, description.data_path)
-    )
+    _setup_fixed_switches(entry, hub, async_add_entities)
 
     _setup_dynamic_switches(entry, hub, async_add_entities)
+
+
+def _setup_fixed_switches(
+    entry: ConfigEntry[SpeedportHub],
+    hub: SpeedportHub,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Register reviewed switches whenever their protected readback appears."""
+    known: set[str] = set()
+
+    @callback
+    def discover_switches() -> None:
+        entities: list[SwitchEntity] = []
+        for description in SWITCH_DESCRIPTIONS:
+            if description.key in known:
+                continue
+            if not hub.supports_command(description.command) or not supported(
+                hub, description.capability, description.data_path
+            ):
+                continue
+            known.add(description.key)
+            entities.append(SpeedportCommandSwitch(hub, description))
+        if entities:
+            async_add_entities(entities)
+
+    discover_switches()
+    for group in dict.fromkeys(
+        description.coordinator_group for description in SWITCH_DESCRIPTIONS
+    ):
+        entry.async_on_unload(
+            coordinator(hub, group).async_add_listener(discover_switches)
+        )
 
 
 def _setup_dynamic_switches(
@@ -167,14 +194,14 @@ def _setup_port_forward_switches(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Discover stable PortuwMain forwarding rules."""
-    if not hub.has_capability("nat") or not hub.supports_command(
-        "set_port_forward_rule"
-    ):
-        return
     known_rules: set[str] = set()
 
     @callback
     def discover_rules() -> None:
+        if not hub.has_capability("nat") or not hub.supports_command(
+            "set_port_forward_rule"
+        ):
+            return
         entities: list[SwitchEntity] = []
         for item in collection(hub, "nat.port_forward_rules"):
             identifier = stable_id(item)
@@ -201,14 +228,14 @@ def _setup_client_switches(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Discover clients with a real internet-pause state."""
-    if not hub.has_capability("clients") or not hub.supports_command(
-        "set_client_internet_paused"
-    ):
-        return
     known_clients: set[str] = set()
 
     @callback
     def discover_clients() -> None:
+        if not hub.has_capability("clients") or not hub.supports_command(
+            "set_client_internet_paused"
+        ):
+            return
         entities: list[SwitchEntity] = []
         for item in collection(hub, "clients.items"):
             identifier = stable_id(item)
@@ -233,14 +260,14 @@ def _setup_client_fixed_dhcp_switches(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Discover clients whose exact row proves fixed-DHCP support."""
-    if not hub.has_capability("clients") or not hub.supports_command(
-        "set_client_fixed_dhcp"
-    ):
-        return
     known_clients: set[str] = set()
 
     @callback
     def discover_clients() -> None:
+        if not hub.has_capability("clients") or not hub.supports_command(
+            "set_client_fixed_dhcp"
+        ):
+            return
         entities: list[SwitchEntity] = []
         for item in collection(hub, "clients.items"):
             identifier = stable_id(item)
