@@ -84,42 +84,43 @@ _DSL_TRANSIENT_GRACE_FAILURES: Final = 1
 _PROTECTED_RETRY_SECONDS: Final = 60.0
 _PROTECTED_MAX_RETRY_SECONDS: Final = 900.0
 _MANAGEMENT_ISSUE_KEY: Final = "management_session_blocked"
-_FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+# One endpoint family may contribute state to several top-level normalized roots.
+_FAMILY_CAPABILITY_ROOTS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
-        "5g": ("mobile", "5g"),
-        "active_calls": ("telephony", "active_calls"),
-        "calls": ("telephony", "calls"),
-        "connection_privacy": ("internet", "privacy"),
+        "5g": ("mobile",),
+        "active_calls": ("telephony",),
+        "calls": ("telephony",),
+        "connection_privacy": ("internet",),
         "dect": ("dect",),
-        "dect_status": ("dect", "status"),
-        "dect_repeater": ("dect", "repeaters"),
-        "dns_rebind": ("security", "dns_rebind"),
-        "easy_support": ("system", "easy_support"),
-        "firmware": ("system", "firmware_details"),
-        "firewall": ("security", "firewall"),
-        "ip": ("internet", "ip"),
-        "ip_phones": ("pbx", "ip_phones"),
-        "lte": ("mobile", "lte"),
+        "dect_status": ("dect",),
+        "dect_repeater": ("dect",),
+        "dns_rebind": ("security",),
+        "easy_support": ("system",),
+        "firmware": ("system",),
+        "firewall": ("security",),
+        "ip": ("internet",),
+        "ip_phones": ("pbx",),
+        "lte": ("mobile",),
         "mobile": ("mobile",),
-        "mesh_topology": ("mesh", "nodes"),
-        "media_server": ("usb", "media_server"),
-        "nas": ("usb", "nas"),
-        "parental_controls": ("parental", "configuration"),
+        "mesh_topology": ("mesh",),
+        "media_server": ("usb",),
+        "nas": ("usb",),
+        "parental_controls": ("parental",),
         "pbx": ("pbx",),
-        "phonebook": ("dect", "telephony", "phonebook"),
-        "port_blocking": ("security", "port_blocking"),
-        "port_forwarding": ("nat", "port_forwarding"),
+        "phonebook": ("dect",),
+        "port_blocking": ("security",),
+        "port_forwarding": ("nat",),
         "qos": ("qos",),
         "receiver": ("receiver",),
         "telephony": ("telephony",),
-        "upnp": ("nat", "upnp"),
-        "usb_tethering": ("usb", "tethering"),
-        "wifi_access": ("wifi", "access"),
-        "wifi_configuration": ("wifi", "configuration"),
-        "wifi_schedule": ("wifi", "schedule"),
-        "wireguard": ("vpn", "wireguard"),
-        "vpn_details": ("vpn", "details"),
-        "wps": ("wifi", "wps"),
+        "upnp": ("nat",),
+        "usb_tethering": ("usb",),
+        "wifi_access": ("wifi",),
+        "wifi_configuration": ("wifi",),
+        "wifi_schedule": ("wifi",),
+        "wireguard": ("vpn",),
+        "vpn_details": ("vpn",),
+        "wps": ("wifi",),
     }
 )
 _TRANSITION_KEYS: Final[frozenset[str]] = frozenset(
@@ -1685,10 +1686,12 @@ class SpeedportHub:
             not report.wan_counters
             and wan_counter_failure.startswith("SpeedportSessionBusyError:")
         )
-        capabilities = {str(name).casefold() for name in report.feature_endpoints}
-        capabilities.update(
-            _FAMILY_ROUTES[family][0] for family in capabilities & _FAMILY_ROUTES.keys()
+        feature_families = tuple(
+            str(name).casefold() for name in report.feature_endpoints
         )
+        capabilities = set(feature_families)
+        for family in feature_families:
+            capabilities.update(_FAMILY_CAPABILITY_ROOTS.get(family, ()))
         if report.status_json:
             capabilities.update({"status", "system", "diagnostics"})
         if report.tr064:

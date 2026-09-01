@@ -251,6 +251,42 @@ def test_management_feature_families_publish_their_normalized_roots(
     }
     assert feature_families <= hub.capabilities
     assert expected_roots <= hub.capabilities
+    assert hub.capabilities == frozenset(
+        feature_families | expected_roots | {"authenticated_json"}
+    )
+
+
+def test_management_family_can_publish_multiple_normalized_roots(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """One discovered family can own several normalized capability roots."""
+    report = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "energy": EndpointCapability(
+                    "energy",
+                    "data/Energy.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    roots = MappingProxyType({"energy": ("wifi", "usb", "system")})
+
+    with patch(
+        "custom_components.speedport_smart.hub._FAMILY_CAPABILITY_ROOTS",
+        roots,
+    ):
+        hub._apply_capability_report(  # noqa: SLF001 - capability routing contract
+            report
+        )
+
+    assert hub.capabilities == frozenset(
+        {"authenticated_json", "energy", "wifi", "usb", "system"}
+    )
 
 
 async def test_detail_families_use_independent_exact_get_routes(

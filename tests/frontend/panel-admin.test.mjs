@@ -1401,6 +1401,63 @@ print(json.dumps({
   assert.deepEqual(backend.sections, ADMIN_READ_SECTION_FIELDS);
 });
 
+test("frontend reviewed router controls stay identical to backend write mappings", () => {
+  const modulePath = fileURLToPath(
+    new URL(
+      "../../custom_components/speedport_smart/management.py",
+      import.meta.url,
+    ),
+  );
+  const localPython = fileURLToPath(
+    new URL("../../.venv/bin/python", import.meta.url),
+  );
+  const python = existsSync(localPython) ? localPython : "python";
+  const script = `
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("speedport_management_contract", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+print(json.dumps(sorted(
+    f"{domain}:{translation_key}"
+    for domain, translation_key in module._ENTITY_WRITE_COMMANDS
+)))
+`;
+  const result = spawnSync(python, ["-c", script, modulePath], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const backendControls = JSON.parse(result.stdout);
+  const homeAssistantFeatures = ADMIN_IA.find(
+    (area) => area.id === "home_assistant",
+  ).subsections.flatMap((subsection) => subsection.features);
+  assert.deepEqual(
+    homeAssistantFeatures
+      .filter((feature) => feature.controls.length > 0)
+      .map((feature) => [feature.contract, ...feature.controls]),
+    [
+      ["reviewed", "button:retry_protected_data"],
+      ["read_only", "button:capture_read_only_inventory"],
+    ],
+  );
+
+  const frontendControls = ADMIN_IA.filter(
+    (area) => area.id !== "home_assistant",
+  )
+    .flatMap((area) => area.subsections)
+    .flatMap((subsection) => subsection.features)
+    .filter((feature) => feature.contract === "reviewed")
+    .flatMap((feature) => feature.controls)
+    .filter((control) => control !== "button:capture_read_only_inventory")
+    .sort();
+
+  assert.deepEqual(frontendControls, backendControls);
+});
+
 test("administrator values use bounded native units", () => {
   assert.equal(formatAdminReadValue("connected", true, "en-US", "en"), "Yes");
   assert.equal(
