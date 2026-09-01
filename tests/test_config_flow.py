@@ -36,6 +36,7 @@ from custom_components.speedport_smart.const import (
     CONF_SLOW_INTERVAL,
     CONF_USE_HTTPS,
     CONF_VERIFY_SSL,
+    CONF_WAN_INTERVAL,
     DOMAIN,
 )
 
@@ -210,6 +211,7 @@ async def test_options_flow(hass: HomeAssistant) -> None:
     options = {
         CONF_ENABLE_CONTROLS: True,
         CONF_FAST_INTERVAL: 5,
+        CONF_WAN_INTERVAL: 0,
         CONF_NORMAL_INTERVAL: 30,
         CONF_SLOW_INTERVAL: 300,
     }

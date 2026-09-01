@@ -727,6 +727,21 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
 )
 
 
+def _discoverable_fixed_binary_sensor_descriptions(
+    hub: SpeedportHub,
+    group: PollGroup,
+    known: set[str],
+) -> tuple[SpeedportBinarySensorEntityDescription, ...]:
+    """Return newly supported fixed binary sensors for one polling group."""
+    return tuple(
+        description
+        for description in BINARY_SENSOR_DESCRIPTIONS
+        if description.coordinator_group is group
+        and description.key not in known
+        and supported(hub, description.capability, description.data_path)
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry[SpeedportHub],
@@ -735,11 +750,32 @@ async def async_setup_entry(
     """Set up supported binary sensors."""
     del hass
     hub = entry.runtime_data
-    async_add_entities(
-        SpeedportBinarySensor(hub, description)
-        for description in BINARY_SENSOR_DESCRIPTIONS
-        if supported(hub, description.capability, description.data_path)
-    )
+    known_fixed: set[str] = set()
+
+    @callback
+    def discover_fixed_binary_sensors(group: PollGroup) -> None:
+        descriptions = _discoverable_fixed_binary_sensor_descriptions(
+            hub, group, known_fixed
+        )
+        if not descriptions:
+            return
+        known_fixed.update(description.key for description in descriptions)
+        async_add_entities(
+            SpeedportBinarySensor(hub, description) for description in descriptions
+        )
+
+    for group in {
+        description.coordinator_group for description in BINARY_SENSOR_DESCRIPTIONS
+    }:
+        discover_fixed_binary_sensors(group)
+
+        @callback
+        def rediscover_fixed(group: PollGroup = group) -> None:
+            discover_fixed_binary_sensors(group)
+
+        entry.async_on_unload(
+            coordinator(hub, group).async_add_listener(rediscover_fixed)
+        )
 
     known: set[tuple[str, str, str]] = set()
 
@@ -816,6 +852,15 @@ class SpeedportBinarySensor(SpeedportEntity, BinarySensorEntity):
             else as_bool
         )
         return value(self.hub, self.entity_description.data_path, transform)
+
+    @property
+    def available(self) -> bool:
+        """Hide live WAN interface state while its ToTR64 source is degraded."""
+        if not super().available:
+            return False
+        if self.entity_description.key != "wan_interface_enabled":
+            return True
+        return not self.hub.has_endpoint_error("wan_counters")
 
 
 class SpeedportChildBinarySensor(SpeedportEntity, BinarySensorEntity):

@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
@@ -30,8 +30,10 @@ from custom_components.speedport_smart.panel import _access_source_for_entity
 from custom_components.speedport_smart.sensor import (
     CHILD_SENSOR_COLLECTIONS,
     SENSOR_DESCRIPTIONS,
+    WAN_TELEMETRY_SENSOR_DESCRIPTIONS,
     SpeedportManagementAccessSensor,
     SpeedportSensor,
+    SpeedportWanTelemetrySensor,
 )
 
 if TYPE_CHECKING:
@@ -148,6 +150,148 @@ async def test_setup_adds_only_exposed_paths(
         unload_call.args[0]()
 
 
+async def test_fixed_wan_binary_sensor_is_added_after_setup_busy_recovers(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A first WAN sample adds its fixed binary entity without a reload."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = hub.capabilities | {"wan", "wan_counters"}  # noqa: SLF001
+    entry = MagicMock(runtime_data=hub)
+    binary_sensors: list[SpeedportBinarySensor] = []
+
+    await async_setup_binary_sensors(hass, entry, binary_sensors.extend)
+    assert not any(
+        entity.entity_description.key == "wan_interface_enabled"
+        for entity in binary_sensors
+    )
+
+    hub._merge_data(  # noqa: SLF001 - setup-recovery fixture
+        {"wan": {"interface": {"enabled": True}}}
+    )
+    hub.coordinator(PollGroup.FAST).async_update_listeners()
+    hub.coordinator(PollGroup.FAST).async_update_listeners()
+
+    recovered = [
+        entity
+        for entity in binary_sensors
+        if entity.entity_description.key == "wan_interface_enabled"
+    ]
+    assert len(recovered) == 1
+    assert recovered[0].is_on
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
+
+
+async def test_wan_interface_entities_fail_closed_during_telemetry_retry(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Cached interface identity and state are not presented as current."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._merge_data(  # noqa: SLF001 - platform contract fixture
+        {
+            "wan": {
+                "interface": {
+                    "name": "habond",
+                    "status": "Up",
+                    "enabled": True,
+                }
+            }
+        }
+    )
+    interface = SpeedportSensor(hub, _description(SENSOR_DESCRIPTIONS, "wan_interface"))
+    interface_status = SpeedportSensor(
+        hub, _description(SENSOR_DESCRIPTIONS, "wan_interface_status")
+    )
+    interface_enabled = SpeedportBinarySensor(
+        hub, _description(BINARY_SENSOR_DESCRIPTIONS, "wan_interface_enabled")
+    )
+
+    assert interface.entity_description.coordinator_group is PollGroup.FAST
+    assert interface.available
+    assert interface_status.available
+    assert interface_enabled.available
+
+    hub._endpoint_errors["wan_counters"] = (  # noqa: SLF001
+        "SpeedportSessionBusyError"
+    )
+
+    assert not interface.available
+    assert not interface_status.available
+    assert not interface_enabled.available
+
+
+async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Auto-learning cadence is visible to dashboards and automations."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = hub.capabilities | {"wan_counters"}  # noqa: SLF001
+    telemetry = {
+        "mode": "auto",
+        "state": "learning",
+        "effective_interval_seconds": 4.0,
+        "runtime_floor_seconds": 1.0,
+        "last_stable_interval_seconds": 5.0,
+        "target_interval_seconds": 1.0,
+        "retry_in_seconds": 0.0,
+        "success_streak": 7,
+        "last_sampled_at": "2026-09-01T10:00:00+00:00",
+    }
+    descriptions = {
+        description.key: description
+        for description in WAN_TELEMETRY_SENSOR_DESCRIPTIONS
+    }
+
+    with patch.object(
+        type(hub),
+        "wan_counter_telemetry",
+        new_callable=PropertyMock,
+        return_value=telemetry,
+    ):
+        entities = {
+            key: SpeedportWanTelemetrySensor(hub, description)
+            for key, description in descriptions.items()
+        }
+
+        assert set(entities) == {
+            "wan_polling_mode",
+            "wan_polling_interval",
+            "wan_polling_state",
+            "wan_fastest_proven_interval",
+            "wan_last_sample",
+        }
+        assert all(
+            entity.entity_registry_enabled_default for entity in entities.values()
+        )
+        assert entities["wan_polling_mode"].native_value == "auto"
+        assert entities["wan_polling_interval"].native_value == 4.0
+        assert entities["wan_polling_state"].native_value == "learning"
+        assert entities["wan_fastest_proven_interval"].native_value == 5.0
+        assert entities["wan_last_sample"].native_value == datetime(
+            2026, 9, 1, 10, tzinfo=UTC
+        )
+        assert entities["wan_polling_state"].extra_state_attributes == {
+            "mode": "auto",
+            "target_interval_seconds": 1.0,
+            "runtime_floor_seconds": 1.0,
+            "last_stable_interval_seconds": 5.0,
+            "retry_in_seconds": 0.0,
+            "success_streak": 7,
+            "source_available": True,
+        }
+        hub.coordinator(PollGroup.FAST).last_update_success = False
+        assert all(entity.available for entity in entities.values())
+
+
 async def test_client_access_allowed_binary_sensor_is_discovered(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -200,6 +344,10 @@ async def test_description_catalog_is_complete_and_entities_default_enabled(
     assert all(
         description.entity_registry_enabled_default
         for description in SENSOR_DESCRIPTIONS
+    )
+    assert all(
+        description.entity_registry_enabled_default
+        for description in WAN_TELEMETRY_SENSOR_DESCRIPTIONS
     )
     assert all(
         description.entity_registry_enabled_default
@@ -668,7 +816,7 @@ def test_read_only_metadata_translations_are_complete() -> None:
     }
     sensor_keys = {
         description.translation_key
-        for description in SENSOR_DESCRIPTIONS
+        for description in (*SENSOR_DESCRIPTIONS, *WAN_TELEMETRY_SENSOR_DESCRIPTIONS)
         if description.translation_key is not None
     }
     binary_keys = {

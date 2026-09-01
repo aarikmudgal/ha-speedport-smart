@@ -63,12 +63,14 @@
         "data": {
           "enable_controls": "Unterstützte Router-Steuerelemente anzeigen",
           "fast_interval": "Schnelles Abfrageintervall",
+          "wan_interval": "Erweitertes Intervall der WAN-Zähler",
           "normal_interval": "Normales Abfrageintervall",
           "slow_interval": "Langsames Abfrageintervall"
         },
         "data_description": {
           "enable_controls": "Nur implementierte Steuerelemente anzeigen, die dieser Router unterstützt. Sie bleiben inaktiv, bis du sie ausdrücklich verwendest, und werden nie automatisch ausgeführt.",
-          "fast_interval": "Sekunden zwischen Aktualisierungen der WAN-Zähler und Live-Zustände (1–60). Eine Sekunde ist bestmöglich; für die Zuverlässigkeit des Routers werden 5 Sekunden empfohlen.",
+          "fast_interval": "Sekunden zwischen browserunabhängigen Live-Status-Aktualisierungen (1–60). Dies steuert nicht die routerempfindlichen WAN-Zähler.",
+          "wan_interval": "0 aktiviert automatisches Lernen: Die Zähler starten mit 5 Sekunden und testen nach stabilen Abfragen sicher 4, 3, 2 und 1 Sekunde. 1–60 setzt nur für Fortgeschrittene einen Zielwert; vorübergehende Belegt-Antworten lösen weiterhin automatisch einen Backoff aus.",
           "normal_interval": "Sekunden zwischen Aktualisierungen von Status, WLAN, Geräten und Telefonie.",
           "slow_interval": "Sekunden zwischen Aktualisierungen von Konfiguration, Topologie und Firmware."
         }
@@ -108,6 +110,22 @@
       "internet_uptime": { "name": "Internet-Betriebszeit" },
       "wan_interface": { "name": "WAN-Schnittstelle" },
       "wan_interface_status": { "name": "WAN-Schnittstellenstatus" },
+      "wan_polling_mode": {
+        "name": "WAN-Abfragemodus",
+        "state": { "auto": "Automatisch", "manual": "Manuell" }
+      },
+      "wan_polling_interval": { "name": "WAN-Abfrageintervall" },
+      "wan_polling_state": {
+        "name": "WAN-Abfragestatus",
+        "state": {
+          "learning": "Lernend",
+          "stable": "Stabil",
+          "retrying": "Erneuter Versuch",
+          "limited": "Begrenzt"
+        }
+      },
+      "wan_fastest_proven_interval": { "name": "Schnellstes bestätigtes WAN-Intervall" },
+      "wan_last_sample": { "name": "Letzte erfolgreiche WAN-Messung" },
       "wan_mtu": { "name": "WAN-MTU" },
       "public_ipv4": { "name": "Öffentliche IPv4-Adresse" },
       "public_ipv6_prefix": { "name": "Öffentliches IPv6-Präfix" },

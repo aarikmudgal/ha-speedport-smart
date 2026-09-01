@@ -1360,27 +1360,40 @@ class SpeedportClient:
                 self._wan_interface = select_active_wan_interface(interfaces)
             return interfaces
 
-    async def get_wan_counters(self) -> WanCounters:
-        """Read aggregate active WAN counters."""
+    async def get_wan_counters(self, *, busy_retries: int | None = None) -> WanCounters:
+        """Read WAN counters with an optional per-call busy retry policy."""
         self._ensure_open()
         async with self._lock:
             await self._logout_unlocked()
             if self._wan_interface is not None:
                 try:
-                    return await self._read_wan_counters_unlocked(self._wan_interface)
+                    return await self._read_wan_counters_unlocked(
+                        self._wan_interface,
+                        busy_retries=busy_retries,
+                    )
                 except SpeedportSessionBusyError:
                     raise
                 except SpeedportProtocolError:
                     self._wan_interface = None
-            interfaces = await self._discover_wan_interfaces_unlocked()
+            interfaces = await self._discover_wan_interfaces_unlocked(
+                busy_retries=busy_retries
+            )
             try:
                 interface = select_active_wan_interface(interfaces)
             except ValueError as exc:
                 raise SpeedportUnsupportedError(str(exc)) from exc
             self._wan_interface = interface
-            return await self._read_wan_counters_unlocked(interface)
+            return await self._read_wan_counters_unlocked(
+                interface,
+                busy_retries=busy_retries,
+            )
 
-    async def _read_wan_counters_unlocked(self, interface: WanInterface) -> WanCounters:
+    async def _read_wan_counters_unlocked(
+        self,
+        interface: WanInterface,
+        *,
+        busy_retries: int | None = None,
+    ) -> WanCounters:
         prefix = f"Device.IP.Interface.{interface.index}.Stats"
         suffixes = (
             _WAN_BYTE_COUNTER_SUFFIXES
@@ -1389,7 +1402,9 @@ class SpeedportClient:
         )
         names = tuple(f"{prefix}.{suffix}" for suffix in suffixes)
         try:
-            values = await self._get_parameter_values_unlocked(names)
+            values = await self._get_parameter_values_unlocked(
+                names, busy_retries=busy_retries
+            )
         except SpeedportSessionBusyError:
             raise
         except SpeedportUnsupportedError:
@@ -1398,7 +1413,9 @@ class SpeedportClient:
             byte_names = tuple(
                 f"{prefix}.{suffix}" for suffix in _WAN_BYTE_COUNTER_SUFFIXES
             )
-            values = await self._get_parameter_values_unlocked(byte_names)
+            values = await self._get_parameter_values_unlocked(
+                byte_names, busy_retries=busy_retries
+            )
             self._wan_optional_counter_faults.add(interface.index)
         received = _parameter_int(values, f"{prefix}.BytesReceived")
         sent = _parameter_int(values, f"{prefix}.BytesSent")
@@ -1832,15 +1849,24 @@ class SpeedportClient:
             await asyncio.sleep(_LOGOUT_SETTLE_SECONDS)
 
     async def _get_parameter_values_unlocked(
-        self, names: Sequence[str]
+        self,
+        names: Sequence[str],
+        *,
+        busy_retries: int | None = None,
     ) -> dict[str, ParameterValue]:
+        max_busy_retries = (
+            self._max_busy_retries if busy_retries is None else busy_retries
+        )
+        if max_busy_retries < 0:
+            msg = "busy_retries cannot be negative"
+            raise ValueError(msg)
         body = build_get_parameter_values(names)
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
             "SOAPAction": SOAP_ACTION,
             "User-Agent": "Home Assistant Telekom Speedport Smart",
         }
-        for attempt in range(self._max_busy_retries + 1):
+        for attempt in range(max_busy_retries + 1):
             text = await self._request_text_unlocked(
                 "POST",
                 self._tr064_url,
@@ -1851,17 +1877,20 @@ class SpeedportClient:
             try:
                 return parse_get_parameter_values(text)
             except SpeedportSessionBusyError:
-                if attempt >= self._max_busy_retries:
+                if attempt >= max_busy_retries:
                     raise
                 await asyncio.sleep(self._busy_backoff * (2**attempt))
         raise SpeedportSessionBusyError("ToTR64 session remained busy")
 
-    async def _discover_wan_interfaces_unlocked(self) -> tuple[WanInterface, ...]:
+    async def _discover_wan_interfaces_unlocked(
+        self, *, busy_retries: int | None = None
+    ) -> tuple[WanInterface, ...]:
         parameters: dict[str, ParameterValue]
         interface_count: int | None = None
         try:
             count_values = await self._get_parameter_values_unlocked(
-                ("Device.IP.InterfaceNumberOfEntries",)
+                ("Device.IP.InterfaceNumberOfEntries",),
+                busy_retries=busy_retries,
             )
             count_value = count_values.get("Device.IP.InterfaceNumberOfEntries")
             if count_value is not None:
@@ -1882,13 +1911,19 @@ class SpeedportClient:
                 for suffix in interface_suffixes
             )
             try:
-                parameters = await self._get_parameter_values_unlocked(names)
+                parameters = await self._get_parameter_values_unlocked(
+                    names, busy_retries=busy_retries
+                )
             except SpeedportSessionBusyError:
                 raise
             except SpeedportProtocolError:
-                parameters = await self._discover_interface_parameters_unlocked()
+                parameters = await self._discover_interface_parameters_unlocked(
+                    busy_retries=busy_retries
+                )
         else:
-            parameters = await self._discover_interface_parameters_unlocked()
+            parameters = await self._discover_interface_parameters_unlocked(
+                busy_retries=busy_retries
+            )
 
         grouped: dict[int, dict[str, ParameterValue]] = {}
         for name, parameter in parameters.items():
@@ -1908,10 +1943,14 @@ class SpeedportClient:
 
     async def _discover_interface_parameters_unlocked(
         self,
+        *,
+        busy_retries: int | None = None,
     ) -> dict[str, ParameterValue]:
         """Scan standard interface aliases when secured count is unavailable."""
         try:
-            return await self._get_parameter_values_unlocked(("Device.IP.Interface.",))
+            return await self._get_parameter_values_unlocked(
+                ("Device.IP.Interface.",), busy_retries=busy_retries
+            )
         except SpeedportSessionBusyError:
             raise
         except SpeedportProtocolError:
@@ -1922,7 +1961,9 @@ class SpeedportClient:
             prefix = f"Device.IP.Interface.{index}"
             alias_name = f"{prefix}.Alias"
             try:
-                alias = await self._get_parameter_values_unlocked((alias_name,))
+                alias = await self._get_parameter_values_unlocked(
+                    (alias_name,), busy_retries=busy_retries
+                )
             except SpeedportSessionBusyError:
                 raise
             except SpeedportProtocolError:
@@ -1936,7 +1977,11 @@ class SpeedportClient:
             )
             names = tuple(f"{prefix}.{suffix}" for suffix in detail_suffixes)
             try:
-                parameters.update(await self._get_parameter_values_unlocked(names))
+                parameters.update(
+                    await self._get_parameter_values_unlocked(
+                        names, busy_retries=busy_retries
+                    )
+                )
             except SpeedportSessionBusyError:
                 raise
             except SpeedportProtocolError:
@@ -1945,7 +1990,9 @@ class SpeedportClient:
                 )
                 try:
                     parameters.update(
-                        await self._get_parameter_values_unlocked(fallback_names)
+                        await self._get_parameter_values_unlocked(
+                            fallback_names, busy_retries=busy_retries
+                        )
                     )
                     continue
                 except SpeedportSessionBusyError:
@@ -1955,7 +2002,9 @@ class SpeedportClient:
                 for name in fallback_names:
                     try:
                         parameters.update(
-                            await self._get_parameter_values_unlocked((name,))
+                            await self._get_parameter_values_unlocked(
+                                (name,), busy_retries=busy_retries
+                            )
                         )
                     except SpeedportSessionBusyError:
                         raise

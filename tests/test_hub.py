@@ -184,6 +184,7 @@ async def test_fast_wan_busy_uses_telemetry_backoff_only(
         hass,
         mock_speedport_client,
         fallback_identifier="entry",
+        public_status_interval_seconds=1,
         monotonic_time=lambda: now[0],
     )
     await hub.async_setup()
@@ -192,6 +193,9 @@ async def test_fast_wan_busy_uses_telemetry_backoff_only(
     assert hub.get("management.access.state") == "available"
     assert hub.get("wan.download_rate_bps") is None
     assert mock_speedport_client.get_wan_counters.await_count == 1
+    assert mock_speedport_client.get_wan_counters.await_args.kwargs == {
+        "busy_retries": 0
+    }
     assert hub._protected_retry_at == 0.0  # noqa: SLF001
 
     mock_speedport_client.get_wan_counters.side_effect = None
@@ -201,15 +205,444 @@ async def test_fast_wan_busy_uses_telemetry_backoff_only(
         1_000,
         datetime.now(UTC),
     )
+    now[0] = 101.0
     await hub.async_update_group(PollGroup.FAST)
 
     assert mock_speedport_client.get_wan_counters.await_count == 1
     assert hub.get("management.access.state") == "available"
+    assert hub.get("diagnostics.problem") is False
 
     now[0] = 106.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 2
     assert hub.get("management.access.state") == "available"
+
+    now[0] = 107.0
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_status.await_count == 4
+    assert mock_speedport_client.get_wan_counters.await_count == 2
+    assert hub.get("wan.bytes_received") == 2_000
+
+
+async def test_public_status_failure_does_not_starve_due_wan_poll(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    router_status: RouterStatus,
+) -> None:
+    """A failed public source is unavailable without starving WAN polling."""
+    now = [100.0]
+    mock_speedport_client.get_status.side_effect = (
+        router_status,
+        SpeedportConnectionError("temporary"),
+        router_status,
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=5,
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+
+    await hub.async_update_group(PollGroup.FAST)
+    assert hub.get("internet.state") is True
+    assert mock_speedport_client.get_status.await_count == 1
+    assert mock_speedport_client.get_wan_counters.await_count == 1
+    assert hub.get("wan.bytes_received") == 10_000
+
+    now[0] = 105.0
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_status.await_count == 2
+    assert mock_speedport_client.get_wan_counters.await_count == 2
+    assert hub.get("internet.state") is None
+    assert hub.get("dsl.state") is None
+    assert hub.get("wan.bytes_received") == 10_000
+    assert hub.diagnostics()["endpoint_errors"]["status"] == (
+        "SpeedportConnectionError"
+    )
+
+    now[0] = 110.0
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_status.await_count == 3
+    assert mock_speedport_client.get_wan_counters.await_count == 3
+    assert hub.get("internet.state") is True
+    assert hub.get("dsl.state") is True
+    assert "status" not in hub.diagnostics()["endpoint_errors"]
+
+
+async def test_wan_transient_failures_preserve_totals_and_do_not_inflate_busy_retry(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    wan_interface: WanInterface,
+) -> None:
+    """Transient failures retain totals and do not poison 9801 backoff."""
+    now = [100.0]
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=300,
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+    mock_speedport_client.get_wan_counters.return_value = WanCounters(
+        wan_interface,
+        10_000,
+        5_000,
+        datetime.now(UTC),
+        packets_received=100,
+        packets_sent=50,
+    )
+    await hub.async_update_group(PollGroup.FAST)
+    now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+    mock_speedport_client.get_wan_counters.return_value = WanCounters(
+        wan_interface,
+        20_000,
+        10_000,
+        datetime.now(UTC),
+        packets_received=200,
+        packets_sent=100,
+    )
+    await hub.async_update_group(PollGroup.FAST)
+    assert hub.get("wan.download_rate_bps") is not None
+
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportConnectionError(
+        "temporary"
+    )
+    for _ in range(4):
+        now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+        await hub.async_update_group(PollGroup.FAST)
+
+    assert hub.get("wan.bytes_received") == 20_000
+    assert hub.get("wan.bytes_sent") == 10_000
+    assert hub.get("wan.packets_received") == 200
+    assert hub.get("wan.packets_sent") == 100
+    assert hub.get("wan.download_rate_bps") is None
+    assert hub.get("wan.upload_rate_bps") is None
+
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
+        "busy"
+    )
+    now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+    await hub.async_update_group(PollGroup.FAST)
+
+    telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
+    assert telemetry["retry_in_seconds"] == 5.0
+    assert hub.get("wan.bytes_received") == 20_000
+
+
+async def test_wan_failure_breaks_clean_cadence_proof_streak(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Successes separated by a failed sample cannot prove a faster cadence."""
+    now = [100.0]
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=300,
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+
+    for _ in range(11):
+        await hub.async_update_group(PollGroup.FAST)
+        now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+
+    assert hub._wan_counter_success_streak == 11  # noqa: SLF001
+    assert hub._wan_counter_effective_interval == 5.0  # noqa: SLF001
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportConnectionError(
+        "temporary"
+    )
+    await hub.async_update_group(PollGroup.FAST)
+    assert hub._wan_counter_success_streak == 0  # noqa: SLF001
+
+    mock_speedport_client.get_wan_counters.side_effect = None
+    now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert hub._wan_counter_success_streak == 1  # noqa: SLF001
+    assert hub._wan_counter_effective_interval == 5.0  # noqa: SLF001
+    assert hub.wan_counter_telemetry["last_stable_interval_seconds"] is None
+
+
+async def test_slow_wan_error_reschedules_from_request_completion(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A slow failed request cannot trigger another attempt on the next tick."""
+    now = [100.0]
+
+    async def delayed_error(**_kwargs: object) -> None:
+        now[0] += 10.0
+        raise SpeedportConnectionError("temporary")
+
+    mock_speedport_client.get_wan_counters.side_effect = delayed_error
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=300,
+        wan_counter_interval_seconds=2,
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert now[0] == 110.0
+    assert hub._wan_counter_next_poll_at == 112.0  # noqa: SLF001
+    assert mock_speedport_client.get_wan_counters.await_count == 1
+
+    now[0] = 111.0
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_wan_counters.await_count == 1
+
+    now[0] = 112.0
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_wan_counters.await_count == 2
+
+
+async def test_pending_wan_counter_capability_recovers_after_busy_setup(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    wan_interface: WanInterface,
+) -> None:
+    """A setup-time 9801 remains exposed and recovers without a reload."""
+    now = [100.0]
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        tr064=True,
+        wan_counters=False,
+        authenticated_json=True,
+        failures=MappingProxyType(
+            {"wan_counters": "SpeedportSessionBusyError: ToTR64 session busy"}
+        ),
+    )
+    mock_speedport_client.get_wan_counters.side_effect = (
+        SpeedportSessionBusyError("busy"),
+        WanCounters(wan_interface, 12_000, 6_000, datetime.now(UTC)),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+
+    assert hub.has_capability("wan_counters")
+    await hub.async_update_group(PollGroup.FAST)
+    assert hub.has_capability("wan_counters")
+    assert hub.get("wan.bytes_received") is None
+
+    now[0] = 106.0
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert hub.has_capability("wan_counters")
+    assert hub.get("wan.bytes_received") == 12_000
+    assert hub.get("wan.sampled_at") is not None
+    assert hub.capability_report is not None
+    assert hub.capability_report.wan_counters
+    assert "wan_counters" not in hub.diagnostics()["endpoint_errors"]
+
+
+@pytest.mark.parametrize(
+    ("independent_wan", "expected_wan"),
+    [(False, False), (True, True)],
+)
+async def test_pending_wan_counter_capability_is_removed_after_unsupported_probe(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    *,
+    independent_wan: bool,
+    expected_wan: bool,
+) -> None:
+    """A disproved setup probe removes only capabilities it contributed."""
+    feature_endpoints = (
+        MappingProxyType({"wan": EndpointCapability("wan", "data/WAN.json")})
+        if independent_wan
+        else MappingProxyType({})
+    )
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        tr064=True,
+        wan_counters=False,
+        authenticated_json=True,
+        feature_endpoints=feature_endpoints,
+        failures=MappingProxyType(
+            {"wan_counters": "SpeedportSessionBusyError: ToTR64 session busy"}
+        ),
+    )
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportUnsupportedError(
+        "unsupported"
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+
+    assert hub.has_capability("wan_counters")
+    assert hub.has_capability("wan")
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert not hub.has_capability("wan_counters")
+    assert hub.has_capability("wan") is expected_wan
+    assert hub.capability_report is not None
+    assert "wan_counters" not in hub.capability_report.failures
+
+
+async def test_repeated_wan_busy_uses_exponential_retry_without_raising_floor(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Repeated 9801 responses slow retries without rejecting a proven cadence."""
+    now = [100.0]
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
+        "busy"
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+
+    for retry_seconds in (5.0, 10.0, 20.0, 40.0, 60.0):
+        await hub.async_update_group(PollGroup.FAST)
+        telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
+        assert telemetry["retry_in_seconds"] == retry_seconds
+        assert telemetry["runtime_floor_seconds"] == 1.0
+        assert hub.get("management.access.state") == "available"
+        assert hub.get("diagnostics.problem") is False
+        now[0] += retry_seconds
+
+    assert mock_speedport_client.get_wan_counters.await_count == 5
+
+
+async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_busy(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Auto cadence learns 5→4→3→2→1 and holds after a busy response."""
+    now = [100.0]
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=300,
+        wan_counter_interval_seconds=0,
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+
+    for expected_interval in (4.0, 3.0, 2.0, 1.0):
+        for _ in range(12):
+            await hub.async_update_group(PollGroup.FAST)
+            now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+        assert hub._wan_counter_effective_interval == expected_interval  # noqa: SLF001
+
+    assert mock_speedport_client.get_status.await_count == 1
+    assert hub.diagnostics()["telemetry"]["wan_counters"]["state"] == "learning"
+    confirmed_total = hub.get("wan.bytes_received")
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
+        "busy"
+    )
+
+    await hub.async_update_group(PollGroup.FAST)
+
+    telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
+    assert telemetry["effective_interval_seconds"] == 2.0
+    assert telemetry["state"] == "retrying"
+    assert telemetry["runtime_floor_seconds"] == 2.0
+    assert telemetry["last_stable_interval_seconds"] == 2.0
+    assert hub.get("wan.bytes_received") == confirmed_total
+    assert hub.get("diagnostics.problem") is False
+
+    mock_speedport_client.get_wan_counters.side_effect = None
+    now[0] = hub._wan_counter_retry_at  # noqa: SLF001
+    for _ in range(12):
+        await hub.async_update_group(PollGroup.FAST)
+        now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
+
+    telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
+    assert telemetry["effective_interval_seconds"] == 2.0
+    assert telemetry["state"] == "limited"
+    assert "wan_counters" not in hub.diagnostics()["endpoint_errors"]
+
+
+def test_wan_auto_target_is_stable_only_after_target_samples_are_proven(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Reaching the target starts a probe; clean samples prove it stable."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        wan_counter_interval_seconds=0,
+        monotonic_time=lambda: 100.0,
+    )
+    hub._wan_counter_effective_interval = 1.0  # noqa: SLF001
+    hub._wan_counter_last_stable_interval = 2.0  # noqa: SLF001
+
+    initial = hub.diagnostics()["telemetry"]["wan_counters"]
+    assert initial["state"] == "learning"
+    assert initial["last_stable_interval_seconds"] is None
+    for _ in range(12):
+        hub._record_wan_counter_success()  # noqa: SLF001
+
+    telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
+    assert telemetry["last_stable_interval_seconds"] == 1.0
+    assert telemetry["state"] == "stable"
+
+
+def test_wan_telemetry_accessors_return_small_immutable_snapshots(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Hot-path telemetry access avoids exporting the full diagnostic tree."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: 100.0,
+    )
+    hub._endpoint_errors["wan_counters"] = "SpeedportConnectionError"  # noqa: SLF001
+
+    telemetry = hub.wan_counter_telemetry
+    endpoint_errors = hub.endpoint_errors
+
+    assert telemetry["mode"] == "auto"
+    assert telemetry["effective_interval_seconds"] == 5.0
+    assert "data" not in telemetry
+    assert hub.has_endpoint_error("wan_counters")
+    assert endpoint_errors == {"wan_counters": "SpeedportConnectionError"}
+    with pytest.raises(TypeError):
+        telemetry["state"] = "stable"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        endpoint_errors["status"] = "SpeedportConnectionError"  # type: ignore[index]
+
+
+def test_manual_wan_counter_target_is_decoupled_from_public_status(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """An advanced manual target does not change the public status interval."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=30,
+        wan_counter_interval_seconds=2,
+    )
+
+    telemetry = hub.diagnostics()["telemetry"]
+    assert telemetry["public_status"]["interval_seconds"] == 30
+    assert telemetry["wan_counters"]["mode"] == "manual"
+    assert telemetry["wan_counters"]["target_interval_seconds"] == 2
+    assert telemetry["wan_counters"]["effective_interval_seconds"] == 2
 
 
 async def test_transitions_and_fallback_identity(
@@ -218,6 +651,7 @@ async def test_transitions_and_fallback_identity(
     router_info: RouterInfo,
 ) -> None:
     """Hub emits only changes after initial state and has stable fallback ID."""
+    now = [100.0]
     no_serial = RouterInfo(model="Speedport", serial_number=None)
     mock_speedport_client.router_info = no_serial
     mock_speedport_client.setup.return_value = CapabilityReport(status_json=True)
@@ -229,10 +663,13 @@ async def test_transitions_and_fallback_identity(
         hass,
         mock_speedport_client,
         fallback_identifier="entry-id",
+        public_status_interval_seconds=1,
+        monotonic_time=lambda: now[0],
     )
     await hub.async_setup()
 
     first = await hub.async_update_group(PollGroup.FAST)
+    now[0] = 101.0
     second = await hub.async_update_group(PollGroup.FAST)
 
     assert hub.router_identifier == "entry-id"
@@ -476,6 +913,7 @@ async def test_fast_wan_busy_preserves_protected_poll_groups(
     mock_speedport_client: MagicMock,
 ) -> None:
     """A busy ToTR64 counter request degrades only live WAN telemetry."""
+    now = [100.0]
     mock_speedport_client.setup.return_value = CapabilityReport(
         status_json=True,
         tr064=True,
@@ -511,7 +949,12 @@ async def test_fast_wan_busy_preserves_protected_poll_groups(
         errors_received=2,
         errors_sent=1,
     )
-    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: now[0],
+    )
     await hub.async_setup()
     await hub.async_update_group(PollGroup.FAST)
     await hub.async_update_group(PollGroup.NORMAL)
@@ -525,6 +968,7 @@ async def test_fast_wan_busy_preserves_protected_poll_groups(
     mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
         "busy"
     )
+    now[0] = 106.0
 
     with patch.object(hub, "_create_management_issue") as create_issue:
         await hub.async_update_group(PollGroup.FAST)
@@ -537,6 +981,7 @@ async def test_fast_wan_busy_preserves_protected_poll_groups(
     assert hub.get("wan.packets_sent") == 50
     assert hub.get("wan.errors_received") == 2
     assert hub.get("wan.errors_sent") == 1
+    assert hub.get("wan.sampled_at") is not None
     assert hub.get("wan.download_rate_bps") is None
     assert hub.get("wan.upload_rate_bps") is None
     assert hub.get("wifi.enabled") is True
@@ -557,6 +1002,7 @@ async def test_dsl_busy_degrades_only_dsl_telemetry(
     mock_speedport_client: MagicMock,
 ) -> None:
     """A busy ToTR64 DSL request does not block the web management session."""
+    now = [100.0]
     mock_speedport_client.setup.return_value = CapabilityReport(
         status_json=True,
         tr064=True,
@@ -595,7 +1041,12 @@ async def test_dsl_busy_degrades_only_dsl_telemetry(
         upstream_attenuation_db=2.0,
         sampled_at=datetime.now(UTC),
     )
-    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: now[0],
+    )
     await hub.async_setup()
     await hub.async_update_group(PollGroup.FAST)
     await hub.async_update_group(PollGroup.NORMAL)
@@ -615,6 +1066,7 @@ async def test_dsl_busy_degrades_only_dsl_telemetry(
 
     assert hub.get("management.access.state") == "available"
     create_issue.assert_not_called()
+    assert hub.get("diagnostics.problem") is False
     assert hub.get("wifi.enabled") is True
     assert hub.get("nat.port_forwarding_enabled") is True
     assert hub.get("internet.state") is True
@@ -623,6 +1075,29 @@ async def test_dsl_busy_degrades_only_dsl_telemetry(
     assert hub.get("dsl.attainable_downstream_bps") is None
     assert hub._protected_retry_at == 0.0  # noqa: SLF001
     slow_coordinator.async_set_updated_data.assert_not_called()
+
+    mock_speedport_client.get_dsl_metrics.side_effect = None
+    mock_speedport_client.get_dsl_metrics.return_value = DslMetrics(
+        line_index=1,
+        channel_index=1,
+        status="Up",
+        downstream_current_bps=204_413_000,
+        upstream_current_bps=42_460_000,
+        downstream_max_bps=231_000_000,
+        upstream_max_bps=51_000_000,
+        downstream_noise_margin_db=13.0,
+        upstream_noise_margin_db=9.0,
+        downstream_attenuation_db=4.0,
+        upstream_attenuation_db=2.0,
+        sampled_at=datetime.now(UTC),
+    )
+    now[0] = 106.0
+
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.has_capability("dsl_metrics")
+    assert hub.get("dsl.snr_downstream_db") == 13.0
+    assert "dsl_metrics" not in hub.diagnostics()["endpoint_errors"]
 
 
 async def test_invalid_credentials_clear_other_poll_groups_before_reauth(

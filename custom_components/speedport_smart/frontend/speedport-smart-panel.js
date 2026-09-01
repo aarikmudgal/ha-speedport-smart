@@ -28,7 +28,19 @@ import {
 
 const API_TYPE = "speedport_smart/panel";
 const PANEL_SCHEMA_VERSION = 6;
+const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
+const WAN_CUMULATIVE_KEYS = new Set([
+  "wan_bytes_received",
+  "wan_bytes_sent",
+  "wan_discarded_packets_received",
+  "wan_discarded_packets_sent",
+  "wan_errors_received",
+  "wan_errors_sent",
+  "wan_packets_received",
+  "wan_packets_sent",
+]);
+const WAN_RATE_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const SECTION_ORDER = [
   "connection",
   "bandwidth",
@@ -172,6 +184,7 @@ const CAPABILITY_GROUP_INFO = {
   bandwidth_packets: { titleKey: "group.bandwidth_packets", icon: "mdi:package-variant-closed" },
   bandwidth_errors: { titleKey: "group.bandwidth_errors", icon: "mdi:alert-circle-outline" },
   bandwidth_interface: { titleKey: "group.bandwidth_interface", icon: "mdi:ethernet" },
+  bandwidth_polling: { titleKey: "group.bandwidth_polling", icon: "mdi:timer-sync-outline" },
   bandwidth_live: { titleKey: "group.bandwidth_live", icon: "mdi:swap-vertical-bold" },
   dsl_status: { titleKey: "group.dsl_status", icon: "mdi:connection" },
   dsl_sync: { titleKey: "group.dsl_sync", icon: "mdi:transmission-tower" },
@@ -241,7 +254,7 @@ const CAPABILITY_GROUP_INFO = {
 };
 const CAPABILITY_GROUP_ORDER = {
   connection: ["connection_internet", "connection_addressing", "connection_privacy"],
-  bandwidth: ["bandwidth_capacity", "bandwidth_totals", "bandwidth_packets", "bandwidth_errors", "bandwidth_interface", "bandwidth_live"],
+  bandwidth: ["bandwidth_capacity", "bandwidth_totals", "bandwidth_packets", "bandwidth_errors", "bandwidth_interface", "bandwidth_polling", "bandwidth_live"],
   dsl: ["dsl_status", "dsl_sync", "dsl_attainable", "dsl_quality", "dsl_errors"],
   mobile: ["mobile_connection", "mobile_radio", "mobile_signal", "mobile_tunnel", "mobile_receiver_status", "mobile_receiver_firmware", "mobile_receivers"],
   wireless: ["wireless_2_4", "wireless_5", "wireless_guest", "wireless_office", "wireless_radios", "wireless_access", "wireless_wps", "wireless_schedule", "wireless_mesh", "wireless_mesh_nodes", "wireless_general"],
@@ -329,6 +342,13 @@ export function capabilityGroupFor(meta) {
     }
     if (key.startsWith("wan_interface") || key === "wan_mtu") {
       return "bandwidth_interface";
+    }
+    if (
+      key.startsWith("wan_polling") ||
+      key === "wan_fastest_proven_interval" ||
+      key === "wan_last_sample"
+    ) {
+      return "bandwidth_polling";
     }
     if (key === "wan_download_rate" || key === "wan_upload_rate") {
       return "bandwidth_live";
@@ -517,6 +537,128 @@ export function internetConnectionPresentation(state) {
   return { className: "offline", labelKey: "hero.disconnected" };
 }
 
+export function liveWanSourceFromEntityStates(source, entities, states) {
+  if (source?.id !== "wan_counters") return source;
+  const live = { ...source };
+  const stateFor = (translationKey) => {
+    const entity = entities?.find(
+      (candidate) => candidate.translation_key === translationKey,
+    );
+    return entity ? states?.[entity.entity_id] : undefined;
+  };
+  const usableState = (entityState) =>
+    entityState && !["unavailable", "unknown"].includes(entityState.state)
+      ? entityState.state
+      : undefined;
+  const positiveNumberState = (entityState) => {
+    const numeric = Number(usableState(entityState));
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+  };
+
+  const mode = usableState(stateFor("wan_polling_mode"));
+  if (["auto", "manual"].includes(mode)) live.mode = mode;
+
+  const schedulerEntityState = stateFor("wan_polling_state");
+  const schedulerState = usableState(schedulerEntityState);
+  if (["learning", "stable", "retrying", "limited"].includes(schedulerState)) {
+    live.state = schedulerState;
+    live.retrying = schedulerState === "retrying";
+  } else if (schedulerEntityState) {
+    live.available = false;
+    live.retrying = false;
+  }
+  const schedulerAttributes = schedulerEntityState?.attributes || {};
+  if (typeof schedulerAttributes.source_available === "boolean") {
+    live.available =
+      source.polling_available !== false &&
+      schedulerAttributes.source_available;
+  }
+  const retryInSeconds = Number(schedulerAttributes.retry_in_seconds);
+  if (Number.isFinite(retryInSeconds) && retryInSeconds >= 0) {
+    live.retry_in_seconds = retryInSeconds;
+  }
+
+  const interval = positiveNumberState(stateFor("wan_polling_interval"));
+  if (interval !== undefined) live.effective_interval_seconds = interval;
+  const fastest = positiveNumberState(
+    stateFor("wan_fastest_proven_interval"),
+  );
+  if (fastest !== undefined) live.last_stable_interval_seconds = fastest;
+  const lastSample = usableState(stateFor("wan_last_sample"));
+  if (lastSample !== undefined) live.last_sampled_at = lastSample;
+  return live;
+}
+
+export function wanTelemetryPresentation(
+  meta,
+  state,
+  source,
+  nowMilliseconds = Date.now(),
+) {
+  const isWanSource = source?.id === "wan_counters";
+  const retrying =
+    isWanSource && (source.retrying === true || source.state === "retrying");
+  const degraded =
+    isWanSource &&
+    source?.supported !== false &&
+    (retrying || source?.available === false);
+  const interval = Number(source?.effective_interval_seconds);
+  const effectiveIntervalSeconds =
+    isWanSource && Number.isFinite(interval) && interval > 0
+      ? interval
+      : undefined;
+  const sampledAtMilliseconds = Date.parse(source?.last_sampled_at || "");
+  const stableInterval = Number(source?.last_stable_interval_seconds);
+  const fastestProvenIntervalSeconds =
+    isWanSource &&
+    Number.isFinite(sampledAtMilliseconds) &&
+    Number.isFinite(stableInterval) &&
+    stableInterval > 0
+      ? stableInterval
+      : undefined;
+  const mode =
+    isWanSource && ["auto", "manual"].includes(source?.mode)
+      ? source.mode
+      : undefined;
+  const schedulerState =
+    isWanSource &&
+    ["learning", "stable", "retrying", "limited"].includes(source?.state)
+      ? source.state
+      : undefined;
+  const sampleAgeSeconds =
+    isWanSource && Number.isFinite(sampledAtMilliseconds)
+      ? Math.max(0, Math.floor((nowMilliseconds - sampledAtMilliseconds) / 1_000))
+      : undefined;
+  const retryIn = Number(source?.retry_in_seconds);
+  const retryInSeconds =
+    retrying && Number.isFinite(retryIn) && retryIn > 0 ? retryIn : undefined;
+  const availability = entityAvailability(meta, state);
+  const rateStatusKey = WAN_RATE_KEYS.has(meta?.translation_key)
+    ? availability === "available"
+      ? "status.recent_rate"
+      : retrying
+        ? "status.rate_retrying"
+        : degraded
+          ? "status.rate_unavailable"
+          : "status.rate_warming"
+    : undefined;
+  return {
+    degraded,
+    effectiveIntervalSeconds,
+    fastestProvenIntervalSeconds,
+    lastConfirmed:
+      degraded &&
+      availability === "available" &&
+      WAN_CUMULATIVE_KEYS.has(meta?.translation_key),
+    mode,
+    rateStatusKey,
+    retrying,
+    retryInSeconds,
+    sampleAgeSeconds,
+    schedulerState,
+  };
+}
+
 class SpeedportSmartPanel extends HTMLElement {
   constructor() {
     super();
@@ -565,7 +707,10 @@ class SpeedportSmartPanel extends HTMLElement {
   connectedCallback() {
     if (this._hass && !this._metadata) this._loadMetadata();
     if (!this._refreshTimer) {
-      this._refreshTimer = window.setInterval(() => this._loadMetadata(), 60000);
+      this._refreshTimer = window.setInterval(
+        () => this._loadMetadata(),
+        METADATA_REFRESH_INTERVAL_MS,
+      );
     }
     this._render();
   }
@@ -1034,25 +1179,102 @@ class SpeedportSmartPanel extends HTMLElement {
     }
   }
 
+  _wanTelemetryDetails(source) {
+    const presentation = wanTelemetryPresentation(
+      undefined,
+      undefined,
+      source,
+    );
+    const details = [];
+    if (presentation.mode) {
+      details.push(this._t(`status.polling_mode_${presentation.mode}`));
+    }
+    if (
+      presentation.schedulerState &&
+      presentation.schedulerState !== "retrying"
+    ) {
+      details.push(
+        this._t(`status.polling_state_${presentation.schedulerState}`),
+      );
+    }
+    if (presentation.effectiveIntervalSeconds !== undefined) {
+      const duration = formatPanelDurationSeconds(
+        presentation.effectiveIntervalSeconds,
+        this._locale(),
+        this._language(),
+      );
+      if (duration !== undefined) {
+        details.push(this._t("status.sample_interval", { duration }));
+      }
+    }
+    if (presentation.fastestProvenIntervalSeconds !== undefined) {
+      const duration = formatPanelDurationSeconds(
+        presentation.fastestProvenIntervalSeconds,
+        this._locale(),
+        this._language(),
+      );
+      if (duration !== undefined) {
+        details.push(this._t("status.fastest_proven", { duration }));
+      }
+    }
+    if (presentation.retryInSeconds !== undefined) {
+      const duration = formatPanelDurationSeconds(
+        presentation.retryInSeconds,
+        this._locale(),
+        this._language(),
+      );
+      if (duration !== undefined) {
+        details.push(this._t("status.retry_in", { duration }));
+      }
+    }
+    if (presentation.sampleAgeSeconds !== undefined) {
+      const duration = formatPanelDurationSeconds(
+        presentation.sampleAgeSeconds,
+        this._locale(),
+        this._language(),
+      );
+      if (duration !== undefined) {
+        details.push(
+          this._t(
+            presentation.degraded
+              ? "status.last_confirmed_ago"
+              : "status.last_sample_ago",
+            { duration },
+          ),
+        );
+      }
+    }
+    return details.join(" · ");
+  }
+
   _renderSource(source) {
     const unsupported = source.supported === false;
+    const telemetry = wanTelemetryPresentation(undefined, undefined, source);
+    const retrying = !unsupported && telemetry.retrying;
     const status = unsupported
       ? "unsupported"
-      : source.available
-        ? "available"
-        : "unavailable";
+      : retrying
+        ? "retrying"
+        : source.available
+          ? "available"
+          : "unavailable";
     const statusLabel = unsupported
       ? this._t("status.not_detected")
-      : source.available
-        ? this._t("status.ready_now")
-        : this._t("status.temporarily_unavailable");
+      : retrying
+        ? this._t("status.telemetry_retrying")
+        : source.available
+          ? this._t("status.ready_now")
+          : this._t("status.temporarily_unavailable");
     const sourceInfo =
       ACCESS_SOURCE_INFO[source.id] || ACCESS_SOURCE_INFO.protected_json;
+    const details =
+      source.id === "wan_counters" ? this._wanTelemetryDetails(source) : "";
     return `
       <div class="source ${status}">
         <span class="source-dot" aria-hidden="true"></span>
         <span>${escapeHtml(this._t(sourceInfo.titleKey))}</span>
         <strong>${escapeHtml(statusLabel)}</strong>
+        ${details ? `<small class="source-detail">${escapeHtml(details)}</small>` : ""}
       </div>
     `;
   }
@@ -1185,7 +1407,15 @@ class SpeedportSmartPanel extends HTMLElement {
     return label;
   }
 
-  _renderEntity(meta, { capabilityGroup = undefined, child = false, hero = false } = {}) {
+  _renderEntity(
+    meta,
+    {
+      capabilityGroup = undefined,
+      child = false,
+      hero = false,
+      sourceState = undefined,
+    } = {},
+  ) {
     const state = this._state(meta);
     const stateClass = entityAvailability(meta, state);
     const unavailable = stateClass !== "available";
@@ -1204,15 +1434,23 @@ class SpeedportSmartPanel extends HTMLElement {
     const icon = iconFor(meta, state);
     const sourceInfo =
       ACCESS_SOURCE_INFO[meta.access_source] || ACCESS_SOURCE_INFO.protected_json;
+    const wanPresentation = wanTelemetryPresentation(meta, state, sourceState);
+    const wanDetails =
+      meta.access_source === "wan_counters"
+        ? this._wanTelemetryDetails(sourceState)
+        : "";
 
     if (hero) {
+      const rateStatusKey =
+        wanPresentation.rateStatusKey ||
+        (unavailable ? "status.waiting_sample" : "status.recent_rate");
       return `
         <button class="hero-metric ${stateClass}" data-more-info="${escapeHtml(meta.entity_id)}">
           <div class="hero-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></div>
           <div>
             <span>${escapeHtml(label)}</span>
             <strong>${escapeHtml(displayState)}</strong>
-            <small>${escapeHtml(this._t(sourceInfo.shortKey))} · ${escapeHtml(this._t(unavailable ? "status.waiting_sample" : "status.recent_rate"))}</small>
+            <small>${escapeHtml(this._t(sourceInfo.shortKey))} · ${escapeHtml(this._t(rateStatusKey))}</small>
           </div>
         </button>
       `;
@@ -1245,18 +1483,31 @@ class SpeedportSmartPanel extends HTMLElement {
       `
       : "";
 
+    const sourceBadge = wanPresentation.lastConfirmed
+      ? wanDetails || this._t("status.last_confirmed")
+      : this._t(sourceInfo.shortKey);
+    const availabilityTitle = wanPresentation.lastConfirmed
+      ? sourceBadge
+      : this._t(
+          stateClass === "available"
+            ? "status.available"
+            : stateClass === "unknown"
+              ? "status.unknown"
+              : "status.unavailable",
+        );
+
     return `
-      <article class="entity-card ${child ? "child-entity-card" : ""} ${stateClass} ${meta.control ? "control-card" : ""}">
+      <article class="entity-card ${child ? "child-entity-card" : ""} ${stateClass} ${wanPresentation.lastConfirmed ? "last-confirmed" : ""} ${meta.control ? "control-card" : ""}">
         <button class="entity-main" data-more-info="${escapeHtml(meta.entity_id)}">
           <span class="entity-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></span>
           <span class="entity-copy">
             <span class="entity-name">${escapeHtml(label)}</span>
             <strong class="entity-state">${escapeHtml(displayState)}</strong>
             <span class="source-badge" title="${escapeHtml(this._t(sourceInfo.descriptionKey))}">
-              ${escapeHtml(this._t(sourceInfo.shortKey))}
+              ${escapeHtml(sourceBadge)}
             </span>
           </span>
-          <span class="availability-dot" aria-hidden="true" title="${escapeHtml(this._t(stateClass === "available" ? "status.available" : stateClass === "unknown" ? "status.unknown" : "status.unavailable"))}"></span>
+          <span class="availability-dot" aria-hidden="true" title="${escapeHtml(availabilityTitle)}"></span>
         </button>
         ${control}
       </article>
@@ -1296,7 +1547,7 @@ class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
-  _renderCapabilityGroup(sectionId, sourceId, groupId, entities) {
+  _renderCapabilityGroup(sectionId, sourceId, groupId, entities, sourceState) {
     const info = capabilityGroupInfo(groupId, sectionId);
     const rootEntities = entities.filter((entity) => !entity.child_device);
     const childGroups = new Map();
@@ -1309,7 +1560,10 @@ class SpeedportSmartPanel extends HTMLElement {
     const rootGrid = rootEntities.length
       ? `<div class="entity-grid capability-entity-grid">${rootEntities
           .map((entity) =>
-            this._renderEntity(entity, { capabilityGroup: groupId }),
+            this._renderEntity(entity, {
+              capabilityGroup: groupId,
+              sourceState,
+            }),
           )
           .join("")}</div>`
       : "";
@@ -1339,12 +1593,14 @@ class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
-  _renderSection(sectionId, entities, router) {
+  _renderSection(sectionId, entities, router, liveSourceStates = undefined) {
     const info = SECTION_INFO[sectionId];
     if (!info || entities.length === 0) return "";
-    const sourceStates = Object.fromEntries(
-      (router.access_sources || []).map((source) => [source.id, source]),
-    );
+    const sourceStates =
+      liveSourceStates ||
+      Object.fromEntries(
+        (router.access_sources || []).map((source) => [source.id, source]),
+      );
     const groups = new Map();
     for (const entity of entities) {
       const source = entity.access_source || "protected_json";
@@ -1363,22 +1619,32 @@ class SpeedportSmartPanel extends HTMLElement {
         const sourceInfo =
           ACCESS_SOURCE_INFO[sourceId] || ACCESS_SOURCE_INFO.protected_json;
         const sourceState = sourceStates[sourceId];
+        const sourceRetrying =
+          sourceId === "wan_counters" && sourceState?.retrying === true;
         const statusClass = sourceState
           ? sourceState.supported === false
             ? "unsupported"
-            : sourceState.available
-              ? "available"
-              : "unavailable"
+            : sourceRetrying
+              ? "retrying"
+              : sourceState.available
+                ? "available"
+                : "unavailable"
           : "local";
         const statusText = sourceState
           ? sourceState.supported === false
             ? this._t("status.not_detected")
-            : sourceState.available
-              ? this._t("status.available_now")
-              : this._t("status.temporarily_unavailable")
+            : sourceRetrying
+              ? this._t("status.telemetry_retrying")
+              : sourceState.available
+                ? this._t("status.available_now")
+                : this._t("status.temporarily_unavailable")
           : sourceId === "router_control"
             ? this._t("status.confirmation_only")
             : this._t("status.available_locally");
+        const sourceDetails =
+          sourceId === "wan_counters"
+            ? this._wanTelemetryDetails(sourceState)
+            : "";
         const capabilityGroups = new Map();
         for (const entity of sourceEntities) {
           const groupId = capabilityGroupFor(entity);
@@ -1405,6 +1671,7 @@ class SpeedportSmartPanel extends HTMLElement {
               sourceId,
               groupId,
               groupEntities,
+              sourceState,
             ),
           )
           .join("");
@@ -1422,6 +1689,7 @@ class SpeedportSmartPanel extends HTMLElement {
               <div>
                 <strong>${escapeHtml(this._t(sourceInfo.titleKey))}</strong>
                 <p>${escapeHtml(this._t(sourceInfo.descriptionKey))}</p>
+                ${sourceDetails ? `<small class="entity-source-detail">${escapeHtml(sourceDetails)}</small>` : ""}
               </div>
               <span class="entity-source-status"><i aria-hidden="true"></i>${escapeHtml(statusText)}</span>
             </header>
@@ -1615,6 +1883,16 @@ class SpeedportSmartPanel extends HTMLElement {
     const heroEntities = router.entities.filter((entity) =>
       HERO_KEYS.has(entity.translation_key),
     );
+    const accessSourceStates = Object.fromEntries(
+      (router.access_sources || []).map((source) => [source.id, source]),
+    );
+    if (accessSourceStates.wan_counters) {
+      accessSourceStates.wan_counters = liveWanSourceFromEntityStates(
+        accessSourceStates.wan_counters,
+        router.entities,
+        this._hass?.states,
+      );
+    }
     const sectionEntities = {};
     for (const entity of router.entities) {
       if (HERO_KEYS.has(entity.translation_key)) continue;
@@ -1651,7 +1929,12 @@ class SpeedportSmartPanel extends HTMLElement {
         : "";
 
     const sections = SECTION_ORDER.map((section) =>
-      this._renderSection(section, sectionEntities[section] || [], router),
+      this._renderSection(
+        section,
+        sectionEntities[section] || [],
+        router,
+        accessSourceStates,
+      ),
     ).join("");
     const notice = this._notice
       ? `<div class="notice" role="${this._noticeKind}" aria-live="${this._noticeKind === "alert" ? "assertive" : "polite"}"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._notice)}</div>`
@@ -1701,7 +1984,9 @@ class SpeedportSmartPanel extends HTMLElement {
           </header>
           <div class="source-grid">
             ${(router.access_sources || [])
-              .map((source) => this._renderSource(source))
+              .map((source) =>
+                this._renderSource(accessSourceStates[source.id] || source),
+              )
               .join("")}
           </div>
           ${this._renderCapabilities(router)}
@@ -1710,7 +1995,12 @@ class SpeedportSmartPanel extends HTMLElement {
         ${
           heroEntities.length
             ? `<section class="hero-metrics">${heroEntities
-                .map((entity) => this._renderEntity(entity, { hero: true }))
+                .map((entity) =>
+                  this._renderEntity(entity, {
+                    hero: true,
+                    sourceState: accessSourceStates[entity.access_source],
+                  }),
+                )
                 .join("")}</section>`
             : ""
         }
@@ -2038,8 +2328,19 @@ class SpeedportSmartPanel extends HTMLElement {
         }
         .source span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .source strong { grid-column: 2; color: var(--sp-muted); font-size: 11px; }
+        .source-detail {
+          grid-column: 2;
+          color: var(--sp-muted);
+          font-size: 10px;
+          line-height: 1.35;
+        }
         .source.available .source-dot { background: var(--sp-success); box-shadow: none; }
         .source.unavailable .source-dot { box-shadow: none; }
+        .source.retrying {
+          border: 1px solid color-mix(in srgb, var(--sp-warning) 35%, var(--sp-border));
+          background: color-mix(in srgb, var(--sp-warning) 8%, var(--sp-surface-soft));
+        }
+        .source.retrying .source-dot { background: var(--sp-warning); box-shadow: none; }
         .source.unsupported .source-dot { background: var(--sp-muted); box-shadow: none; opacity: .55; }
         .source.unsupported { opacity: .7; }
         .capability-details {
@@ -2173,6 +2474,9 @@ class SpeedportSmartPanel extends HTMLElement {
         .entity-source-heading.unavailable {
           background: color-mix(in srgb, var(--sp-warning) 8%, var(--sp-surface-soft));
         }
+        .entity-source-heading.retrying {
+          background: color-mix(in srgb, var(--sp-warning) 12%, var(--sp-surface-soft));
+        }
         .entity-source-heading.unsupported { opacity: .68; }
         .entity-source-icon {
           display: grid;
@@ -2205,7 +2509,15 @@ class SpeedportSmartPanel extends HTMLElement {
           background: var(--sp-success);
         }
         .entity-source-heading.unavailable .entity-source-status i { background: var(--sp-warning); }
+        .entity-source-heading.retrying .entity-source-status i { background: var(--sp-warning); }
         .entity-source-heading.unsupported .entity-source-status i { background: var(--sp-muted); }
+        .entity-source-detail {
+          display: block;
+          margin-top: 4px;
+          color: var(--sp-muted);
+          font-size: 10px;
+          line-height: 1.35;
+        }
         .entity-capability-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
@@ -2330,6 +2642,10 @@ class SpeedportSmartPanel extends HTMLElement {
         }
         .entity-card.unavailable { opacity: .62; }
         .entity-card.unknown { opacity: .78; }
+        .entity-card.last-confirmed {
+          border-color: color-mix(in srgb, var(--sp-warning) 45%, var(--sp-border));
+          background: color-mix(in srgb, var(--sp-warning) 8%, var(--sp-surface-soft));
+        }
         .child-entity-card {
           border-radius: 11px;
           background: var(--sp-surface);
@@ -2398,6 +2714,10 @@ class SpeedportSmartPanel extends HTMLElement {
         .entity-card.available > .entity-main .availability-dot {
           background: var(--sp-success);
         }
+        .entity-card.last-confirmed > .entity-main .availability-dot {
+          background: var(--sp-warning);
+        }
+        .entity-card.last-confirmed .source-badge { color: var(--sp-warning); }
         .entity-card.unknown > .entity-main .availability-dot {
           background: var(--sp-muted);
         }

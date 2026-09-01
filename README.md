@@ -160,16 +160,31 @@ in Home Assistant also removes it from the bundled panel.
 One serialized client owns encrypted JSON authentication, ToTR64 SOAP, and the
 router management lease so polling groups do not compete with each other.
 
-| Group | Default | Allowed | Typical data |
+An internal one-second scheduler checks which live data is due; a scheduler tick
+does not necessarily send a router request. Public status and WAN counters use
+separate due-time gates, so changing one cadence does not force the other to use
+the same interval.
+
+| Data path | Default | Allowed or behavior | Typical data |
 | --- | ---: | ---: | --- |
-| Fast | 5 seconds | 1 to 60 seconds | WAN counters, rates, utilization, live connection state |
+| Public status (Fast) | 5 seconds | 1 to 60 seconds | Browser-independent live connection state |
+| WAN counters | Auto (`0`) | Auto, or an advanced target from 1 to 60 seconds | Cumulative byte and packet counters, derived rates, utilization |
 | Normal | 30 seconds | 15 to 300 seconds | Wi-Fi, clients, telephony, operational status |
 | Slow | 5 minutes | 1 to 60 minutes | Configuration, topology, firmware, slow-changing services |
 
 Change these values from **Settings > Devices & services > Telekom Speedport
-Smart > Configure**. One-second fast polling is best-effort; five seconds is
-recommended for router reliability and usually matches the router's own counter
-refresh cadence.
+Smart > Configure**. The Fast setting controls public status only. The advanced
+WAN counter setting uses `0` for Auto or `1` to `60` for a requested target.
+Auto begins at five seconds and, after stable successful reads, tests four,
+three, two, and one second in sequence. These shorter cadences remain adaptive
+and should not be treated as independently validated for every model or firmware.
+
+If the router returns ToTR64 fault `9801` (session busy), WAN polling backs off
+and retries later instead of disturbing public, normal, or slow polling.
+Previously confirmed cumulative totals remain available with their last-success
+freshness information while retrying; derived live rates resume from valid
+samples after recovery. A manually selected WAN target keeps the same busy
+protection. Normal and Slow retain their existing intervals and data scopes.
 
 The router supplies cumulative byte counters. The integration calculates live
 rates from counter changes over monotonic time and rejects negative values,

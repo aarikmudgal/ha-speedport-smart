@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 
 from custom_components.speedport_smart.panel import (
     _PROTECTED_READ_ONLY_GROUP_BY_KEY,
+    _access_source_for_entity,
+    _capability_panel_data,
     _entity_panel_data,
     _permission_scoped_access_sources,
 )
@@ -273,6 +275,98 @@ def test_panel_source_health_is_limited_to_readable_entity_families() -> None:
         sources[0],
         sources[2],
     ]
+
+
+def test_every_wan_interface_entity_uses_wan_counter_source() -> None:
+    """WAN interface and scheduler entities never appear as protected JSON."""
+    for key, domain in (
+        ("wan_interface", "sensor"),
+        ("wan_interface_status", "sensor"),
+        ("wan_interface_enabled", "binary_sensor"),
+        ("wan_polling_mode", "sensor"),
+        ("wan_polling_interval", "sensor"),
+        ("wan_polling_state", "sensor"),
+        ("wan_fastest_proven_interval", "sensor"),
+        ("wan_last_sample", "sensor"),
+    ):
+        assert (
+            _access_source_for_entity(key, domain, None, is_control=False)
+            == "wan_counters"
+        )
+
+
+def test_wan_source_metadata_exposes_retry_cadence_and_sample_time() -> None:
+    """The panel receives UI-safe telemetry freshness without router I/O."""
+    hub = MagicMock()
+    hub.capability_report = SimpleNamespace(feature_endpoints={})
+    hub.has_capability.side_effect = lambda capability: capability == "wan_counters"
+    hub.get.return_value = {"state": "available"}
+    hub.endpoint_errors = {"wan_counters": "SpeedportSessionBusyError"}
+    hub.wan_counter_telemetry = {
+        "effective_interval_seconds": 3.0,
+        "mode": "auto",
+        "state": "learning",
+        "target_interval_seconds": 1.0,
+        "runtime_floor_seconds": 1.0,
+        "last_stable_interval_seconds": 4.0,
+        "retrying": True,
+        "retry_in_seconds": 2.0,
+        "last_sampled_at": "2026-09-01T10:00:00+00:00",
+    }
+    hub.diagnostics.return_value = {
+        "polling": {
+            "fast": {"available": True},
+            "normal": {"available": True},
+        },
+    }
+
+    sources, _families = _capability_panel_data(hub)
+
+    wan_source = next(source for source in sources if source["id"] == "wan_counters")
+    assert wan_source == {
+        "id": "wan_counters",
+        "label": "Live WAN counters",
+        "supported": True,
+        "polling_available": True,
+        "available": False,
+        "effective_interval_seconds": 3.0,
+        "mode": "auto",
+        "state": "learning",
+        "target_interval_seconds": 1.0,
+        "runtime_floor_seconds": 1.0,
+        "last_stable_interval_seconds": 4.0,
+        "retrying": True,
+        "retry_in_seconds": 2.0,
+        "last_sampled_at": "2026-09-01T10:00:00+00:00",
+    }
+
+
+def test_any_wan_endpoint_error_marks_source_unavailable() -> None:
+    """A non-busy WAN failure is still distinct from rate warm-up."""
+    hub = MagicMock()
+    hub.capability_report = SimpleNamespace(feature_endpoints={})
+    hub.has_capability.side_effect = lambda capability: capability == "wan_counters"
+    hub.get.return_value = {"state": "available"}
+    hub.endpoint_errors = {"wan_counters": "SpeedportProtocolError"}
+    hub.wan_counter_telemetry = {
+        "state": "stable",
+        "retrying": False,
+        "effective_interval_seconds": 4.0,
+        "last_sampled_at": "2026-09-01T10:00:00+00:00",
+    }
+    hub.diagnostics.return_value = {
+        "polling": {
+            "fast": {"available": True},
+            "normal": {"available": True},
+        }
+    }
+
+    sources, _families = _capability_panel_data(hub)
+
+    wan_source = next(source for source in sources if source["id"] == "wan_counters")
+    assert wan_source["available"] is False
+    assert wan_source["retrying"] is False
+    assert wan_source["state"] == "stable"
 
 
 def test_new_management_entities_are_explicitly_grouped_and_read_only() -> None:

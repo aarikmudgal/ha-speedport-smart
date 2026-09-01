@@ -16,6 +16,7 @@ CONF_USE_HTTPS: Final = "use_https"
 CONF_VERIFY_SSL: Final = "verify_ssl"
 CONF_ENABLE_CONTROLS: Final = "enable_controls"
 CONF_FAST_INTERVAL: Final = "fast_interval"
+CONF_WAN_INTERVAL: Final = "wan_interval"
 CONF_NORMAL_INTERVAL: Final = "normal_interval"
 CONF_SLOW_INTERVAL: Final = "slow_interval"
 
@@ -26,6 +27,7 @@ DEFAULT_TR064_HTTP_PORT: Final = 5438
 DEFAULT_TR064_HTTPS_PORT: Final = 8443
 
 DEFAULT_FAST_INTERVAL: Final = timedelta(seconds=5)
+DEFAULT_WAN_INTERVAL: Final = 0
 DEFAULT_NORMAL_INTERVAL: Final = timedelta(seconds=30)
 DEFAULT_SLOW_INTERVAL: Final = timedelta(minutes=5)
 RATE_WINDOW_SECONDS: Final = 10.0

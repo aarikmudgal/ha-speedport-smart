@@ -68,12 +68,16 @@ NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
 FAST_FAMILIES: Final[frozenset[str]] = frozenset()
 _MIN_RATE_SAMPLES: Final = 2
 _RATE_RETENTION_WINDOWS: Final = 2.0
-_WAN_TRANSIENT_GRACE_FAILURES: Final = 3
-_WAN_BUSY_RETRY_SECONDS: Final = 5.0
-_WAN_BUSY_MAX_RETRY_SECONDS: Final = 60.0
+_WAN_COUNTER_SAFE_START_SECONDS: Final = 5.0
+_WAN_COUNTER_MAX_INTERVAL_SECONDS: Final = 60.0
+_WAN_COUNTER_BUSY_RETRY_BASE_SECONDS: Final = 5.0
+_WAN_COUNTER_ADAPT_SUCCESS_SAMPLES: Final = 12
+_WAN_COUNTER_ADAPT_STEP_SECONDS: Final = 1.0
+_DSL_BUSY_RETRY_SECONDS: Final = 5.0
 _DSL_TRANSIENT_RETRY_SECONDS: Final = 60.0
 _DSL_UNSUPPORTED_RETRY_SECONDS: Final = 300.0
 _DSL_MAX_RETRY_SECONDS: Final = 3_600.0
+_TRANSIENT_TELEMETRY_ENDPOINTS: Final = frozenset({"dsl_metrics", "wan_counters"})
 _DSL_TRANSIENT_GRACE_FAILURES: Final = 1
 _PROTECTED_RETRY_SECONDS: Final = 60.0
 _PROTECTED_MAX_RETRY_SECONDS: Final = 900.0
@@ -171,6 +175,8 @@ class SpeedportHub:
         entry_id: str | None = None,
         controls_enabled: bool = False,
         rate_window_seconds: float = RATE_WINDOW_SECONDS,
+        public_status_interval_seconds: float = 5.0,
+        wan_counter_interval_seconds: float = 0.0,
         monotonic_time: Callable[[], float] | None = None,
     ) -> None:
         """Initialize hub."""
@@ -178,6 +184,27 @@ class SpeedportHub:
         self.client = client
         self.controls_enabled = controls_enabled
         self.rate_window_seconds = max(rate_window_seconds, 1.0)
+        self._public_status_interval = max(float(public_status_interval_seconds), 1.0)
+        self._public_status_next_poll_at = 0.0
+        configured_wan_interval = float(wan_counter_interval_seconds)
+        self._wan_counter_auto_interval = configured_wan_interval <= 0
+        self._wan_counter_target_interval = (
+            1.0
+            if self._wan_counter_auto_interval
+            else max(configured_wan_interval, 1.0)
+        )
+        self._wan_counter_effective_interval = (
+            _WAN_COUNTER_SAFE_START_SECONDS
+            if self._wan_counter_auto_interval
+            else self._wan_counter_target_interval
+        )
+        self._wan_counter_last_stable_interval = max(
+            self._wan_counter_target_interval,
+            _WAN_COUNTER_SAFE_START_SECONDS,
+        )
+        self._wan_counter_fastest_proven_interval: float | None = None
+        self._wan_counter_runtime_floor = self._wan_counter_target_interval
+        self._wan_counter_success_streak = 0
         self._monotonic_time = monotonic_time or hass.loop.time
         self.logger = _LOGGER
 
@@ -194,7 +221,9 @@ class SpeedportHub:
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
         self._wan_counter_probe_pending = False
         self._wan_counter_failures = 0
+        self._wan_counter_busy_failures = 0
         self._wan_counter_retry_at = 0.0
+        self._wan_counter_next_poll_at = 0.0
         self._dsl_metrics_failures = 0
         self._dsl_metrics_retry_at = 0.0
         self._transition_values: dict[str, Any] = {}
@@ -251,6 +280,39 @@ class SpeedportHub:
     def capability_report(self) -> CapabilityReport | None:
         """Return latest capability report."""
         return self._capability_report
+
+    @property
+    def endpoint_errors(self) -> Mapping[str, str]:
+        """Return a small immutable snapshot of current endpoint failures."""
+        return MappingProxyType(dict(self._endpoint_errors))
+
+    def has_endpoint_error(self, endpoint: str) -> bool:
+        """Return whether one endpoint currently has a recorded failure."""
+        return endpoint in self._endpoint_errors
+
+    @property
+    def wan_counter_telemetry(self) -> Mapping[str, Any]:
+        """Return lightweight immutable adaptive WAN scheduler diagnostics."""
+        monotonic_now = self._monotonic_time()
+        return MappingProxyType(
+            {
+                "mode": ("auto" if self._wan_counter_auto_interval else "manual"),
+                "state": self._wan_counter_adaptation_state(monotonic_now),
+                "target_interval_seconds": self._wan_counter_target_interval,
+                "effective_interval_seconds": self._wan_counter_effective_interval,
+                "runtime_floor_seconds": self._wan_counter_runtime_floor,
+                "last_stable_interval_seconds": (
+                    self._wan_counter_fastest_proven_interval
+                ),
+                "success_streak": self._wan_counter_success_streak,
+                "retrying": (monotonic_now < self._wan_counter_retry_at),
+                "retry_in_seconds": max(
+                    self._wan_counter_retry_at - monotonic_now,
+                    0.0,
+                ),
+                "last_sampled_at": self.get("wan.sampled_at"),
+            }
+        )
 
     @property
     def last_transitions(self) -> tuple[StateTransition, ...]:
@@ -445,7 +507,7 @@ class SpeedportHub:
             {
                 "diagnostics": {
                     "last_successful_update": now.isoformat(),
-                    "problem": bool(self._endpoint_errors),
+                    "problem": self._has_router_problem(),
                     "request_latency_ms": round(
                         (time.perf_counter() - started_at) * 1_000,
                         3,
@@ -697,61 +759,83 @@ class SpeedportHub:
 
     async def _async_fetch_fast(self) -> dict[str, Any]:
         """Fetch status and aggregate WAN counters."""
-        status = await self.client.get_status()
-        self._router_info = status.info
-        partial, inferred_capabilities = normalize_status_payload(status)
-        self._public_status_data = _thaw(partial)
-        self._capabilities = self._capabilities | inferred_capabilities
+        now = self._monotonic_time()
+        status: RouterStatus | None = None
+        partial: dict[str, Any] = {}
+        if now >= self._public_status_next_poll_at:
+            try:
+                status = await self.client.get_status()
+            except SpeedportInvalidCredentialsError:
+                raise
+            except SpeedportError as err:
+                self._endpoint_errors["status"] = type(err).__name__
+                partial = self._unavailable_public_status_values()
+            else:
+                self._router_info = status.info
+                partial, inferred_capabilities = normalize_status_payload(status)
+                self._public_status_data = _thaw(partial)
+                self._capabilities = self._capabilities | inferred_capabilities
+                self._endpoint_errors.pop("status", None)
+            self._public_status_next_poll_at = (
+                self._monotonic_time() + self._public_status_interval
+            )
 
-        wan_counters_confirmed = self.has_capability("wan_counters")
-        management_retry_deferred = (
-            self._management_state
-            in {"blocked", "locked", "other_session", "unavailable"}
-            and self._monotonic_time() < self._protected_retry_at
-        )
-        wan_retry_deferred = self._monotonic_time() < self._wan_counter_retry_at
-        if management_retry_deferred:
-            self._counter_samples.clear()
-            if wan_counters_confirmed:
-                partial["wan"] = _deep_merge_dicts(
-                    cast("dict[str, Any]", partial.get("wan", {})),
-                    self._unavailable_wan_values(),
-                )
-        elif wan_retry_deferred:
+        report = self._capability_report
+        wan_counters_confirmed = report is not None and report.wan_counters
+        wan_retry_deferred = now < self._wan_counter_retry_at
+        wan_poll_deferred = now < self._wan_counter_next_poll_at
+        if wan_retry_deferred:
             self._counter_samples.clear()
             if wan_counters_confirmed:
                 partial["wan"] = _deep_merge_dicts(
                     cast("dict[str, Any]", partial.get("wan", {})),
                     self._unavailable_wan_live_values(),
                 )
+        elif wan_poll_deferred:
+            # Public status and ToTR64 use independent due times on the same 1-second
+            # scheduler. Keep the latest counter sample until its cadence is due.
+            pass
         elif wan_counters_confirmed or self._wan_counter_probe_pending:
+            # Rate-limit every ToTR64 attempt, including protocol errors that do not
+            # enter the dedicated session-busy retry path.
+            self._wan_counter_next_poll_at = now + self._wan_counter_effective_interval
             try:
-                counters = await self.client.get_wan_counters()
+                counters = await self.client.get_wan_counters(busy_retries=0)
             except SpeedportSessionBusyError as err:
                 self._counter_samples.clear()
                 self._endpoint_errors["wan_counters"] = type(err).__name__
-                degraded = self._degraded_wan_values()
                 self._defer_wan_counter_retry()
                 if wan_counters_confirmed:
                     partial["wan"] = _deep_merge_dicts(
                         cast("dict[str, Any]", partial.get("wan", {})),
-                        degraded,
+                        self._unavailable_wan_live_values(),
                     )
             except SpeedportUnsupportedError as err:
                 self._counter_samples.clear()
+                self._wan_counter_busy_failures = 0
+                self._wan_counter_success_streak = 0
                 self._wan_counter_retry_at = 0.0
+                self._wan_counter_next_poll_at = (
+                    self._monotonic_time() + self._wan_counter_effective_interval
+                )
                 if not wan_counters_confirmed:
-                    self._wan_counter_probe_pending = False
+                    self._reject_pending_wan_counter_capability()
                     self._endpoint_errors.pop("wan_counters", None)
                 else:
-                    self._wan_counter_failures = _WAN_TRANSIENT_GRACE_FAILURES + 1
+                    self._wan_counter_failures += 1
                     self._endpoint_errors["wan_counters"] = type(err).__name__
                     partial["wan"] = _deep_merge_dicts(
                         cast("dict[str, Any]", partial.get("wan", {})),
-                        self._unavailable_wan_values(),
+                        self._unavailable_wan_live_values(),
                     )
             except SpeedportError as err:
                 self._counter_samples.clear()
+                self._wan_counter_busy_failures = 0
+                self._wan_counter_success_streak = 0
+                self._wan_counter_retry_at = 0.0
+                self._wan_counter_next_poll_at = (
+                    self._monotonic_time() + self._wan_counter_effective_interval
+                )
                 self._endpoint_errors["wan_counters"] = type(err).__name__
                 if wan_counters_confirmed:
                     partial["wan"] = _deep_merge_dicts(
@@ -761,19 +845,40 @@ class SpeedportHub:
             else:
                 self._wan_counter_probe_pending = False
                 self._wan_counter_failures = 0
+                self._wan_counter_busy_failures = 0
                 self._wan_counter_retry_at = 0.0
+                self._record_wan_counter_success()
+                self._wan_counter_next_poll_at = (
+                    self._monotonic_time() + self._wan_counter_effective_interval
+                )
                 self._confirm_tr064_capability(wan_counters=True)
                 self._endpoint_errors.pop("wan_counters", None)
                 partial["wan"] = _deep_merge_dicts(
                     cast("dict[str, Any]", partial.get("wan", {})),
                     self._normalise_wan_counters(
                         counters,
-                        download_capacity=status.wan_download_capacity_bps,
-                        upload_capacity=status.wan_upload_capacity_bps,
+                        download_capacity=(
+                            status.wan_download_capacity_bps
+                            if status
+                            else self.get("internet.download_capacity_bps")
+                        ),
+                        upload_capacity=(
+                            status.wan_upload_capacity_bps
+                            if status
+                            else self.get("internet.upload_capacity_bps")
+                        ),
                     ),
                 )
 
         return partial
+
+    def _has_router_problem(self) -> bool:
+        """Exclude an isolated ToTR64 lease retry from global router health."""
+        return any(
+            family not in _TRANSIENT_TELEMETRY_ENDPOINTS
+            or error_name != SpeedportSessionBusyError.__name__
+            for family, error_name in self._endpoint_errors.items()
+        )
 
     async def _async_fetch_normal(self) -> dict[str, Any]:
         """Fetch medium-frequency feature data and verified DSL telemetry."""
@@ -788,7 +893,7 @@ class SpeedportHub:
             try:
                 metrics = await self.client.get_dsl_metrics()
             except SpeedportSessionBusyError as err:
-                self._defer_dsl_metrics_retry(unsupported=False)
+                self._defer_dsl_metrics_busy_retry()
                 self._endpoint_errors["dsl_metrics"] = type(err).__name__
                 partial = _deep_merge_dicts(
                     partial,
@@ -863,13 +968,74 @@ class SpeedportHub:
         self._dsl_metrics_retry_at = self._monotonic_time() + delay
 
     def _defer_wan_counter_retry(self) -> None:
-        """Back off a transient ToTR64 counter lease without blocking web access."""
-        exponent = min(max(self._wan_counter_failures - 1, 0), 4)
-        delay = min(
-            _WAN_BUSY_RETRY_SECONDS * (2**exponent),
-            _WAN_BUSY_MAX_RETRY_SECONDS,
+        """Adaptively back off a ToTR64 lease without blocking web access."""
+        self._wan_counter_busy_failures += 1
+        self._wan_counter_success_streak = 0
+        now = self._monotonic_time()
+        if (
+            self._wan_counter_effective_interval
+            < self._wan_counter_last_stable_interval
+        ):
+            self._wan_counter_effective_interval = (
+                self._wan_counter_last_stable_interval
+            )
+            self._wan_counter_runtime_floor = max(
+                self._wan_counter_runtime_floor,
+                self._wan_counter_last_stable_interval,
+            )
+        exponent = min(self._wan_counter_busy_failures - 1, 4)
+        retry_delay = min(
+            _WAN_COUNTER_BUSY_RETRY_BASE_SECONDS * (2**exponent),
+            _WAN_COUNTER_MAX_INTERVAL_SECONDS,
         )
-        self._wan_counter_retry_at = self._monotonic_time() + delay
+        self._wan_counter_retry_at = now + max(
+            self._wan_counter_effective_interval,
+            retry_delay,
+        )
+
+    def _record_wan_counter_success(self) -> None:
+        """Probe toward the requested cadence only after sustained stable reads."""
+        adaptation_target = max(
+            self._wan_counter_target_interval,
+            self._wan_counter_runtime_floor,
+        )
+        if (
+            self._wan_counter_runtime_floor > self._wan_counter_target_interval
+            and self._wan_counter_effective_interval <= adaptation_target
+        ) or (
+            self._wan_counter_effective_interval <= self._wan_counter_target_interval
+            and self._wan_counter_fastest_proven_interval is not None
+            and self._wan_counter_effective_interval
+            >= self._wan_counter_last_stable_interval
+        ):
+            self._wan_counter_success_streak = 0
+            return
+        self._wan_counter_success_streak += 1
+        if self._wan_counter_success_streak < _WAN_COUNTER_ADAPT_SUCCESS_SAMPLES:
+            return
+        if self._wan_counter_fastest_proven_interval is None:
+            self._wan_counter_fastest_proven_interval = (
+                self._wan_counter_effective_interval
+            )
+        else:
+            self._wan_counter_fastest_proven_interval = min(
+                self._wan_counter_fastest_proven_interval,
+                self._wan_counter_effective_interval,
+            )
+        self._wan_counter_last_stable_interval = min(
+            self._wan_counter_last_stable_interval,
+            self._wan_counter_effective_interval,
+        )
+        self._wan_counter_effective_interval = max(
+            adaptation_target,
+            self._wan_counter_effective_interval - _WAN_COUNTER_ADAPT_STEP_SECONDS,
+        )
+        self._wan_counter_success_streak = 0
+
+    def _defer_dsl_metrics_busy_retry(self) -> None:
+        """Retry a transient ToTR64 DSL lease on the next normal poll."""
+        self._dsl_metrics_failures += 1
+        self._dsl_metrics_retry_at = self._monotonic_time() + _DSL_BUSY_RETRY_SECONDS
 
     def _confirm_tr064_capability(
         self,
@@ -924,11 +1090,9 @@ class SpeedportHub:
         return self._unavailable_dsl_optional_values()
 
     def _degraded_wan_values(self) -> dict[str, None]:
-        """Clear live rates now and cumulative values after bounded failures."""
+        """Clear only derived live values after a transient counter failure."""
         self._wan_counter_failures += 1
-        if self._wan_counter_failures <= _WAN_TRANSIENT_GRACE_FAILURES:
-            return self._unavailable_wan_live_values()
-        return self._unavailable_wan_values()
+        return self._unavailable_wan_live_values()
 
     @staticmethod
     def _unavailable_wan_live_values() -> dict[str, None]:
@@ -940,29 +1104,41 @@ class SpeedportHub:
             "upload_utilization": None,
         }
 
-    def _unavailable_wan_values(self) -> dict[str, None]:
-        """Clear live WAN values while retaining capability for retry."""
-        core = (
-            "bytes_received",
-            "bytes_sent",
-            "download_rate_bps",
-            "upload_rate_bps",
-            "download_utilization",
-            "upload_utilization",
+    def _unavailable_public_status_values(self) -> dict[str, Any]:
+        """Invalidate cached public status while retaining other source values."""
+        unavailable = _null_values(self._public_status_data)
+        for family_data in self._family_data.values():
+            unavailable = _restore_values_at_paths(unavailable, family_data)
+        return unavailable
+
+    def _reject_pending_wan_counter_capability(self) -> None:
+        """Remove a disproved setup probe without hiding independent WAN data."""
+        self._wan_counter_probe_pending = False
+        capabilities = set(self._capabilities)
+        capabilities.discard("wan_counters")
+        if not self._has_independent_wan_capability():
+            capabilities.discard("wan")
+        self._capabilities = frozenset(capabilities)
+
+        report = self._capability_report
+        if report is None:
+            return
+        failures = dict(report.failures)
+        failures.pop("wan_counters", None)
+        self._capability_report = replace(
+            report,
+            failures=MappingProxyType(failures),
         )
-        optional = (
-            "packets_received",
-            "packets_sent",
-            "errors_received",
-            "errors_sent",
-            "discard_packets_received",
-            "discard_packets_sent",
-        )
-        return {
-            field: None
-            for field in (*core, *optional)
-            if field in core or self.get(("wan", field), _MISSING) is not _MISSING
-        }
+
+    def _has_independent_wan_capability(self) -> bool:
+        """Return whether a source other than ToTR64 counters contributes WAN."""
+        report = self._capability_report
+        if report is not None and any(
+            str(family).casefold() == "wan" for family in report.feature_endpoints
+        ):
+            return True
+        public_wan = self._public_status_data.get("wan")
+        return isinstance(public_wan, Mapping) and bool(public_wan)
 
     async def _async_fetch_families(self, families: Iterable[str]) -> dict[str, Any]:
         """Fetch feature endpoints, isolating failures between families."""
@@ -1178,6 +1354,7 @@ class SpeedportHub:
         wan: dict[str, Any] = {
             "bytes_received": received,
             "bytes_sent": sent,
+            "sampled_at": counters.sampled_at.isoformat(),
             "download_rate_bps": download_rate,
             "upload_rate_bps": upload_rate,
             "interface": {
@@ -1301,12 +1478,23 @@ class SpeedportHub:
 
     def diagnostics(self) -> dict[str, Any]:
         """Return plain diagnostic data; diagnostics module performs redaction."""
+        monotonic_now = self._monotonic_time()
         return {
             "router": _normalise_router_info(self._router_info),
             "capabilities": sorted(self._capabilities),
             "capability_report": _thaw(self._capability_report),
             "data": _thaw(self._data),
-            "endpoint_errors": dict(self._endpoint_errors),
+            "endpoint_errors": dict(self.endpoint_errors),
+            "telemetry": {
+                "public_status": {
+                    "interval_seconds": self._public_status_interval,
+                    "next_poll_in_seconds": max(
+                        self._public_status_next_poll_at - monotonic_now,
+                        0.0,
+                    ),
+                },
+                "wan_counters": dict(self.wan_counter_telemetry),
+            },
             "polling": {
                 group.value: {
                     "available": coordinator.last_update_success,
@@ -1324,6 +1512,20 @@ class SpeedportHub:
                 for group, coordinator in self._coordinators.items()
             },
         }
+
+    def _wan_counter_adaptation_state(self, now: float) -> str:
+        """Return a stable, UI-safe WAN telemetry scheduler state."""
+        if now < self._wan_counter_retry_at:
+            return "retrying"
+        if self._wan_counter_runtime_floor > self._wan_counter_target_interval:
+            return "limited"
+        if self._wan_counter_effective_interval > self._wan_counter_target_interval or (
+            self._wan_counter_auto_interval
+            and self._wan_counter_effective_interval
+            < self._wan_counter_last_stable_interval
+        ):
+            return "learning"
+        return "stable"
 
     @property
     def _feature_families(self) -> frozenset[str]:
@@ -1349,7 +1551,7 @@ class SpeedportHub:
             capabilities.update({"status", "system", "diagnostics"})
         if report.tr064:
             capabilities.add("tr064")
-        if report.wan_counters:
+        if report.wan_counters or self._wan_counter_probe_pending:
             capabilities.update({"wan_counters", "wan"})
         if report.authenticated_json:
             capabilities.add("authenticated_json")

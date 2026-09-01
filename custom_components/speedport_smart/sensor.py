@@ -89,6 +89,54 @@ class SpeedportChildSensorCollection:
 FAST = PollGroup.FAST
 NORMAL = PollGroup.NORMAL
 SLOW = PollGroup.SLOW
+_WAN_INTERFACE_SENSOR_KEYS = frozenset({"wan_interface", "wan_interface_status"})
+_WAN_TELEMETRY_KEY_BY_ENTITY = {
+    "wan_fastest_proven_interval": "last_stable_interval_seconds",
+    "wan_last_sample": "last_sampled_at",
+    "wan_polling_interval": "effective_interval_seconds",
+    "wan_polling_mode": "mode",
+    "wan_polling_state": "state",
+}
+WAN_TELEMETRY_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key="wan_polling_mode",
+        translation_key="wan_polling_mode",
+        device_class=SensorDeviceClass.ENUM,
+        options=["auto", "manual"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SensorEntityDescription(
+        key="wan_polling_interval",
+        translation_key="wan_polling_interval",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
+    ),
+    SensorEntityDescription(
+        key="wan_polling_state",
+        translation_key="wan_polling_state",
+        device_class=SensorDeviceClass.ENUM,
+        options=["learning", "stable", "retrying", "limited"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SensorEntityDescription(
+        key="wan_fastest_proven_interval",
+        translation_key="wan_fastest_proven_interval",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        suggested_display_precision=0,
+    ),
+    SensorEntityDescription(
+        key="wan_last_sample",
+        translation_key="wan_last_sample",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+)
 
 
 def _code_enum(values: Mapping[int, str]) -> Callable[[Any], str | None]:
@@ -628,7 +676,7 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         translation_key="wan_interface",
         data_path="wan.interface.name",
         capability="wan",
-        coordinator_group=SLOW,
+        coordinator_group=FAST,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
@@ -1621,6 +1669,26 @@ async def async_setup_entry(
             coordinator(hub, group).async_add_listener(rediscover_fixed)
         )
 
+    wan_telemetry_added = False
+
+    @callback
+    def discover_wan_telemetry_sensors() -> None:
+        nonlocal wan_telemetry_added
+        if wan_telemetry_added or not hub.has_capability("wan_counters"):
+            return
+        wan_telemetry_added = True
+        async_add_entities(
+            SpeedportWanTelemetrySensor(hub, description)
+            for description in WAN_TELEMETRY_SENSOR_DESCRIPTIONS
+        )
+
+    discover_wan_telemetry_sensors()
+    entry.async_on_unload(
+        coordinator(hub, PollGroup.FAST).async_add_listener(
+            discover_wan_telemetry_sensors
+        )
+    )
+
     if hub.has_capability("diagnostics"):
         async_add_entities([SpeedportManagementAccessSensor(hub)])
 
@@ -1706,6 +1774,11 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
         if not super().available:
             return False
         description = self.entity_description
+        if (
+            description.key in _WAN_INTERFACE_SENSOR_KEYS
+            and self.hub.has_endpoint_error("wan_counters")
+        ):
+            return False
         if description.device_class is not SensorDeviceClass.ENUM:
             return True
         return self.native_value in (description.options or ())
@@ -1719,6 +1792,80 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
             key: self.hub.get(("wan", "interface", key)) for key in ("index", "alias")
         }
         return {key: item for key, item in attributes.items() if item is not None}
+
+
+class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
+    """Expose the adaptive WAN scheduler as read-only diagnostic state."""
+
+    _attr_entity_registry_enabled_default = True
+    entity_description: SensorEntityDescription
+
+    def __init__(
+        self,
+        hub: SpeedportHub,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Initialize WAN telemetry diagnostic sensor."""
+        super().__init__(
+            hub,
+            coordinator(hub, PollGroup.FAST),
+            description.key,
+        )
+        self.entity_description = description
+
+    @property
+    def _telemetry(self) -> Mapping[str, Any]:
+        return self.hub.wan_counter_telemetry
+
+    @property
+    def native_value(self) -> Any:
+        """Return one UI-safe scheduler value from hub diagnostics."""
+        key = self.entity_description.key
+        value_key = _WAN_TELEMETRY_KEY_BY_ENTITY[key]
+        raw = self._telemetry.get(value_key)
+        if key == "wan_last_sample":
+            return as_datetime(raw) if raw is not None else None
+        if key in {"wan_polling_interval", "wan_fastest_proven_interval"}:
+            return as_float(raw) if raw is not None else None
+        return str(raw) if raw is not None else None
+
+    @property
+    def available(self) -> bool:
+        """Require a retained WAN capability and a valid diagnostic value."""
+        if not self.hub.has_capability("wan_counters"):
+            return False
+        value_now = self.native_value
+        if value_now is None:
+            return False
+        if (
+            self.entity_description.key == "wan_fastest_proven_interval"
+            and self._telemetry.get("last_sampled_at") is None
+        ):
+            return False
+        if self.entity_description.device_class is not SensorDeviceClass.ENUM:
+            return True
+        return value_now in (self.entity_description.options or ())
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Expose scheduler learning evidence on its state entity."""
+        if self.entity_description.key != "wan_polling_state":
+            return None
+        telemetry = self._telemetry
+        attributes = {
+            key: telemetry[key]
+            for key in (
+                "mode",
+                "target_interval_seconds",
+                "runtime_floor_seconds",
+                "last_stable_interval_seconds",
+                "retry_in_seconds",
+                "success_streak",
+            )
+            if telemetry.get(key) is not None
+        }
+        attributes["source_available"] = not self.hub.has_endpoint_error("wan_counters")
+        return attributes
 
 
 class SpeedportManagementAccessSensor(SpeedportEntity, SensorEntity):

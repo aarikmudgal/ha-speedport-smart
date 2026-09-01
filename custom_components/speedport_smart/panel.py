@@ -62,8 +62,15 @@ _WAN_COUNTER_KEYS: Final = frozenset(
         "wan_errors_received",
         "wan_errors_sent",
         "wan_interface",
+        "wan_interface_enabled",
+        "wan_interface_status",
+        "wan_fastest_proven_interval",
+        "wan_last_sample",
         "wan_packets_received",
         "wan_packets_sent",
+        "wan_polling_interval",
+        "wan_polling_mode",
+        "wan_polling_state",
         "wan_upload_rate",
         "wan_upload_utilization",
     }
@@ -636,7 +643,8 @@ def _capability_panel_data(
         return _empty_access_sources(), []
 
     diagnostics = hub.diagnostics()
-    endpoint_errors = diagnostics.get("endpoint_errors", {})
+    endpoint_errors = hub.endpoint_errors
+    wan_telemetry = hub.wan_counter_telemetry
     polling = diagnostics.get("polling", {})
     fast_available = _poll_group_available(polling, "fast")
     normal_available = _poll_group_available(polling, "normal")
@@ -677,11 +685,25 @@ def _capability_panel_data(
             "id": "wan_counters",
             "label": "Live WAN counters",
             "supported": wan_supported,
+            "polling_available": fast_available,
             "available": (
                 wan_supported
                 and fast_available
                 and "wan_counters" not in endpoint_errors
             ),
+            "effective_interval_seconds": wan_telemetry.get(
+                "effective_interval_seconds"
+            ),
+            "mode": wan_telemetry.get("mode"),
+            "state": wan_telemetry.get("state"),
+            "target_interval_seconds": wan_telemetry.get("target_interval_seconds"),
+            "runtime_floor_seconds": wan_telemetry.get("runtime_floor_seconds"),
+            "last_stable_interval_seconds": wan_telemetry.get(
+                "last_stable_interval_seconds"
+            ),
+            "retrying": wan_telemetry.get("retrying", False),
+            "retry_in_seconds": wan_telemetry.get("retry_in_seconds"),
+            "last_sampled_at": wan_telemetry.get("last_sampled_at"),
         },
     ]
     families = []

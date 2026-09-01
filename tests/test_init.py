@@ -32,6 +32,7 @@ from custom_components.speedport_smart.const import (
     CONF_SLOW_INTERVAL,
     CONF_USE_HTTPS,
     CONF_VERIFY_SSL,
+    CONF_WAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
@@ -53,6 +54,7 @@ def _entry() -> MockConfigEntry:
         options={
             CONF_ENABLE_CONTROLS: True,
             CONF_FAST_INTERVAL: 6,
+            CONF_WAN_INTERVAL: 0,
             CONF_NORMAL_INTERVAL: 31,
             CONF_SLOW_INTERVAL: 301,
         },
@@ -92,9 +94,12 @@ async def test_setup_unload_and_reload(
     hub = entry.runtime_data
     assert entry.state is ConfigEntryState.LOADED
     assert hub.controls_enabled
-    assert hub.coordinator(PollGroup.FAST).update_interval == timedelta(seconds=6)
+    assert hub.coordinator(PollGroup.FAST).update_interval == timedelta(seconds=1)
     assert hub.coordinator(PollGroup.NORMAL).update_interval == timedelta(seconds=31)
     assert hub.coordinator(PollGroup.SLOW).update_interval == timedelta(seconds=301)
+    telemetry = hub.diagnostics()["telemetry"]
+    assert telemetry["public_status"]["interval_seconds"] == 6
+    assert telemetry["wan_counters"]["mode"] == "auto"
     assert hub.available
     forward.assert_awaited_once_with(entry, PLATFORMS)
 

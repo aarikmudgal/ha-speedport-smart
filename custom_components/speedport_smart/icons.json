@@ -1,6 +1,21 @@
 {
   "entity": {
     "sensor": {
+      "wan_polling_mode": {
+        "default": "mdi:tune-variant"
+      },
+      "wan_polling_interval": {
+        "default": "mdi:timer-sync-outline"
+      },
+      "wan_polling_state": {
+        "default": "mdi:progress-clock"
+      },
+      "wan_fastest_proven_interval": {
+        "default": "mdi:speedometer"
+      },
+      "wan_last_sample": {
+        "default": "mdi:clock-check-outline"
+      },
       "internet_privacy_level": {
         "default": "mdi:shield-account-outline"
       },

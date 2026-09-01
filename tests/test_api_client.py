@@ -22,8 +22,10 @@ from custom_components.speedport_smart.api import (
 )
 from custom_components.speedport_smart.api.exceptions import (
     SpeedportProtocolError,
+    SpeedportSessionBusyError,
     SpeedportUnsupportedError,
 )
+from custom_components.speedport_smart.models import WanInterface
 from custom_components.speedport_smart.normalizers import normalize_feature_payload
 
 
@@ -984,6 +986,100 @@ async def test_busy_fault_retries_with_same_serial_owner() -> None:
     assert all(
         request[1] == "http://speedport.ip:5438/" for request in session.requests
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_wan_read_can_surface_first_busy_fault() -> None:
+    """Adaptive polling observes the first 9801 instead of an internal retry burst."""
+    session = _FakeSession()
+    session.add(_busy_fault(), status=500)
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        busy_backoff=0,
+        max_busy_retries=4,
+    )
+    client._wan_interface = WanInterface(  # noqa: SLF001
+        index=5,
+        alias="BONDING",
+        name="habond",
+        status="Up",
+    )
+
+    with pytest.raises(SpeedportSessionBusyError):
+        await client.get_wan_counters(busy_retries=0)
+
+    assert len(session.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_wan_read_surfaces_busy_during_cold_interface_count() -> None:
+    """A cold-cache count probe exposes its first 9801 to the scheduler."""
+    session = _FakeSession()
+    session.add(_busy_fault(), status=500)
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        busy_backoff=0,
+        max_busy_retries=4,
+    )
+
+    with pytest.raises(SpeedportSessionBusyError):
+        await client.get_wan_counters(busy_retries=0)
+
+    assert len(session.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_wan_read_surfaces_busy_during_cold_interface_details() -> None:
+    """A cold-cache detail probe exposes its first 9801 to the scheduler."""
+    session = _FakeSession()
+    session.add(
+        _soap_response(("Device.IP.InterfaceNumberOfEntries", "1", "unsignedInt"))
+    )
+    session.add(_busy_fault(), status=500)
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        busy_backoff=0,
+        max_busy_retries=4,
+    )
+
+    with pytest.raises(SpeedportSessionBusyError):
+        await client.get_wan_counters(busy_retries=0)
+
+    assert len(session.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_wan_read_uses_default_busy_retry_policy_when_omitted() -> None:
+    """WAN callers retain constructor retry behavior unless they override it."""
+    session = _FakeSession()
+    session.add(_busy_fault(), status=500)
+    session.add(
+        _soap_response(
+            ("Device.IP.Interface.5.Stats.BytesReceived", "1100", "unsignedLong"),
+            ("Device.IP.Interface.5.Stats.BytesSent", "950", "unsignedLong"),
+        )
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        busy_backoff=0,
+        max_busy_retries=1,
+    )
+    client._wan_interface = WanInterface(  # noqa: SLF001
+        index=5,
+        alias="BONDING",
+        name="habond",
+        status="Up",
+    )
+
+    counters = await client.get_wan_counters()
+
+    assert counters.bytes_received == 1100
+    assert counters.bytes_sent == 950
+    assert len(session.requests) == 2
 
 
 @pytest.mark.asyncio

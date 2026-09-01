@@ -63,12 +63,14 @@
         "data": {
           "enable_controls": "Show supported router controls",
           "fast_interval": "Fast polling interval",
+          "wan_interval": "Advanced WAN counter interval",
           "normal_interval": "Normal polling interval",
           "slow_interval": "Slow polling interval"
         },
         "data_description": {
           "enable_controls": "Show only implemented controls supported by this router. They remain idle until you explicitly use them and never run automatically.",
-          "fast_interval": "Seconds between WAN counter and live-state updates (1–60). One second is best-effort; 5 seconds is recommended for router reliability.",
+          "fast_interval": "Seconds between browser-independent live-state updates (1–60). This does not control router-sensitive WAN counters.",
+          "wan_interval": "Use 0 for automatic learning: counters start at 5 seconds and safely test 4, 3, 2 and 1 second after stable reads. Set 1–60 only to choose an advanced target; transient busy responses still back off automatically.",
           "normal_interval": "Seconds between status, Wi-Fi, client and telephony updates.",
           "slow_interval": "Seconds between configuration, topology and firmware updates."
         }
@@ -108,6 +110,22 @@
       "internet_uptime": { "name": "Internet uptime" },
       "wan_interface": { "name": "WAN interface" },
       "wan_interface_status": { "name": "WAN interface status" },
+      "wan_polling_mode": {
+        "name": "WAN polling mode",
+        "state": { "auto": "Auto", "manual": "Manual" }
+      },
+      "wan_polling_interval": { "name": "WAN polling interval" },
+      "wan_polling_state": {
+        "name": "WAN polling state",
+        "state": {
+          "learning": "Learning",
+          "stable": "Stable",
+          "retrying": "Retrying",
+          "limited": "Limited"
+        }
+      },
+      "wan_fastest_proven_interval": { "name": "WAN fastest proven interval" },
+      "wan_last_sample": { "name": "WAN last successful sample" },
       "wan_mtu": { "name": "WAN MTU" },
       "public_ipv4": { "name": "Public IPv4 address" },
       "public_ipv6_prefix": { "name": "Public IPv6 prefix" },

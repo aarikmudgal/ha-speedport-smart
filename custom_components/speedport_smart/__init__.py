@@ -27,11 +27,13 @@ from .const import (
     CONF_SLOW_INTERVAL,
     CONF_USE_HTTPS,
     CONF_VERIFY_SSL,
+    CONF_WAN_INTERVAL,
     DEFAULT_FAST_INTERVAL,
     DEFAULT_NORMAL_INTERVAL,
     DEFAULT_SLOW_INTERVAL,
     DEFAULT_TR064_HTTP_PORT,
     DEFAULT_TR064_HTTPS_PORT,
+    DEFAULT_WAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
@@ -63,6 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpeedportConfigEntry) ->
     """Set up Speedport Smart from a config entry."""
     settings = {**entry.data, **entry.options}
     verify_ssl = bool(settings.get(CONF_VERIFY_SSL, False))
+    fast_interval = _poll_interval(settings, CONF_FAST_INTERVAL, DEFAULT_FAST_INTERVAL)
     session = _create_isolated_session(hass, verify_ssl=verify_ssl)
     try:
         client = SpeedportClient(
@@ -84,6 +87,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpeedportConfigEntry) ->
         fallback_identifier=entry.entry_id,
         entry_id=entry.entry_id,
         controls_enabled=bool(settings.get(CONF_ENABLE_CONTROLS, True)),
+        public_status_interval_seconds=fast_interval.total_seconds(),
+        wan_counter_interval_seconds=float(
+            settings.get(CONF_WAN_INTERVAL, DEFAULT_WAN_INTERVAL)
+        ),
     )
 
     try:
@@ -105,7 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpeedportConfigEntry) ->
             hass,
             hub,
             PollGroup.FAST,
-            _poll_interval(settings, CONF_FAST_INTERVAL, DEFAULT_FAST_INTERVAL),
+            timedelta(seconds=1),
             config_entry=entry,
         ),
         PollGroup.NORMAL: SpeedportDataUpdateCoordinator(
