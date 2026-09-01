@@ -224,6 +224,9 @@
       "paging": { "default": "mdi:phone-ring" }
     },
     "button": {
+      "capture_read_only_inventory": {
+        "default": "mdi:database-search-outline"
+      },
       "retry_protected_data": {
         "default": "mdi:account-sync"
       }

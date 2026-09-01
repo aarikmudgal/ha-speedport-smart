@@ -230,7 +230,10 @@ port-forward and port-block rules, DNS-rebind exceptions, traffic-priority
 slots, private Wi-Fi SSIDs, DDNS domain/update-server identity, providers,
 lines, DECT repeaters, PBX clients, storage, shares, VPN peers, and Powerline
 devices. These additions do not promote any matching write or record-mutation
-contract.
+contract. It also provides an explicit candidate-only diagnostic scan that
+captures bounded, value-free schemas for every known endpoint/authentication/
+Referer contract without changing active capabilities, running WAN/TR-064
+polling, invoking a router command, or reloading the integration.
 
 Representative blocked families:
 

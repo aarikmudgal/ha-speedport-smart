@@ -16,6 +16,10 @@ const WIFI_TYPED_CONFIRMATIONS = Object.freeze({
   on: "TURN OFF WI-FI",
   off: "TURN ON WI-FI",
 });
+const READ_ONLY_BUTTON_CONTROLS = new Set([
+  "capture_read_only_inventory",
+  "retry_protected_data",
+]);
 
 function finiteInteger(value) {
   const numeric = Number(value);
@@ -165,7 +169,7 @@ export function managementControlAvailable(
   managementState,
   controlsAvailable,
 ) {
-  if (meta?.translation_key === "retry_protected_data") {
+  if (READ_ONLY_BUTTON_CONTROLS.has(meta?.translation_key)) {
     return (
       meta.control === true &&
       meta.domain === "button" &&

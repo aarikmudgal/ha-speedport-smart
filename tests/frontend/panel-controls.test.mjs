@@ -50,6 +50,16 @@ const RETRY_META = Object.freeze({
   translation_key: "retry_protected_data",
 });
 
+const CAPTURE_META = Object.freeze({
+  confirmation: "confirm",
+  control: true,
+  disruptive: false,
+  domain: "button",
+  entity_id: "button.speedport_capture_read_only_inventory",
+  risk: "normal",
+  translation_key: "capture_read_only_inventory",
+});
+
 const RECONNECT_META = Object.freeze({
   confirmation: "confirm",
   control: true,
@@ -162,6 +172,63 @@ test("protected-data retry remains callable during management backoff", async ()
   ]);
 });
 
+test("read-only inventory remains callable during backoff with exact safe copy", async () => {
+  for (const [language, fragments] of [
+    [
+      "en",
+      [
+        /Logout in every open Speedport web interface/,
+        /every known candidate source once/,
+        /only value-free response shapes/,
+        /changes no router setting/,
+      ],
+    ],
+    [
+      "de",
+      [
+        /Abmelden in jeder geöffneten Speedport-Weboberfläche/,
+        /jede bekannte mögliche Quelle genau einmal/,
+        /nur wertfreie Antwortstrukturen/,
+        /ändert keine Router-Einstellung/,
+      ],
+    ],
+  ]) {
+    const fixture = panelFixture({
+      meta: CAPTURE_META,
+      pending: null,
+      state: "unknown",
+    });
+    fixture.panel._hass.language = language;
+    fixture.panel._metadata.routers[0].management = {
+      controls_available: false,
+      state: "blocked",
+    };
+
+    fixture.panel._prepareAction(CAPTURE_META.entity_id);
+
+    assert.equal(
+      fixture.panel._pendingAction?.actionLabel,
+      language === "de"
+        ? "Schreibgeschützte Übersicht erfassen"
+        : "Capture read-only inventory",
+    );
+    for (const fragment of fragments) {
+      assert.match(fixture.panel._pendingAction?.message, fragment);
+    }
+
+    await fixture.panel._runPendingAction();
+    assert.deepEqual(fixture.calls, [
+      ["button", "press", { entity_id: CAPTURE_META.entity_id }],
+    ]);
+    assert.equal(
+      fixture.panel._notice,
+      language === "de"
+        ? "Die schreibgeschützte Funktionsübersicht wurde erfasst. Wertfreie Antwortstrukturen sind jetzt in der Home-Assistant-Diagnose verfügbar."
+        : "Read-only capability inventory captured. Value-free response shapes are now available in Home Assistant diagnostics.",
+    );
+  }
+});
+
 test("reconnect confirmation warns that telephones and emergency calls are unavailable", () => {
   for (const [language, expected] of [
     ["en", [/all telephones connected to this router/, /emergency calls/]],
@@ -182,23 +249,25 @@ test("reconnect confirmation warns that telephones and emergency calls are unava
   }
 });
 
-test("retry-key collisions never prepare or execute a control", async () => {
-  for (const [domain, state] of [
-    ["switch", "on"],
-    ["text", "client"],
-    ["update", "on"],
-  ]) {
-    const meta = {
-      ...RETRY_META,
-      domain,
-      entity_id: `${domain}.speedport_retry_protected_data`,
-    };
-    const fixture = panelFixture({ meta, pending: null, state });
+test("read-only action key collisions never prepare or execute a control", async () => {
+  for (const safeMeta of [RETRY_META, CAPTURE_META]) {
+    for (const [domain, state] of [
+      ["switch", "on"],
+      ["text", "client"],
+      ["update", "on"],
+    ]) {
+      const meta = {
+        ...safeMeta,
+        domain,
+        entity_id: `${domain}.speedport_${safeMeta.translation_key}`,
+      };
+      const fixture = panelFixture({ meta, pending: null, state });
 
-    fixture.panel._prepareAction(meta.entity_id);
-    await fixture.panel._runPendingAction();
+      fixture.panel._prepareAction(meta.entity_id);
+      await fixture.panel._runPendingAction();
 
-    assert.equal(fixture.panel._pendingAction, null);
-    assert.equal(fixture.calls.length, 0);
+      assert.equal(fixture.panel._pendingAction, null);
+      assert.equal(fixture.calls.length, 0);
+    }
   }
 });

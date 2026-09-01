@@ -197,6 +197,23 @@ view, keeps it only in memory, and clears it when access or the selected router
 changes. This read surface is deliberately separate from the future mutation
 contract below.
 
+The Administration view also exposes an explicit **Read-only capability
+inventory** diagnostic action. It performs a fresh, bounded pass over every
+registered JSON candidate contract, using the exact endpoint, authentication,
+and Referer tuple. Identical tuples are read once and shared across the feature
+families that reference them. The action never runs during setup or polling,
+never calls Status/TR-064/WAN telemetry, never invokes a reviewed management
+command, and never reloads the config entry. It is serialized with polling and
+commands through the same operation lock.
+
+Only successful value-free response schemas are retained. Unsupported sources
+and isolated protocol failures are counted without storing response bodies or
+error text. Authentication, connection, decoding, session-busy, or final
+session-release failure aborts publication and preserves the previous
+inventory atomically. Diagnostics distinguish complete, partial, and failed
+attempts and expose only safe counts, timestamps, and an exception class for a
+fatal failure.
+
 A structured editor will be added only with its first fully proven operation;
 the integration does not ship an empty generic executor. Native scalar and
 bounded action entities continue to use ordinary Home Assistant services.

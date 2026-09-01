@@ -27,6 +27,7 @@ from custom_components.speedport_smart.const import DOMAIN
 from custom_components.speedport_smart.coordinator import PollGroup
 from custom_components.speedport_smart.hub import SpeedportHub
 from custom_components.speedport_smart.models import (
+    CandidateInventoryResult,
     CapabilityReport,
     DslMetrics,
     EndpointCapability,
@@ -45,6 +46,7 @@ async def test_setup_and_grouped_data(
     mock_speedport_client: MagicMock,
 ) -> None:
     """Hub discovers semantic capabilities and merges polling groups."""
+    mock_speedport_client.capture_candidate_inventory = AsyncMock()
     mock_speedport_client.get_json.side_effect = lambda endpoint, **_kwargs: (
         {"use_wlan": True} if endpoint == "data/WLANBasic.json" else {"use_mesh": True}
     )
@@ -72,6 +74,7 @@ async def test_setup_and_grouped_data(
     assert normal.generation == 2
     assert slow.generation == 3
     assert hub.get("missing.path", "fallback") == "fallback"
+    mock_speedport_client.capture_candidate_inventory.assert_not_awaited()
 
 
 async def test_devicelist_families_share_one_normal_poll(
@@ -1599,6 +1602,123 @@ async def test_retry_invalid_credentials_starts_reauth_once(
 
     entry.async_start_reauth.assert_called_once_with(hass)
     mock_speedport_client.probe_capabilities.assert_awaited_once_with()
+
+
+async def test_candidate_inventory_records_complete_counts_without_reload(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Explicit inventory publishes safe counts and preserves runtime capabilities."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+    )
+    await hub.async_setup()
+    report = hub.capability_report
+    mock_speedport_client.capture_candidate_inventory = AsyncMock(
+        return_value=CandidateInventoryResult(
+            attempted=53,
+            succeeded=41,
+            unsupported=12,
+            failed=0,
+            observed=76,
+        )
+    )
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload_entry:
+        await hub.async_capture_candidate_inventory()
+
+    diagnostics = hub.diagnostics()["candidate_inventory"]
+    assert diagnostics["status"] == "complete"
+    assert diagnostics["attempted"] == 53
+    assert diagnostics["succeeded"] == 41
+    assert diagnostics["unsupported"] == 12
+    assert diagnostics["failed"] == 0
+    assert diagnostics["observed"] == 76
+    assert diagnostics["last_attempted_at"] is not None
+    assert diagnostics["last_completed_at"] is not None
+    assert diagnostics["last_error"] is None
+    assert hub.capability_report is report
+    assert hub.get("management.access.state") == "available"
+    reload_entry.assert_not_called()
+
+
+async def test_candidate_inventory_marks_partial_and_retains_counts_on_abort(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Isolated failures are partial; a later critical abort keeps prior counts."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+    )
+    await hub.async_setup()
+    partial = CandidateInventoryResult(
+        attempted=53,
+        succeeded=40,
+        unsupported=12,
+        failed=1,
+        observed=74,
+    )
+    mock_speedport_client.capture_candidate_inventory = AsyncMock(
+        side_effect=[
+            partial,
+            SpeedportDecodeError("encrypted response authentication failed"),
+        ]
+    )
+
+    await hub.async_capture_candidate_inventory()
+    first = hub.diagnostics()["candidate_inventory"]
+    assert first["status"] == "partial"
+    assert first["failed"] == 1
+    assert first["observed"] == 74
+
+    with pytest.raises(HomeAssistantError):
+        await hub.async_capture_candidate_inventory()
+
+    second = hub.diagnostics()["candidate_inventory"]
+    assert second["status"] == "failed"
+    assert second["attempted"] == 53
+    assert second["observed"] == 74
+    assert second["last_completed_at"] == first["last_completed_at"]
+    assert second["last_error"] == "SpeedportDecodeError"
+    assert "encrypted response authentication failed" not in repr(second)
+    assert hub.get("management.access.state") == "unavailable"
+
+
+async def test_candidate_inventory_serializes_against_polling(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The explicit scan owns the hub operation lock until it has logged out."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def capture() -> CandidateInventoryResult:
+        started.set()
+        await release.wait()
+        return CandidateInventoryResult(1, 1, 0, 0, 1)
+
+    mock_speedport_client.capture_candidate_inventory = AsyncMock(side_effect=capture)
+    mock_speedport_client.get_status.reset_mock()
+    capture_task = asyncio.create_task(hub.async_capture_candidate_inventory())
+    await started.wait()
+    poll_task = asyncio.create_task(hub.async_update_group(PollGroup.FAST))
+    await asyncio.sleep(0)
+
+    mock_speedport_client.get_status.assert_not_awaited()
+    assert not poll_task.done()
+
+    release.set()
+    await capture_task
+    await poll_task
+    mock_speedport_client.get_status.assert_awaited_once_with()
 
 
 @pytest.mark.parametrize(

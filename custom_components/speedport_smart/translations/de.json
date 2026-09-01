@@ -519,6 +519,7 @@
       "client_name": { "name": "Name" }
     },
     "button": {
+      "capture_read_only_inventory": { "name": "Schreibgeschützte Funktionsinventur erfassen" },
       "retry_protected_data": { "name": "Geschützte Daten erneut abrufen (zuerst vom Router abmelden)" },
       "wps": { "name": "WPS starten" },
       "reconnect_internet": { "name": "Internet neu verbinden" },

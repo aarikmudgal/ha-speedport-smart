@@ -22,6 +22,7 @@ from ..const import (
 )
 from ..identity import port_forward_rule_fingerprint, valid_device_name
 from ..models import (
+    CandidateInventoryResult,
     CapabilityReport,
     DslMetrics,
     EndpointCapability,
@@ -1380,6 +1381,100 @@ class SpeedportClient:
             allow_protected_degraded=allow_protected_degraded
         )
 
+    async def capture_candidate_inventory(self) -> CandidateInventoryResult:
+        """Capture every candidate schema without changing active capabilities."""
+        observed_candidate_schema: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ] = {}
+        endpoint_results: dict[
+            tuple[str, bool, str | None],
+            tuple[dict[str, Any] | None, SpeedportError | None],
+        ] = {}
+        attempted = 0
+        succeeded = 0
+        unsupported = 0
+        failed = 0
+
+        async def capture_phase(*, authenticated: bool) -> None:
+            nonlocal attempted, failed, succeeded, unsupported
+            for family, candidates in self._endpoint_candidates.items():
+                for candidate in candidates:
+                    if candidate.authenticated is not authenticated:
+                        continue
+                    cache_key = (
+                        candidate.endpoint,
+                        candidate.authenticated,
+                        candidate.referer,
+                    )
+                    if cache_key not in endpoint_results:
+                        attempted += 1
+                        try:
+                            fetched_data = await self.get_json(
+                                candidate.endpoint,
+                                authenticated=candidate.authenticated,
+                                referer=candidate.referer,
+                            )
+                        except SpeedportUnsupportedError as exc:
+                            unsupported += 1
+                            endpoint_results[cache_key] = (None, exc)
+                        except SpeedportError as exc:
+                            if isinstance(
+                                exc,
+                                (
+                                    SpeedportAuthenticationError,
+                                    SpeedportConnectionError,
+                                    SpeedportDecodeError,
+                                    SpeedportSessionBusyError,
+                                ),
+                            ):
+                                raise
+                            failed += 1
+                            endpoint_results[cache_key] = (None, exc)
+                        else:
+                            succeeded += 1
+                            endpoint_results[cache_key] = (fetched_data, None)
+
+                    endpoint_data, error = endpoint_results[cache_key]
+                    if error is not None or endpoint_data is None:
+                        continue
+                    self._observe_candidate_data(
+                        family,
+                        candidate,
+                        endpoint_data,
+                        inventory=observed_candidate_schema,
+                    )
+
+        try:
+            await self.logout()
+            await capture_phase(authenticated=False)
+            protected_candidates = any(
+                candidate.authenticated
+                for candidates in self._endpoint_candidates.values()
+                for candidate in candidates
+            )
+            if protected_candidates:
+                if not self._password:
+                    raise SpeedportAuthenticationError(
+                        "Protected Speedport access requires a configured password"
+                    )
+                await self.login()
+                self._last_management_error = None
+                await capture_phase(authenticated=True)
+        finally:
+            await self.logout()
+
+        self._observed_candidate_schema = observed_candidate_schema
+        return CandidateInventoryResult(
+            attempted=attempted,
+            succeeded=succeeded,
+            unsupported=unsupported,
+            failed=failed,
+            observed=sum(
+                len(candidates) for candidates in observed_candidate_schema.values()
+            ),
+        )
+
     async def close(self) -> None:
         """Release the router session and any owned HTTP client session."""
         if self._closed:
@@ -1966,7 +2061,9 @@ class SpeedportClient:
         return values, tuple(supported_names)
 
     async def probe_capabilities(
-        self, *, allow_protected_degraded: bool = False
+        self,
+        *,
+        allow_protected_degraded: bool = False,
     ) -> CapabilityReport:
         """Probe only read endpoints and record independent failures."""
         observed_candidate_schema: dict[
@@ -2106,8 +2203,7 @@ class SpeedportClient:
                             "No authenticated endpoint read succeeded",
                         )
 
-            self._selected_endpoints = selected
-            self._capabilities = CapabilityReport(
+            report = CapabilityReport(
                 status_json=status_ok,
                 tr064=tr064_ok,
                 wan_counters=counters_ok,
@@ -2115,10 +2211,13 @@ class SpeedportClient:
                 feature_endpoints=MappingProxyType(dict(selected)),
                 failures=MappingProxyType(failures),
             )
-            self._observed_candidate_schema = observed_candidate_schema
-            return self._capabilities
         finally:
             await self.logout()
+
+        self._selected_endpoints = selected
+        self._capabilities = report
+        self._observed_candidate_schema = observed_candidate_schema
+        return report
 
     def _add_status_capabilities(self, selected: dict[str, EndpointCapability]) -> None:
         """Expose core families proven directly by public Status.json."""

@@ -1,6 +1,7 @@
 """Protocol clients for Speedport Smart routers."""
 
 from ..models import (
+    CandidateInventoryResult,
     CapabilityReport,
     DslMetrics,
     EndpointCapability,
@@ -44,6 +45,7 @@ __all__ = [
     "DEFAULT_KEY",
     "DEFAULT_KEY_HEX",
     "SOAP_ACTION",
+    "CandidateInventoryResult",
     "CapabilityReport",
     "DslMetrics",
     "EndpointCapability",

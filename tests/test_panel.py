@@ -625,6 +625,76 @@ def test_retry_protected_data_control_requires_exact_button_registry_key() -> No
         assert metadata["mutates_router"] is False
 
 
+def test_read_only_inventory_control_requires_exact_button_registry_key() -> None:
+    """Capability capture stays limited to its real diagnostic button."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = True
+
+    for entity_id, translation_key, expected_control in (
+        (
+            "button.speedport_capture_read_only_inventory",
+            "capture_read_only_inventory",
+            True,
+        ),
+        ("button.capture_read_only_inventory", None, False),
+        (
+            "switch.speedport_capture_read_only_inventory",
+            "capture_read_only_inventory",
+            False,
+        ),
+        (
+            "text.speedport_capture_read_only_inventory",
+            "capture_read_only_inventory",
+            False,
+        ),
+        (
+            "update.speedport_capture_read_only_inventory",
+            "capture_read_only_inventory",
+            False,
+        ),
+    ):
+        entry = SimpleNamespace(
+            entity_id=entity_id,
+            translation_key=translation_key,
+            entity_category="diagnostic",
+            supported_features=0,
+            name=None,
+        )
+
+        metadata = _entity_panel_data(entry, None, connection)
+
+        assert metadata["control"] is expected_control
+        assert (metadata["section"] == "controls") is expected_control
+        assert metadata["access_source"] == "integration"
+        assert metadata["mutates_router"] is False
+        assert metadata["risk"] == "normal"
+        assert metadata["disruptive"] is False
+
+
+def test_read_only_inventory_control_requires_entity_control_permission() -> None:
+    """Read access alone never grants capability capture through the panel."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = False
+    connection.user.permissions.check_entity.return_value = False
+    entry = SimpleNamespace(
+        entity_id="button.speedport_capture_read_only_inventory",
+        translation_key="capture_read_only_inventory",
+        entity_category="diagnostic",
+        supported_features=0,
+        name=None,
+    )
+
+    metadata = _entity_panel_data(entry, None, connection)
+
+    assert metadata["control"] is False
+    assert metadata["section"] == "system"
+    assert metadata["access_source"] == "integration"
+    assert metadata["mutates_router"] is False
+    connection.user.permissions.check_entity.assert_called_once_with(
+        "button.speedport_capture_read_only_inventory", "control"
+    )
+
+
 def test_panel_source_health_is_limited_to_readable_entity_families() -> None:
     """Do not reveal router-wide source health to restricted panel users."""
     sources = [

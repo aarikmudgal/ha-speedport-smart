@@ -519,6 +519,7 @@
       "client_name": { "name": "Name" }
     },
     "button": {
+      "capture_read_only_inventory": { "name": "Capture read-only capability inventory" },
       "retry_protected_data": { "name": "Retry protected data (log out of the router first)" },
       "wps": { "name": "Start WPS" },
       "reconnect_internet": { "name": "Reconnect internet" },

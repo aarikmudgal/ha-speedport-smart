@@ -258,6 +258,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
     area.subsections.flatMap((subsection) => subsection.controls),
   );
   assert.deepEqual(controls.sort(), [
+    "button:capture_read_only_inventory",
     "button:reboot_router",
     "button:reconnect_internet",
     "button:retry_protected_data",
@@ -314,6 +315,19 @@ test("fixed Administration manifest places reviewed controls and collections", (
       translation_key: "receiver_model",
     }),
     { areaId: "internet", subsectionId: "internet_mobile" },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "integration",
+      control: true,
+      domain: "button",
+      section: "controls",
+      translation_key: "capture_read_only_inventory",
+    }),
+    {
+      areaId: "home_assistant",
+      subsectionId: "home_assistant_diagnostics",
+    },
   );
   assert.deepEqual(
     adminPlacementFor({
@@ -383,8 +397,8 @@ test("Administration catalog covers every reviewed management family without gen
   const features = subsections.flatMap((subsection) => subsection.features);
   const featureIds = features.map((feature) => feature.id);
 
-  assert.equal(subsections.length, 26);
-  assert.equal(features.length, 72);
+  assert.equal(subsections.length, 27);
+  assert.equal(features.length, 73);
   assert.equal(new Set(featureIds).size, featureIds.length);
   assert.deepEqual(
     [...new Set(features.map((feature) => feature.contract))].sort(),
@@ -400,18 +414,25 @@ test("Administration catalog covers every reviewed management family without gen
   const subsectionControls = subsections.flatMap(
     (subsection) => subsection.controls,
   );
-  const reviewedFeatureControls = features
-    .filter((feature) => feature.contract === "reviewed")
+  const interactiveFeatureControls = features
+    .filter((feature) => feature.controls.length > 0)
     .flatMap((feature) => feature.controls);
   assert.deepEqual(
-    [...new Set(reviewedFeatureControls)].sort(),
+    [...new Set(interactiveFeatureControls)].sort(),
     [...new Set(subsectionControls)].sort(),
   );
-  assert.ok(
+  assert.deepEqual(
     features
       .filter((feature) => feature.contract !== "reviewed")
-      .every((feature) => feature.controls.length === 0),
+      .flatMap((feature) => feature.controls),
+    ["button:capture_read_only_inventory"],
   );
+  const inventory = features.find(
+    (feature) => feature.id === "home_assistant_capability_inventory",
+  );
+  assert.equal(inventory.contract, "read_only");
+  assert.equal(inventory.destructive, false);
+  assert.deepEqual(inventory.controls, ["button:capture_read_only_inventory"]);
 });
 
 test("feature status comes only from current entities, collections, and capabilities", () => {
@@ -597,15 +618,21 @@ test("complete capability catalog remains visible and noninteractive without liv
   );
   const featureCards =
     html.match(/<article class="admin-feature-card[\s\S]*?<\/article>/g) || [];
+  const inventoryCard = featureCards.find((card) =>
+    card.includes("Read-only router capability inventory"),
+  );
 
-  assert.equal(featureCards.length, 72);
+  assert.equal(featureCards.length, 73);
+  assert.ok(inventoryCard);
+  assert.match(inventoryCard, /Read-only by design/);
+  assert.doesNotMatch(inventoryCard, /destructive-candidate/);
   assert.equal(
     (html.match(/class="administration-area"/g) || []).length,
     ADMIN_IA.length,
   );
   assert.equal(
     (html.match(/class="administration-subsection"/g) || []).length,
-    26,
+    27,
   );
   for (const label of [
     "Provider, account, MTU, VLAN, and fixed-IP configuration",
@@ -615,6 +642,7 @@ test("complete capability catalog remains visible and noninteractive without liv
     "Restore local configuration backup",
     "Email notifications and event selection",
     "Front-panel display and key actions",
+    "Read-only router capability inventory",
   ]) {
     assert.match(html, new RegExp(label));
   }

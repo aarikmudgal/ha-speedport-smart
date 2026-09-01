@@ -16,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.speedport_smart.api import SpeedportSessionBusyError
 from custom_components.speedport_smart.button import (
     BUTTON_DESCRIPTIONS,
+    SpeedportCaptureReadOnlyInventoryButton,
     SpeedportCommandButton,
     SpeedportRetryProtectedDataButton,
 )
@@ -352,11 +353,13 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     button = SpeedportCommandButton(hub, _description(BUTTON_DESCRIPTIONS, "wps"))
     text = SpeedportClientNameText(hub, "aa:bb:cc:dd:ee:ff")
     retry = SpeedportRetryProtectedDataButton(hub)
+    capture = SpeedportCaptureReadOnlyInventoryButton(hub)
 
     assert switch.available
     assert button.available
     assert text.available
     assert retry.available
+    assert capture.available
 
     hub._mark_management_busy(SpeedportSessionBusyError("busy"))  # noqa: SLF001
 
@@ -364,6 +367,7 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     assert not button.available
     assert not text.available
     assert retry.available
+    assert capture.available
 
     hub._set_management_access("available")  # noqa: SLF001
     hub._protected_retry_at = 0.0  # noqa: SLF001 - isolate firmware gate
@@ -375,6 +379,7 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     assert not button.available
     assert not text.available
     assert retry.available
+    assert capture.available
 
     hub._merge_data(  # noqa: SLF001 - isolate protected retry gate
         {"system": {"settings_write_blocked": False}}
@@ -385,6 +390,11 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     assert not button.available
     assert not text.available
     assert retry.available
+    assert capture.available
+
+    hub.async_capture_candidate_inventory = AsyncMock()
+    await capture.async_press()
+    hub.async_capture_candidate_inventory.assert_awaited_once_with()
 
 
 async def test_wps_requires_fresh_started_state(
@@ -794,8 +804,10 @@ async def test_platform_setup_gates_controls_and_discovers_dynamic_entities(
     disabled: list[Any] = []
     await async_setup_switches(hass, disabled_entry, disabled.extend)
     await async_setup_buttons(hass, disabled_entry, disabled.extend)
-    assert len(disabled) == 1
-    assert isinstance(disabled[0], SpeedportRetryProtectedDataButton)
+    assert [type(entity) for entity in disabled] == [
+        SpeedportRetryProtectedDataButton,
+        SpeedportCaptureReadOnlyInventoryButton,
+    ]
 
     hub = SpeedportHub(
         hass,
@@ -881,6 +893,10 @@ async def test_platform_setup_gates_controls_and_discovers_dynamic_entities(
     assert any(
         isinstance(entity, SpeedportRetryProtectedDataButton) for entity in buttons
     )
+    assert any(
+        isinstance(entity, SpeedportCaptureReadOnlyInventoryButton)
+        for entity in buttons
+    )
     assert entry.async_on_unload.call_count == 7
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()
@@ -914,8 +930,10 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
     assert switches == []
     assert selects == []
     assert texts == []
-    assert len(buttons) == 1
-    assert isinstance(buttons[0], SpeedportRetryProtectedDataButton)
+    assert [type(entity) for entity in buttons] == [
+        SpeedportRetryProtectedDataButton,
+        SpeedportCaptureReadOnlyInventoryButton,
+    ]
 
     client = {
         "id": "aa:bb:cc:dd:ee:ff",

@@ -37,7 +37,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 11
+PANEL_SCHEMA_VERSION: Final = 12
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -156,12 +156,19 @@ _TOTR64_KEYS: Final = frozenset(
 )
 _INTEGRATION_KEYS: Final = frozenset(
     {
+        "capture_read_only_inventory",
         "last_successful_update",
         "management_access",
         "request_latency",
         "retry_protected_data",
         "router_problem",
         "update_failures",
+    }
+)
+_NON_MUTATING_BUTTON_KEYS: Final = frozenset(
+    {
+        "capture_read_only_inventory",
+        "retry_protected_data",
     }
 )
 _CHILD_SECTIONS: Final = {
@@ -526,12 +533,12 @@ def _entity_panel_data(
         if entity_entry.translation_key is not None
         else None
     )
-    is_recovery_control = (
+    is_non_mutating_control = (
         entity_domain == "button"
-        and entity_entry.translation_key == "retry_protected_data"
+        and entity_entry.translation_key in _NON_MUTATING_BUTTON_KEYS
     )
     supports_control = not protected_read_only and (
-        is_recovery_control or write_contract is not None
+        is_non_mutating_control or write_contract is not None
     )
     is_control = supports_control and _can_control_entity(
         connection,

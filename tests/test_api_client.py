@@ -21,11 +21,14 @@ from custom_components.speedport_smart.api import (
     encode_payload,
 )
 from custom_components.speedport_smart.api.exceptions import (
+    SpeedportConnectionError,
+    SpeedportDecodeError,
     SpeedportProtocolError,
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
 )
 from custom_components.speedport_smart.models import (
+    CapabilityReport,
     RouterInfo,
     RouterStatus,
     WanInterface,
@@ -2395,6 +2398,311 @@ async def test_probe_records_only_safe_successful_candidate_schemas() -> None:
         snapshot["energy"][0]["endpoint"] = "changed"  # type: ignore[index]
     with pytest.raises(TypeError):
         snapshot["energy"][0]["schema"][0]["path"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_is_fresh_bounded_and_state_neutral() -> (
+    None
+):
+    """Explicit inventory reads each exact candidate contract once and nothing else."""
+    shared_referer = "html/content/config/energy.html"
+    candidates = {
+        "energy": (
+            EndpointCapability(
+                "energy",
+                "data/EnergyPreview.json",
+                authenticated=False,
+                evidence_keys=("preview",),
+            ),
+            EndpointCapability(
+                "energy",
+                "data/Energy.json",
+                authenticated=True,
+                referer=shared_referer,
+                evidence_keys=("energy",),
+            ),
+        ),
+        "system_logs": (
+            EndpointCapability(
+                "system_logs",
+                "data/Energy.json",
+                authenticated=True,
+                referer=shared_referer,
+                evidence_keys=("logs",),
+            ),
+            EndpointCapability(
+                "system_logs",
+                "data/SystemMessages.json",
+                authenticated=True,
+                referer="html/content/config/system_messages.html",
+                evidence_keys=("messages",),
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    selected = EndpointCapability(
+        "wifi",
+        "data/WLANBasic.json",
+        authenticated=True,
+    )
+    selected_endpoints = {"wifi": selected}
+    capability_report = CapabilityReport(
+        status_json=True,
+        tr064=True,
+        wan_counters=True,
+        authenticated_json=True,
+        feature_endpoints=selected_endpoints,
+    )
+    wan_interface = WanInterface(index=5, alias="BONDING", status="Up")
+    client._selected_endpoints = selected_endpoints  # noqa: SLF001
+    client._capabilities = capability_report  # noqa: SLF001
+    client._wan_interface = wan_interface  # noqa: SLF001
+
+    async def read_candidate(endpoint: str, **_: object) -> dict[str, object]:
+        return {
+            "data/EnergyPreview.json": {"preview": {"available": True}},
+            "data/Energy.json": {"energy": {"enabled": True}},
+            "data/SystemMessages.json": {"messages": [{"level": "info"}]},
+        }[endpoint]
+
+    with (
+        patch.object(client, "logout", AsyncMock()) as logout,
+        patch.object(client, "login", AsyncMock()) as login,
+        patch.object(client, "get_json", AsyncMock(side_effect=read_candidate)) as get,
+        patch.object(client, "get_status", AsyncMock()) as get_status,
+        patch.object(client, "get_wan_counters", AsyncMock()) as get_wan_counters,
+        patch.object(client, "_post_reviewed_command", AsyncMock()) as post_command,
+    ):
+        result = await client.capture_candidate_inventory()
+
+    assert result.attempted == 3
+    assert result.succeeded == 3
+    assert result.unsupported == 0
+    assert result.failed == 0
+    assert result.observed == 4
+    assert [call.args[0] for call in get.await_args_list] == [
+        "data/EnergyPreview.json",
+        "data/Energy.json",
+        "data/SystemMessages.json",
+    ]
+    assert logout.await_count == 2
+    login.assert_awaited_once_with()
+    get_status.assert_not_awaited()
+    get_wan_counters.assert_not_awaited()
+    post_command.assert_not_awaited()
+    assert client._selected_endpoints is selected_endpoints  # noqa: SLF001
+    assert client.capabilities is capability_report
+    assert client._wan_interface is wan_interface  # noqa: SLF001
+    assert {
+        (family, candidate["endpoint"], candidate["referer"])
+        for family, observed in client.observed_candidate_schema.items()
+        for candidate in observed
+    } == {
+        ("energy", "data/EnergyPreview.json", None),
+        ("energy", "data/Energy.json", shared_referer),
+        ("system_logs", "data/Energy.json", shared_referer),
+        (
+            "system_logs",
+            "data/SystemMessages.json",
+            "html/content/config/system_messages.html",
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_isolates_noncritical_failures() -> None:
+    """Unsupported and isolated protocol failures produce accurate safe counts."""
+    candidates = {
+        "energy": tuple(
+            EndpointCapability("energy", f"data/Energy{index}.json")
+            for index in range(3)
+        )
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(), "speedport.ip", endpoint_candidates=candidates
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(
+                side_effect=[
+                    {"energy": {"enabled": True}},
+                    SpeedportUnsupportedError("not exposed"),
+                    SpeedportProtocolError("isolated malformed response"),
+                ]
+            ),
+        ),
+    ):
+        result = await client.capture_candidate_inventory()
+
+    assert result.attempted == 3
+    assert result.succeeded == 1
+    assert result.unsupported == 1
+    assert result.failed == 1
+    assert result.observed == 1
+    assert [
+        candidate["endpoint"]
+        for candidate in client.observed_candidate_schema["energy"]
+    ] == ["data/Energy0.json"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_keeps_referer_contracts_separate() -> None:
+    """The same endpoint under distinct firmware pages is read and recorded twice."""
+    candidates = {
+        "lan": (
+            EndpointCapability(
+                "lan",
+                "data/LAN.json",
+                authenticated=True,
+                referer="html/content/network/lan.html",
+            ),
+        ),
+        "dhcp": (
+            EndpointCapability(
+                "dhcp",
+                "data/LAN.json",
+                authenticated=True,
+                referer="html/content/network/dhcp.html",
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"lan": {"enabled": True}}),
+        ) as get,
+    ):
+        result = await client.capture_candidate_inventory()
+
+    assert result.attempted == 2
+    assert result.succeeded == 2
+    assert get.await_count == 2
+    assert [call.kwargs["referer"] for call in get.await_args_list] == [
+        "html/content/network/lan.html",
+        "html/content/network/dhcp.html",
+    ]
+    assert client.observed_candidate_schema["lan"][0]["referer"] == (
+        "html/content/network/lan.html"
+    )
+    assert client.observed_candidate_schema["dhcp"][0]["referer"] == (
+        "html/content/network/dhcp.html"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "critical_error",
+    [
+        SpeedportAuthenticationError("authenticated session failed"),
+        SpeedportDecodeError("encrypted response authentication failed"),
+        SpeedportConnectionError("router unavailable"),
+        SpeedportSessionBusyError("router session busy"),
+    ],
+    ids=["authentication", "decode", "connection", "session-busy"],
+)
+async def test_explicit_candidate_inventory_retains_previous_snapshot_on_failure(
+    critical_error: Exception,
+) -> None:
+    """A critical read failure cannot publish a partial or mixed inventory."""
+    previous = EndpointCapability(
+        "energy",
+        "data/Energy.json",
+        authenticated=True,
+        referer="html/content/config/energy.html",
+    )
+    candidates = {
+        "energy": (
+            EndpointCapability(
+                "energy",
+                "data/EnergyPreview.json",
+                authenticated=False,
+            ),
+            previous,
+        )
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._observe_candidate_data(  # noqa: SLF001
+        "energy",
+        previous,
+        {"energy": {"previous": True}},
+    )
+    before = repr(client.observed_candidate_schema)
+
+    with (
+        patch.object(client, "logout", AsyncMock()) as logout,
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(
+                side_effect=[
+                    {"preview": {"new": True}},
+                    critical_error,
+                ]
+            ),
+        ),
+        pytest.raises(type(critical_error)),
+    ):
+        await client.capture_candidate_inventory()
+
+    assert repr(client.observed_candidate_schema) == before
+    assert logout.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_commits_only_after_final_logout() -> None:
+    """A failed session release leaves the prior schema snapshot untouched."""
+    candidate = EndpointCapability("energy", "data/Energy.json")
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        endpoint_candidates={"energy": (candidate,)},
+    )
+    client._observe_candidate_data(  # noqa: SLF001
+        "energy", candidate, {"energy": {"previous": True}}
+    )
+    before = repr(client.observed_candidate_schema)
+
+    with (
+        patch.object(
+            client,
+            "logout",
+            AsyncMock(side_effect=[None, SpeedportConnectionError("logout failed")]),
+        ),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"energy": {"new": True}}),
+        ),
+        pytest.raises(SpeedportConnectionError),
+    ):
+        await client.capture_candidate_inventory()
+
+    assert repr(client.observed_candidate_schema) == before
 
 
 @pytest.mark.asyncio

@@ -274,7 +274,7 @@ test("client rename rejects a state changed after confirmation", () => {
   );
 });
 
-test("management backoff disables mutations but preserves recovery", () => {
+test("management backoff disables mutations but preserves read-only actions", () => {
   assert.equal(
     managementControlAvailable(CLIENT_NAME_META, "blocked", false),
     false,
@@ -293,26 +293,44 @@ test("management backoff disables mutations but preserves recovery", () => {
     true,
   );
   assert.equal(
+    managementControlAvailable(
+      {
+        control: true,
+        domain: "button",
+        entity_id: "button.speedport_capture_read_only_inventory",
+        translation_key: "capture_read_only_inventory",
+      },
+      "blocked",
+      false,
+    ),
+    true,
+  );
+  assert.equal(
     managementControlAvailable(CLIENT_NAME_META, "available", true),
     true,
   );
 });
 
-test("protected-data recovery bypass rejects colliding entity domains", () => {
-  for (const domain of ["switch", "text", "update"]) {
-    assert.equal(
-      managementControlAvailable(
-        {
-          control: true,
-          domain,
-          entity_id: `${domain}.speedport_retry_protected_data`,
-          translation_key: "retry_protected_data",
-        },
-        "available",
-        true,
-      ),
-      false,
-    );
+test("read-only action bypass rejects colliding entity domains", () => {
+  for (const key of [
+    "capture_read_only_inventory",
+    "retry_protected_data",
+  ]) {
+    for (const domain of ["switch", "text", "update"]) {
+      assert.equal(
+        managementControlAvailable(
+          {
+            control: true,
+            domain,
+            entity_id: `${domain}.speedport_${key}`,
+            translation_key: key,
+          },
+          "available",
+          true,
+        ),
+        false,
+      );
+    }
   }
 });
 

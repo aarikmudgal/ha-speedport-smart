@@ -116,7 +116,12 @@ async def async_setup_entry(
     """Set up supported action buttons when router controls are enabled."""
     del hass
     hub = entry.runtime_data
-    async_add_entities([SpeedportRetryProtectedDataButton(hub)])
+    async_add_entities(
+        [
+            SpeedportRetryProtectedDataButton(hub),
+            SpeedportCaptureReadOnlyInventoryButton(hub),
+        ]
+    )
     if not hub.controls_enabled:
         return
     known: set[str] = set()
@@ -209,6 +214,26 @@ class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Perform read-only rediscovery and schedule a clean entry reload."""
         await self.hub.async_retry_protected_data()
+
+
+class SpeedportCaptureReadOnlyInventoryButton(SpeedportEntity, ButtonEntity):
+    """Explicitly inspect every known read-only capability candidate."""
+
+    _attr_translation_key = "capture_read_only_inventory"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+
+    def __init__(self, hub: SpeedportHub) -> None:
+        """Initialize outside the router control gate."""
+        super().__init__(
+            hub,
+            coordinator(hub, PollGroup.NORMAL),
+            "capture_read_only_inventory",
+        )
+
+    async def async_press(self) -> None:
+        """Capture value-free schemas without reloading the config entry."""
+        await self.hub.async_capture_candidate_inventory()
 
 
 def _verification_error() -> HomeAssistantError:

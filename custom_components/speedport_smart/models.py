@@ -143,6 +143,17 @@ class CapabilityReport:
         return family in self.feature_endpoints
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateInventoryResult:
+    """Value-free outcome of one explicit candidate inventory capture."""
+
+    attempted: int
+    succeeded: int
+    unsupported: int
+    failed: int
+    observed: int
+
+
 def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:
     """Normalize public Status.json values without fabricating missing fields."""
     info = RouterInfo(

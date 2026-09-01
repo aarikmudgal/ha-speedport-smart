@@ -250,6 +250,17 @@ class SpeedportHub:
         self._protected_retry_at = 0.0
         self._protected_retry_failures = 0
         self._protected_invalidation_pending = False
+        self._candidate_inventory_status = "not_run"
+        self._candidate_inventory_counts = {
+            "attempted": 0,
+            "succeeded": 0,
+            "unsupported": 0,
+            "failed": 0,
+            "observed": 0,
+        }
+        self._candidate_inventory_last_attempt: datetime | None = None
+        self._candidate_inventory_last_completed: datetime | None = None
+        self._candidate_inventory_last_error: str | None = None
         self._closed = False
 
     @property
@@ -431,6 +442,59 @@ class SpeedportHub:
             self._set_management_access("available")
             if self._entry_id is not None:
                 self.hass.config_entries.async_schedule_reload(self._entry_id)
+
+    async def async_capture_candidate_inventory(self) -> None:
+        """Capture every readable candidate schema through one explicit session."""
+        async with self._operation_lock:
+            self._candidate_inventory_status = "running"
+            self._candidate_inventory_last_attempt = datetime.now(UTC)
+            self._candidate_inventory_last_error = None
+            self._set_management_access("recovering", owner=self._management_owner)
+            try:
+                result = await self.client.capture_candidate_inventory()
+            except SpeedportSessionBusyError as err:
+                self._record_candidate_inventory_failure(err)
+                self._publish_authenticated_failure(err)
+                raise HomeAssistantError(
+                    "Log out in the Speedport web interface before capturing the "
+                    "read-only capability inventory"
+                ) from err
+            except SpeedportLoginLockedError as err:
+                self._record_candidate_inventory_failure(err)
+                self._publish_authenticated_failure(err)
+                raise HomeAssistantError(
+                    "Speedport login is temporarily locked; retry after the cooldown"
+                ) from err
+            except SpeedportInvalidCredentialsError as err:
+                self._record_candidate_inventory_failure(err)
+                self._publish_authenticated_failure(err)
+                raise HomeAssistantError(
+                    "Speedport rejected the configured device password"
+                ) from err
+            except SpeedportError as err:
+                self._record_candidate_inventory_failure(err)
+                self._publish_authenticated_failure(err, force_unavailable=True)
+                raise HomeAssistantError(
+                    "The read-only Speedport capability inventory could not be captured"
+                ) from err
+
+            self._set_management_access("available")
+            self._candidate_inventory_status = (
+                "partial" if result.failed else "complete"
+            )
+            self._candidate_inventory_counts = {
+                "attempted": result.attempted,
+                "succeeded": result.succeeded,
+                "unsupported": result.unsupported,
+                "failed": result.failed,
+                "observed": result.observed,
+            }
+            self._candidate_inventory_last_completed = datetime.now(UTC)
+
+    def _record_candidate_inventory_failure(self, error: SpeedportError) -> None:
+        """Retain prior capture counts while recording a safe failed attempt."""
+        self._candidate_inventory_status = "failed"
+        self._candidate_inventory_last_error = type(error).__name__
 
     def has_capability(self, capability: str) -> bool:
         """Return whether router exposes capability."""
@@ -1547,6 +1611,21 @@ class SpeedportHub:
             "data": _thaw(self._data),
             "observed_feature_schema": _thaw(observed_schema),
             "observed_candidate_schema": _thaw(observed_candidate_schema),
+            "candidate_inventory": {
+                "status": self._candidate_inventory_status,
+                **self._candidate_inventory_counts,
+                "last_attempted_at": (
+                    self._candidate_inventory_last_attempt.isoformat()
+                    if self._candidate_inventory_last_attempt is not None
+                    else None
+                ),
+                "last_completed_at": (
+                    self._candidate_inventory_last_completed.isoformat()
+                    if self._candidate_inventory_last_completed is not None
+                    else None
+                ),
+                "last_error": self._candidate_inventory_last_error,
+            },
             "endpoint_errors": dict(self.endpoint_errors),
             "telemetry": {
                 "public_status": {

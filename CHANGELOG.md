@@ -18,10 +18,14 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - An offline, stdin-only browser-capture sanitizer that verifies one explicit
   reversible scalar apply/readback/rollback sequence and emits only bounded,
   privacy-safe contract evidence.
+- An explicit, candidate-only capability inventory action that reads every
+  registered JSON request contract once, stores only value-free response
+  shapes, preserves active runtime capabilities, and reports safe
+  complete/partial/failure diagnostics without reloading the integration.
 - Separate Dashboard and Administration views in the native Home Assistant
   panel, with administrator-only, on-demand structured details projected from
   the existing normalized cache without additional router traffic.
-- A responsive Administration catalog covering 72 router-management features
+- A responsive Administration catalog covering 73 router-management features
   across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
   mobile receivers, and system services. Every entry distinguishes reviewed
   controls, related read-only evidence, blocked contracts, and unsupported

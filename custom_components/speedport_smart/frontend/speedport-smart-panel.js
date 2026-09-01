@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=11";
+import { keepDialogFocus } from "./accessibility.js?schema=12";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=11";
+} from "./controls.js?schema=12";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=11";
+} from "./entity-state.js?schema=12";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=11";
+} from "./render-state.js?schema=12";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=11";
+} from "./translations.js?schema=12";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 11;
+const PANEL_SCHEMA_VERSION = 12;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -1167,6 +1167,20 @@ export const ADMIN_IA = Object.freeze([
         }),
       ],
     }),
+    fixedAdminSubsection({
+      id: "home_assistant_diagnostics",
+      icon: "mdi:database-search-outline",
+      entityGroups: ["controls_diagnostics"],
+      controls: ["button:capture_read_only_inventory"],
+      features: [
+        fixedAdminFeature("home_assistant_capability_inventory", {
+          contract: "read_only",
+          controls: ["button:capture_read_only_inventory"],
+          entityGroups: ["controls_diagnostics"],
+          capabilities: ["management"],
+        }),
+      ],
+    }),
   ]),
 ]);
 
@@ -1261,6 +1275,7 @@ const CAPABILITY_GROUP_INFO = {
   controls_media: { titleKey: "group.controls_media", icon: "mdi:multimedia" },
   controls_system: { titleKey: "group.controls_system", icon: "mdi:power-cycle" },
   controls_session: { titleKey: "group.controls_session", icon: "mdi:account-sync-outline" },
+  controls_diagnostics: { titleKey: "group.controls_diagnostics", icon: "mdi:database-search-outline" },
 };
 const CAPABILITY_GROUP_ORDER = {
   connection: ["connection_internet", "connection_addressing", "connection_privacy"],
@@ -1272,7 +1287,7 @@ const CAPABILITY_GROUP_ORDER = {
   telephony: ["telephony_registration", "telephony_calls", "telephony_lines", "telephony_dect", "telephony_pbx", "telephony_voip", "telephony_ip", "telephony_phonebooks"],
   system: ["system_health", "system_firmware", "system_support", "system_security", "system_security_dns", "system_security_port_block", "system_security_qos", "system_ddns", "system_vpn", "system_parental", "system_usb", "system_usb_tethering", "system_nas", "system_services"],
   management: ["management_session", "management_health"],
-  controls: ["controls_session", "controls_wireless", "controls_internet", "controls_mobile", "controls_mesh", "controls_clients", "controls_forwarding", "controls_ddns", "controls_vpn", "controls_parental", "controls_media", "controls_system"],
+  controls: ["controls_session", "controls_diagnostics", "controls_wireless", "controls_internet", "controls_mobile", "controls_mesh", "controls_clients", "controls_forwarding", "controls_ddns", "controls_vpn", "controls_parental", "controls_media", "controls_system"],
 };
 
 const ESCAPE_MAP = {
@@ -1616,6 +1631,7 @@ export function capabilityGroupFor(meta) {
   }
   if (section === "controls") {
     if (key === "retry_protected_data") return "controls_session";
+    if (key === "capture_read_only_inventory") return "controls_diagnostics";
     if (
       [
         "hybrid_bonding",
@@ -2451,6 +2467,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     ) {
       actionLabel = this._t("action.retry_protected");
       message = this._t("confirm.retry");
+    } else if (
+      meta.domain === "button" &&
+      meta.translation_key === "capture_read_only_inventory"
+    ) {
+      actionLabel = this._t("action.capture_inventory");
+      message = this._t("confirm.capture_inventory");
     } else if (meta.domain === "switch") {
       observedState = state.state;
       actionLabel = this._t(
@@ -2629,9 +2651,12 @@ export class SpeedportSmartPanel extends HTMLElement {
       } else {
         throw new Error(this._t("error.unsupported_control"));
       }
-      this._notice = this._t("notice.action_success", {
-        action: pending.actionLabel,
-      });
+      this._notice =
+        meta.translation_key === "capture_read_only_inventory"
+          ? this._t("notice.capture_inventory_success")
+          : this._t("notice.action_success", {
+              action: pending.actionLabel,
+            });
       this._noticeKind = "status";
       this._pendingAction = undefined;
       this._focusAfterRenderEntityId = pending.entityId;
@@ -2945,6 +2970,9 @@ export class SpeedportSmartPanel extends HTMLElement {
       meta.domain === "button" &&
       meta.translation_key === "retry_protected_data"
         ? this._t("action.retry")
+        : meta.domain === "button" &&
+            meta.translation_key === "capture_read_only_inventory"
+          ? this._t("action.capture_inventory_short")
         : isSupportedTextControl(meta)
           ? this._t("action.edit")
         : meta.domain === "select"
