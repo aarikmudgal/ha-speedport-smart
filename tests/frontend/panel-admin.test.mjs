@@ -43,6 +43,7 @@ const {
   adminPlacementFor,
   formatAdminReadValue,
   highestAdminRisk,
+  iconFor,
   normalizeAdminReadPayload,
   splitPanelEntities,
 } = await import(
@@ -79,12 +80,17 @@ const CONTROL_META = Object.freeze({
   access_source: "router_control",
   confirmation: "confirm",
   control: true,
+  control_supported: true,
   disruptive: true,
   domain: "button",
   entity_id: "button.speedport_reboot_router",
   risk: "disruptive",
   section: "controls",
   translation_key: "reboot_router",
+});
+const READ_ONLY_CONTROL_META = Object.freeze({
+  ...CONTROL_META,
+  control: false,
 });
 const WAN_RATE_META = Object.freeze({
   access_source: "wan_counters",
@@ -118,6 +124,28 @@ const LTE_TUNNEL_META = Object.freeze({
   risk: "normal",
   section: "mobile",
   translation_key: "lte_tunnel_bytes_received",
+});
+const FAST_POLLING_HEALTH_META = Object.freeze({
+  access_source: "integration",
+  confirmation: "none",
+  control: false,
+  disruptive: false,
+  domain: "sensor",
+  entity_id: "sensor.speedport_fast_polling_health",
+  risk: "normal",
+  section: "management",
+  translation_key: "fast_polling_health",
+});
+const ENDPOINT_FAILURE_META = Object.freeze({
+  access_source: "integration",
+  confirmation: "none",
+  control: false,
+  disruptive: false,
+  domain: "sensor",
+  entity_id: "sensor.speedport_endpoint_failures",
+  risk: "normal",
+  section: "management",
+  translation_key: "endpoint_failures",
 });
 
 function adminPayload(entryId = "entry-a", sections = []) {
@@ -173,6 +201,97 @@ test("Dashboard and Administration use disjoint entity sets", () => {
       controls: [CONTROL_META],
       reporting: [REPORTING_META, CONFIG_META],
     },
+  );
+});
+
+test("permission-denied controls stay in Administration without an action", () => {
+  assert.deepEqual(
+    splitPanelEntities([REPORTING_META, READ_ONLY_CONTROL_META]),
+    {
+      controls: [READ_ONLY_CONTROL_META],
+      reporting: [REPORTING_META],
+    },
+  );
+  assert.deepEqual(adminPlacementFor(READ_ONLY_CONTROL_META), {
+    areaId: "system",
+    subsectionId: "system_maintenance",
+  });
+
+  const fixture = panelFixture();
+  fixture.panel._hass.states = {
+    [READ_ONLY_CONTROL_META.entity_id]: {
+      attributes: { friendly_name: "Reboot router" },
+      state: "unknown",
+    },
+  };
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", [READ_ONLY_CONTROL_META]),
+    [READ_ONLY_CONTROL_META],
+    [],
+    {},
+  );
+
+  assert.match(html, /button\.speedport_reboot_router/);
+  assert.doesNotMatch(html, /data-control="button\.speedport_reboot_router"/);
+});
+
+test("all reviewed permission-denied controls retain exact placement and zero actions", () => {
+  const reviewed = ADMIN_IA.flatMap((area) =>
+    area.subsections.flatMap((subsection) =>
+      subsection.controls.map((control) => ({
+        control,
+        placement: { areaId: area.id, subsectionId: subsection.id },
+      })),
+    ),
+  );
+  assert.equal(reviewed.length, 14);
+
+  const fixture = panelFixture();
+  for (const { control, placement } of reviewed) {
+    const [domain, translationKey] = control.split(":");
+    const meta = {
+      ...READ_ONLY_CONTROL_META,
+      domain,
+      entity_id: `${domain}.speedport_${translationKey}`,
+      translation_key: translationKey,
+    };
+    fixture.panel._hass.states[meta.entity_id] = {
+      attributes: { friendly_name: translationKey },
+      state: domain === "switch" ? "off" : "unknown",
+    };
+    assert.deepEqual(adminPlacementFor(meta), placement, control);
+    const html = fixture.panel._renderAdministration(
+      router("entry-a", [meta]),
+      [meta],
+      [],
+      {},
+    );
+    assert.match(html, new RegExp(meta.entity_id.replaceAll(".", "\\.")), control);
+    assert.doesNotMatch(html, /data-control=/, control);
+  }
+});
+
+test("capability catalog explains permission-denied controls", () => {
+  const fixture = panelFixture();
+  const rebootFeature = ADMIN_IA.flatMap((area) => area.subsections)
+    .flatMap((subsection) => subsection.features)
+    .find((feature) => feature.controls.includes("button:reboot_router"));
+
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      rebootFeature,
+      [READ_ONLY_CONTROL_META],
+      new Map(),
+      new Set(),
+      true,
+    ).key,
+    "control_permission_required",
+  );
+  assert.equal(
+    PANEL_TRANSLATIONS.en[
+      "admin.feature.status.control_permission_required"
+    ],
+    "Control permission required",
   );
 });
 
@@ -323,6 +442,19 @@ test("fixed Administration manifest places reviewed controls and collections", (
       domain: "button",
       section: "controls",
       translation_key: "capture_read_only_inventory",
+    }),
+    {
+      areaId: "home_assistant",
+      subsectionId: "home_assistant_diagnostics",
+    },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "integration",
+      control: false,
+      domain: "sensor",
+      section: "management",
+      translation_key: "fast_polling_health",
     }),
     {
       areaId: "home_assistant",
@@ -583,6 +715,12 @@ test("highest Administration risk uses exact backend risk order only", () => {
     highestAdminRisk([{ control: true, risk: "future-unknown" }]),
     undefined,
   );
+  assert.equal(
+    highestAdminRisk([
+      { control: false, control_supported: true, risk: "destructive" },
+    ]),
+    "destructive",
+  );
 });
 
 test("unmanifested controls cannot appear in Administration", () => {
@@ -658,6 +796,278 @@ test("complete capability catalog remains visible and noninteractive without liv
       (card) => !card.includes("<button") && !card.includes("data-control"),
     ),
   );
+});
+
+test("Administration renders integration polling and endpoint health cards", () => {
+  const fixture = panelFixture();
+  const entities = [FAST_POLLING_HEALTH_META, ENDPOINT_FAILURE_META];
+  fixture.panel._hass.states = {
+    [FAST_POLLING_HEALTH_META.entity_id]: {
+      attributes: { friendly_name: "Fast polling health" },
+      state: "healthy",
+    },
+    [ENDPOINT_FAILURE_META.entity_id]: {
+      attributes: { friendly_name: "Endpoint failures" },
+      state: "0",
+    },
+  };
+
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", entities),
+    [],
+    entities,
+    {},
+  );
+
+  assert.match(html, /sensor\.speedport_fast_polling_health/);
+  assert.match(html, /sensor\.speedport_endpoint_failures/);
+  assert.match(html, /Fast polling health/);
+  assert.match(html, /Endpoint failures/);
+});
+
+test("panel uses Home Assistant platform and state icons with custom overrides", async () => {
+  const platformIcons = {
+    binary_sensor: {
+      wifi_enabled: { default: "mdi:wifi" },
+    },
+    sensor: {
+      management_access: {
+        default: "mdi:account-lock",
+        state: { blocked: "mdi:account-alert" },
+      },
+    },
+  };
+  const componentIcons = {
+    binary_sensor: {
+      connectivity: {
+        default: "mdi:close-network-outline",
+        state: { on: "mdi:check-network-outline" },
+      },
+      problem: {
+        default: "mdi:check-circle-outline",
+        state: { on: "mdi:alert-circle-outline" },
+      },
+    },
+    sensor: {
+      duration: { default: "mdi:timer-outline" },
+    },
+  };
+  const messages = [];
+  const panel = new SpeedportSmartPanel();
+  panel._render = () => {};
+  panel._hass = {
+    connection: {
+      async sendMessagePromise(message) {
+        messages.push(message);
+        return message.category === "entity"
+          ? { resources: { speedport_smart: platformIcons } }
+          : { resources: componentIcons };
+      },
+    },
+  };
+
+  await panel._loadPlatformIcons();
+
+  assert.deepEqual(messages, [
+    {
+      type: "frontend/get_icons",
+      category: "entity",
+      integration: "speedport_smart",
+    },
+    {
+      type: "frontend/get_icons",
+      category: "entity_component",
+    },
+  ]);
+  assert.equal(
+    iconFor(
+      { domain: "sensor", section: "management", translation_key: "management_access" },
+      { attributes: {}, state: "blocked" },
+      panel._platformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:account-alert",
+  );
+  assert.equal(
+    iconFor(
+      { domain: "sensor", section: "management", translation_key: "management_access" },
+      { attributes: {}, state: "unknown" },
+      panel._platformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:account-lock",
+  );
+  const registryMeta = {
+    domain: "sensor",
+    entity_id: "sensor.speedport_management_access",
+    section: "management",
+    translation_key: "management_access",
+  };
+  const registryState = {
+    attributes: { icon: "mdi:star" },
+    state: "blocked",
+  };
+  const registryEntries = {
+    [registryMeta.entity_id]: { icon: "mdi:account-cog" },
+  };
+  assert.equal(
+    iconFor(
+      registryMeta,
+      registryState,
+      panel._platformIcons,
+      panel._componentIcons,
+      registryEntries,
+    ),
+    "mdi:account-cog",
+  );
+  panel._hass.entities = registryEntries;
+  panel._hass.states = { [registryMeta.entity_id]: registryState };
+  assert.match(
+    panel._renderEntity(registryMeta),
+    /<ha-icon icon="mdi:account-cog"><\/ha-icon>/,
+  );
+  assert.equal(
+    iconFor(
+      { domain: "binary_sensor", section: "wireless", translation_key: "wifi_enabled" },
+      { attributes: { icon: "mdi:star" }, state: "on" },
+      panel._platformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:star",
+  );
+  assert.equal(
+    iconFor(
+      {
+        domain: "binary_sensor",
+        section: "connection",
+        translation_key: "internet_connected",
+      },
+      { attributes: { device_class: "connectivity" }, state: "on" },
+      panel._platformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:check-network-outline",
+  );
+  assert.equal(
+    iconFor(
+      {
+        domain: "binary_sensor",
+        section: "system",
+        translation_key: "router_problem",
+      },
+      { attributes: { device_class: "problem" }, state: "on" },
+      panel._platformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:alert-circle-outline",
+  );
+  assert.equal(
+    iconFor(
+      {
+        domain: "sensor",
+        section: "management",
+        translation_key: "request_latency",
+      },
+      { attributes: { device_class: "duration" }, state: "1.2" },
+      panel._platformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:timer-outline",
+  );
+  const rangePlatformIcons = {
+    sensor: {
+      request_latency: {
+        default: "mdi:speedometer-slow",
+        range: {
+          0: "mdi:speedometer-slow",
+          "2.50": "mdi:speedometer-medium",
+          10: "mdi:speedometer",
+          "-Infinity": "mdi:alert",
+          Infinity: "mdi:alert",
+          invalid: "mdi:alert",
+        },
+      },
+    },
+  };
+  const rangeMeta = {
+    domain: "sensor",
+    section: "management",
+    translation_key: "request_latency",
+  };
+  assert.equal(
+    iconFor(
+      rangeMeta,
+      { attributes: {}, state: "3" },
+      rangePlatformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:speedometer-medium",
+  );
+  assert.equal(
+    iconFor(
+      rangeMeta,
+      { attributes: {}, state: "-100" },
+      rangePlatformIcons,
+      panel._componentIcons,
+    ),
+    "mdi:speedometer-slow",
+  );
+  assert.equal(
+    iconFor(
+      {
+        domain: "sensor",
+        section: "management",
+        translation_key: "request_latency",
+      },
+      { attributes: { device_class: "duration" }, state: "11" },
+      {},
+      {
+        sensor: {
+          duration: {
+            default: "mdi:timer-outline",
+            range: {
+              0: "mdi:timer-sand-empty",
+              5: "mdi:timer-sand",
+              10: "mdi:timer-alert-outline",
+            },
+          },
+        },
+      },
+    ),
+    "mdi:timer-alert-outline",
+  );
+});
+
+test("panel retries a transient Home Assistant icon-resource failure", async () => {
+  let platformAttempts = 0;
+  let componentAttempts = 0;
+  const categories = [];
+  const panel = new SpeedportSmartPanel();
+  panel._render = () => {};
+  panel._hass = {
+    connection: {
+      async sendMessagePromise(message) {
+        categories.push(message.category);
+        if (message.category === "entity") {
+          platformAttempts += 1;
+          return { resources: { speedport_smart: {} } };
+        }
+        componentAttempts += 1;
+        if (componentAttempts === 1) throw new Error("temporary failure");
+        return { resources: { sensor: {} } };
+      },
+    },
+  };
+
+  await panel._loadPlatformIcons();
+  assert.deepEqual(panel._platformIcons, {});
+  assert.equal(panel._componentIcons, undefined);
+  await panel._loadPlatformIcons();
+
+  assert.deepEqual(panel._componentIcons, { sensor: {} });
+  assert.equal(platformAttempts, 1);
+  assert.equal(componentAttempts, 2);
+  assert.deepEqual(categories, ["entity", "entity_component", "entity_component"]);
 });
 
 test("Dashboard keeps every report while Administration mirrors reviewed groups", () => {
@@ -813,6 +1223,35 @@ test("router change and disconnect clear private cached data", async () => {
   fixture.panel.disconnectedCallback();
   assert.equal(fixture.panel._adminRead, undefined);
   assert.equal(fixture.panel._adminReadEntry, undefined);
+});
+
+test("Entity Registry icon changes rerender without a state change", () => {
+  const fixture = panelFixture();
+  const state = { attributes: {}, state: "20" };
+  fixture.panel._metadata = {
+    routers: [router("entry-a", [REPORTING_META])],
+  };
+  fixture.panel._hass = {
+    ...fixture.panel._hass,
+    entities: {
+      [REPORTING_META.entity_id]: { icon: "mdi:gauge" },
+    },
+    states: { [REPORTING_META.entity_id]: state },
+  };
+  let scheduled = 0;
+  fixture.panel._scheduleRender = () => {
+    scheduled += 1;
+  };
+
+  fixture.panel.hass = {
+    ...fixture.panel._hass,
+    entities: {
+      [REPORTING_META.entity_id]: { icon: "mdi:chip" },
+    },
+  };
+
+  assert.equal(scheduled, 1);
+  assert.equal(fixture.panel._hass.states[REPORTING_META.entity_id], state);
 });
 
 test("rapid WAN telemetry changes rerender Dashboard, not Administration", () => {

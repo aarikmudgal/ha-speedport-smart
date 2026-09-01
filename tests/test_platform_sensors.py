@@ -37,10 +37,14 @@ from custom_components.speedport_smart.panel import (
 from custom_components.speedport_smart.platform_helpers import speedport_child_device
 from custom_components.speedport_smart.sensor import (
     CHILD_SENSOR_COLLECTIONS,
+    ENDPOINT_FAILURE_SENSOR_DESCRIPTION,
+    POLLING_HEALTH_SENSOR_DESCRIPTIONS,
     SENSOR_DESCRIPTIONS,
     WAN_TELEMETRY_SENSOR_DESCRIPTIONS,
     SpeedportChildSensor,
+    SpeedportEndpointFailureSensor,
     SpeedportManagementAccessSensor,
+    SpeedportPollingHealthSensor,
     SpeedportSensor,
     SpeedportWanTelemetrySensor,
 )
@@ -327,6 +331,141 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
         assert all(entity.available for entity in entities.values())
 
 
+async def test_polling_and_endpoint_health_diagnostics_are_bounded_and_visible(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Coordinator failures stay observable without raw exception messages."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    descriptions = {
+        description.key: description
+        for description in POLLING_HEALTH_SENSOR_DESCRIPTIONS
+    }
+    fast = SpeedportPollingHealthSensor(
+        hub,
+        descriptions["fast_polling_health"],
+    )
+    slow = SpeedportPollingHealthSensor(
+        hub,
+        descriptions["slow_polling_health"],
+    )
+    endpoint_failures = SpeedportEndpointFailureSensor(hub)
+
+    assert fast.native_value == "initializing"
+    assert fast.available
+    assert fast.extra_state_attributes == {"update_interval_seconds": 5.0}
+    assert endpoint_failures.native_value == 0
+    assert endpoint_failures.extra_state_attributes == {
+        "failures": {},
+    }
+
+    hub.record_update_failure(
+        PollGroup.SLOW,
+        RuntimeError("private original message"),
+    )
+    assert slow.native_value == "failed"
+    assert slow.extra_state_attributes == {
+        "update_interval_seconds": 300.0,
+        "last_error_class": "RuntimeError",
+    }
+
+    await hub.async_update_group(PollGroup.FAST)
+    assert fast.native_value == "healthy"
+    assert fast.extra_state_attributes == {
+        "update_interval_seconds": 5.0,
+    }
+
+    last_success = hub.poll_group_health(PollGroup.FAST)["last_successful_update"]
+    hub.record_update_failure(
+        PollGroup.FAST,
+        RuntimeError("must never become an attribute"),
+    )
+    hub._endpoint_errors.update(  # noqa: SLF001 - bounded diagnostic fixture
+        {
+            "wifi": "SpeedportConnectionError",
+            "wan_counters": "SpeedportSessionBusyError",
+        }
+    )
+    assert fast.native_value == "failed"
+    assert fast.available
+    assert fast.extra_state_attributes == {
+        "update_interval_seconds": 5.0,
+        "last_successful_update": last_success,
+        "last_error_class": "RuntimeError",
+    }
+    assert endpoint_failures.native_value == 2
+    assert endpoint_failures.extra_state_attributes == {
+        "failures": {
+            "wan_counters": "SpeedportSessionBusyError",
+            "wifi": "SpeedportConnectionError",
+        },
+    }
+    assert "must never become" not in repr(fast.extra_state_attributes)
+
+    await hub.async_update_group(PollGroup.FAST)
+    assert fast.native_value == "healthy"
+    assert fast.extra_state_attributes == {"update_interval_seconds": 5.0}
+
+
+async def test_update_failure_sensor_exposes_only_bounded_failure_context(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The existing failure counter explains its last safe failure class."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub.record_update_failure(
+        PollGroup.NORMAL,
+        RuntimeError("private router text must not be exposed"),
+    )
+    entity = SpeedportSensor(
+        hub,
+        _description(SENSOR_DESCRIPTIONS, "update_failures"),
+    )
+
+    assert entity.native_value == 1
+    assert entity.extra_state_attributes == {
+        "last_failed_group": "normal",
+        "last_error_class": "RuntimeError",
+    }
+    assert "private router text" not in repr(entity.extra_state_attributes)
+    hub.coordinator(PollGroup.NORMAL).last_update_success = False
+    assert entity.available
+
+
+async def test_update_failure_sensor_refreshes_from_every_poll_group(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The aggregate refreshes when fast, normal, or slow polling changes."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    entity = SpeedportSensor(
+        hub,
+        _description(SENSOR_DESCRIPTIONS, "update_failures"),
+    )
+    entity.hass = hass
+    listener_registrations: dict[PollGroup, MagicMock] = {}
+    for group in PollGroup:
+        registration = MagicMock(return_value=MagicMock())
+        hub.coordinator(group).async_add_listener = registration
+        listener_registrations[group] = registration
+
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        for registration in listener_registrations.values():
+            assert registration.call_count == 1
+            registration.call_args.args[0]()
+
+        assert write_state.call_count == len(PollGroup)
+
+    await entity.async_will_remove_from_hass()
+
+
 async def test_client_access_allowed_binary_sensor_is_discovered(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -447,6 +586,11 @@ async def test_description_catalog_is_complete_and_entities_default_enabled(
         description.entity_registry_enabled_default
         for description in WAN_TELEMETRY_SENSOR_DESCRIPTIONS
     )
+    assert all(
+        description.entity_registry_enabled_default
+        for description in POLLING_HEALTH_SENSOR_DESCRIPTIONS
+    )
+    assert ENDPOINT_FAILURE_SENSOR_DESCRIPTION.entity_registry_enabled_default
     assert all(
         description.entity_registry_enabled_default
         for description in BINARY_SENSOR_DESCRIPTIONS
@@ -1307,7 +1451,12 @@ def test_read_only_metadata_translations_are_complete() -> None:
     }
     sensor_keys = {
         description.translation_key
-        for description in (*SENSOR_DESCRIPTIONS, *WAN_TELEMETRY_SENSOR_DESCRIPTIONS)
+        for description in (
+            *SENSOR_DESCRIPTIONS,
+            *WAN_TELEMETRY_SENSOR_DESCRIPTIONS,
+            *POLLING_HEALTH_SENSOR_DESCRIPTIONS,
+            ENDPOINT_FAILURE_SENSOR_DESCRIPTION,
+        )
         if description.translation_key is not None
     }
     binary_keys = {

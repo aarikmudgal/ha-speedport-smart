@@ -339,6 +339,31 @@
       "firmware_update_time": { "name": "Firmware update time" },
       "request_latency": { "name": "Anfragelatenz" },
       "update_failures": { "name": "Aktualisierungsfehler" },
+      "endpoint_failures": { "name": "Endpunktfehler" },
+      "fast_polling_health": {
+        "name": "Status der schnellen Abfrage",
+        "state": {
+          "healthy": "Fehlerfrei",
+          "failed": "Fehlgeschlagen",
+          "initializing": "Wird initialisiert"
+        }
+      },
+      "normal_polling_health": {
+        "name": "Status der normalen Abfrage",
+        "state": {
+          "healthy": "Fehlerfrei",
+          "failed": "Fehlgeschlagen",
+          "initializing": "Wird initialisiert"
+        }
+      },
+      "slow_polling_health": {
+        "name": "Status der langsamen Abfrage",
+        "state": {
+          "healthy": "Fehlerfrei",
+          "failed": "Fehlgeschlagen",
+          "initializing": "Wird initialisiert"
+        }
+      },
       "last_successful_update": { "name": "Letzte erfolgreiche Aktualisierung" },
       "backhaul": { "name": "Backhaul" },
       "mesh_parent": { "name": "Übergeordneter Mesh-Knoten" },

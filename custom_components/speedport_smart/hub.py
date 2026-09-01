@@ -28,6 +28,7 @@ from .api import (
 )
 from .const import DOMAIN, RATE_WINDOW_SECONDS
 from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinator
+from .diagnostics import safe_error_class_name
 from .management import ManagementExecutionSurface, get_command_write_contract
 from .normalizers import normalize_feature_payload, normalize_status_payload
 
@@ -225,6 +226,15 @@ class SpeedportHub:
         self._data: Mapping[str, Any] = MappingProxyType({})
         self._mutable_data: dict[str, Any] = {}
         self._coordinators: dict[PollGroup, SpeedportDataUpdateCoordinator] = {}
+        self._poll_group_succeeded: dict[PollGroup, bool | None] = dict.fromkeys(
+            PollGroup
+        )
+        self._poll_group_last_success: dict[PollGroup, datetime | None] = dict.fromkeys(
+            PollGroup
+        )
+        self._poll_group_last_error: dict[PollGroup, str | None] = dict.fromkeys(
+            PollGroup
+        )
         self._generation = 0
         self._operation_lock = asyncio.Lock()
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
@@ -312,6 +322,26 @@ class SpeedportHub:
         """Return whether one endpoint currently has a recorded failure."""
         return endpoint in self._endpoint_errors
 
+    def poll_group_health(self, group: PollGroup) -> Mapping[str, Any]:
+        """Return actual poll outcome without cross-group publication artifacts."""
+        succeeded = self._poll_group_succeeded[group]
+        last_success = self._poll_group_last_success[group]
+        return MappingProxyType(
+            {
+                "state": (
+                    "initializing"
+                    if succeeded is None
+                    else "healthy"
+                    if succeeded
+                    else "failed"
+                ),
+                "last_successful_update": (
+                    last_success.isoformat() if last_success is not None else None
+                ),
+                "last_error_class": self._poll_group_last_error[group],
+            }
+        )
+
     @property
     def wan_counter_telemetry(self) -> Mapping[str, Any]:
         """Return lightweight immutable adaptive WAN scheduler diagnostics."""
@@ -345,8 +375,7 @@ class SpeedportHub:
     def available(self) -> bool:
         """Return whether any attached coordinator is available."""
         return any(
-            coordinator.last_update_success
-            for coordinator in self._coordinators.values()
+            self._poll_group_succeeded[group] is True for group in self._coordinators
         )
 
     @property
@@ -497,7 +526,7 @@ class SpeedportHub:
     def _record_candidate_inventory_failure(self, error: SpeedportError) -> None:
         """Retain prior capture counts while recording a safe failed attempt."""
         self._candidate_inventory_status = "failed"
-        self._candidate_inventory_last_error = type(error).__name__
+        self._candidate_inventory_last_error = safe_error_class_name(error)
 
     def has_capability(self, capability: str) -> bool:
         """Return whether router exposes capability."""
@@ -566,7 +595,7 @@ class SpeedportHub:
         except SpeedportInvalidCredentialsError as err:
             self._mark_management_unavailable()
             invalidated = self._invalidate_authenticated_families(
-                {}, error_name=type(err).__name__
+                {}, error_name=safe_error_class_name(err)
             )
             transitions = self._merge_data(invalidated)
             self._generation += 1
@@ -580,6 +609,9 @@ class SpeedportHub:
 
         now = datetime.now(UTC)
         self._last_successful_update = now
+        self._poll_group_succeeded[group] = True
+        self._poll_group_last_success[group] = now
+        self._poll_group_last_error[group] = None
         partial = _deep_merge_dicts(
             partial,
             {
@@ -637,12 +669,14 @@ class SpeedportHub:
 
     def record_update_failure(self, group: PollGroup, error: Exception) -> None:
         """Record coordinator failure without exposing error text or router data."""
+        self._poll_group_succeeded[group] = False
+        self._poll_group_last_error[group] = safe_error_class_name(error)
         self._update_failures += 1
         self._merge_data(
             {
                 "diagnostics": {
                     "failed_group": group.value,
-                    "last_error": type(error).__name__,
+                    "last_error": safe_error_class_name(error),
                     "last_successful_update": (
                         self._last_successful_update.isoformat()
                         if self._last_successful_update
@@ -762,7 +796,7 @@ class SpeedportHub:
         if isinstance(error, SpeedportInvalidCredentialsError):
             self._start_reauth()
         invalidated = self._invalidate_authenticated_families(
-            {}, error_name=type(error).__name__
+            {}, error_name=safe_error_class_name(error)
         )
         transitions = self._merge_data(invalidated)
         self._generation += 1
@@ -846,7 +880,7 @@ class SpeedportHub:
             except SpeedportInvalidCredentialsError:
                 raise
             except SpeedportError as err:
-                self._endpoint_errors["status"] = type(err).__name__
+                self._endpoint_errors["status"] = safe_error_class_name(err)
                 partial = self._unavailable_public_status_values()
             else:
                 self._router_info = status.info
@@ -881,7 +915,7 @@ class SpeedportHub:
                 counters = await self.client.get_wan_counters(busy_retries=0)
             except SpeedportSessionBusyError as err:
                 self._counter_samples.clear()
-                self._endpoint_errors["wan_counters"] = type(err).__name__
+                self._endpoint_errors["wan_counters"] = safe_error_class_name(err)
                 self._defer_wan_counter_retry()
                 if wan_counters_confirmed:
                     partial["wan"] = _deep_merge_dicts(
@@ -901,7 +935,7 @@ class SpeedportHub:
                     self._endpoint_errors.pop("wan_counters", None)
                 else:
                     self._wan_counter_failures += 1
-                    self._endpoint_errors["wan_counters"] = type(err).__name__
+                    self._endpoint_errors["wan_counters"] = safe_error_class_name(err)
                     partial["wan"] = _deep_merge_dicts(
                         cast("dict[str, Any]", partial.get("wan", {})),
                         self._unavailable_wan_live_values(),
@@ -914,7 +948,7 @@ class SpeedportHub:
                 self._wan_counter_next_poll_at = (
                     self._monotonic_time() + self._wan_counter_effective_interval
                 )
-                self._endpoint_errors["wan_counters"] = type(err).__name__
+                self._endpoint_errors["wan_counters"] = safe_error_class_name(err)
                 if wan_counters_confirmed:
                     partial["wan"] = _deep_merge_dicts(
                         cast("dict[str, Any]", partial.get("wan", {})),
@@ -972,21 +1006,21 @@ class SpeedportHub:
                 metrics = await self.client.get_dsl_metrics()
             except SpeedportSessionBusyError as err:
                 self._defer_dsl_metrics_busy_retry()
-                self._endpoint_errors["dsl_metrics"] = type(err).__name__
+                self._endpoint_errors["dsl_metrics"] = safe_error_class_name(err)
                 partial = _deep_merge_dicts(
                     partial,
                     {"dsl": self._unavailable_dsl_optional_values()},
                 )
             except SpeedportUnsupportedError as err:
                 self._defer_dsl_metrics_retry(unsupported=True)
-                self._endpoint_errors["dsl_metrics"] = type(err).__name__
+                self._endpoint_errors["dsl_metrics"] = safe_error_class_name(err)
                 partial = _deep_merge_dicts(
                     partial,
                     {"dsl": self._unavailable_dsl_optional_values()},
                 )
             except SpeedportError as err:
                 self._defer_dsl_metrics_retry(unsupported=False)
-                self._endpoint_errors["dsl_metrics"] = type(err).__name__
+                self._endpoint_errors["dsl_metrics"] = safe_error_class_name(err)
                 partial = _deep_merge_dicts(
                     partial,
                     {"dsl": self._degraded_dsl_optional_values()},
@@ -1284,27 +1318,27 @@ class SpeedportHub:
                     authenticated_blocked = True
                     self._mark_management_locked(err)
                     partial = self._invalidate_authenticated_families(
-                        partial, error_name=type(err).__name__
+                        partial, error_name=safe_error_class_name(err)
                     )
                     break
                 except SpeedportAuthenticationError as err:
                     authenticated_blocked = True
                     self._mark_management_unavailable()
                     partial = self._invalidate_authenticated_families(
-                        partial, error_name=type(err).__name__
+                        partial, error_name=safe_error_class_name(err)
                     )
                     break
                 except SpeedportSessionBusyError as err:
                     authenticated_blocked = True
                     self._mark_management_busy(err)
                     partial = self._invalidate_authenticated_families(
-                        partial, error_name=type(err).__name__
+                        partial, error_name=safe_error_class_name(err)
                     )
                     break
                 except SpeedportUnsupportedError as err:
                     failed_families = frozenset(endpoint_families)
                     for family in endpoint_families:
-                        self._endpoint_errors[family] = type(err).__name__
+                        self._endpoint_errors[family] = safe_error_class_name(err)
                     for family in endpoint_families:
                         partial = _deep_merge_dicts(
                             partial,
@@ -1318,11 +1352,11 @@ class SpeedportHub:
                         authenticated_blocked = True
                         self._mark_management_unavailable()
                         partial = self._invalidate_authenticated_families(
-                            partial, error_name=type(err).__name__
+                            partial, error_name=safe_error_class_name(err)
                         )
                         break
                     for family in endpoint_families:
-                        self._endpoint_errors[family] = type(err).__name__
+                        self._endpoint_errors[family] = safe_error_class_name(err)
                     failed_families = frozenset(endpoint_families)
                     for family in endpoint_families:
                         partial = _deep_merge_dicts(
@@ -1610,7 +1644,7 @@ class SpeedportHub:
         return {
             "router": _normalise_router_info(self._router_info),
             "capabilities": sorted(self._capabilities),
-            "capability_report": _thaw(self._capability_report),
+            "capability_report": _diagnostic_capability_report(self._capability_report),
             "data": _thaw(self._data),
             "observed_feature_schema": _thaw(observed_schema),
             "observed_candidate_schema": _thaw(observed_candidate_schema),
@@ -1642,12 +1676,8 @@ class SpeedportHub:
             },
             "polling": {
                 group.value: {
-                    "available": coordinator.last_update_success,
-                    "last_exception": (
-                        type(coordinator.last_exception).__name__
-                        if coordinator.last_exception
-                        else None
-                    ),
+                    "available": self._poll_group_succeeded[group] is True,
+                    **dict(self.poll_group_health(group)),
                     "update_interval_seconds": (
                         coordinator.update_interval.total_seconds()
                         if coordinator.update_interval
@@ -1878,6 +1908,20 @@ def _thaw(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def _diagnostic_capability_report(report: object) -> Any:
+    """Return capability evidence with failure messages reduced to class names."""
+    thawed = _thaw(report)
+    if not isinstance(thawed, dict):
+        return thawed
+    failures = thawed.get("failures")
+    if isinstance(failures, Mapping):
+        thawed["failures"] = {
+            str(family): safe_error_class_name(error)
+            for family, error in failures.items()
+        }
+    return thawed
 
 
 def _iter_transition_values(

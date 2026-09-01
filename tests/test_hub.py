@@ -1347,6 +1347,11 @@ async def test_protected_failure_invalidates_every_poll_group_immediately(
 
     slow_coordinator = MagicMock()
     hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
+    hub.record_update_failure(
+        PollGroup.SLOW,
+        RuntimeError("private slow-group failure"),
+    )
+    assert hub.poll_group_health(PollGroup.SLOW)["state"] == "failed"
     mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
 
     with patch.object(hub, "_create_management_issue") as create_issue:
@@ -1361,10 +1366,15 @@ async def test_protected_failure_invalidates_every_poll_group_immediately(
     propagated = slow_coordinator.async_set_updated_data.call_args.args[0]
     assert propagated.group is PollGroup.SLOW
     assert propagated.data["nat"]["port_forwarding_enabled"] is None
+    assert hub.poll_group_health(PollGroup.SLOW)["state"] == "failed"
 
     slow_coordinator.reset_mock()
     await hub.async_update_group(PollGroup.NORMAL)
     slow_coordinator.async_set_updated_data.assert_not_called()
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    await hub.async_update_group(PollGroup.SLOW)
+    assert hub.poll_group_health(PollGroup.SLOW)["state"] == "healthy"
 
 
 async def test_fast_wan_busy_preserves_protected_poll_groups(

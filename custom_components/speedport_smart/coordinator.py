@@ -94,3 +94,6 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
             self.hub.record_update_failure(self.group, err)
             message = f"Router update failed: {err}"
             raise UpdateFailed(message) from err
+        except Exception as err:
+            self.hub.record_update_failure(self.group, err)
+            raise

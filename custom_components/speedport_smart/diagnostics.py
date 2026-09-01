@@ -154,6 +154,20 @@ _UNTRUSTED_TEXT_KEYS = frozenset(
         "status_message",
     }
 )
+_ERROR_CLASS_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def safe_error_class_name(error: object) -> str:
+    """Return one bounded ASCII exception class without its message."""
+    if isinstance(error, BaseException):
+        candidate = type(error).__name__
+    elif isinstance(error, str):
+        candidate = error.partition(":")[0]
+    else:
+        return "UnknownError"
+    if _ERROR_CLASS_PATTERN.fullmatch(candidate):
+        return candidate
+    return "UnknownError"
 
 
 async def async_get_config_entry_diagnostics(

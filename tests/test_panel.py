@@ -265,6 +265,24 @@ def test_powerline_child_entities_use_the_lan_section() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "endpoint_failures",
+        "fast_polling_health",
+        "normal_polling_health",
+        "slow_polling_health",
+    ],
+)
+def test_polling_diagnostics_are_local_management_health(key: str) -> None:
+    """Integration health never masquerades as protected router data."""
+    assert _section_for_entity(key, "sensor", None) == "management"
+    assert (
+        _access_source_for_entity(key, "sensor", None, is_control=False)
+        == "integration"
+    )
+
+
 def _admin_read_message() -> dict[str, object]:
     """Return one valid admin read command message."""
     return {
@@ -424,6 +442,7 @@ def test_panel_metadata_allowlists_only_proven_text_control() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is True
+    assert metadata["control_supported"] is True
     assert metadata["section"] == "controls"
     assert metadata["mutates_router"] is True
     assert metadata["risk"] == "normal"
@@ -460,11 +479,59 @@ def test_panel_text_control_requires_entity_control_permission() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is False
-    assert metadata["section"] == "clients"
-    assert metadata["access_source"] == "protected_json"
-    assert metadata["mutates_router"] is False
+    assert metadata["control_supported"] is True
+    assert metadata["section"] == "controls"
+    assert metadata["access_source"] == "router_control"
+    assert metadata["mutates_router"] is True
     connection.user.permissions.check_entity.assert_called_once_with(
         "text.speedport_client_name", "control"
+    )
+
+
+@pytest.mark.parametrize(
+    ("domain", "translation_key"),
+    [
+        ("button", "capture_read_only_inventory"),
+        ("button", "reboot_router"),
+        ("button", "reconnect_internet"),
+        ("button", "retry_protected_data"),
+        ("button", "wps"),
+        ("select", "internet_privacy_level_control"),
+        ("select", "receiver_led_mode_control"),
+        ("switch", "client_fixed_dhcp"),
+        ("switch", "guest_wifi"),
+        ("switch", "hybrid_bonding"),
+        ("switch", "office_wifi"),
+        ("switch", "port_forward_rule"),
+        ("switch", "wifi"),
+        ("text", "client_name"),
+    ],
+)
+def test_every_reviewed_control_retains_semantics_without_control_permission(
+    domain: str,
+    translation_key: str,
+) -> None:
+    """Control identity remains visible without granting an executable action."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = False
+    connection.user.permissions.check_entity.return_value = False
+    entity_id = f"{domain}.speedport_{translation_key}"
+    entry = SimpleNamespace(
+        entity_id=entity_id,
+        translation_key=translation_key,
+        entity_category="config",
+        supported_features=0,
+        name=None,
+    )
+
+    metadata = _entity_panel_data(entry, None, connection)
+
+    assert metadata["control_supported"] is True
+    assert metadata["control"] is False
+    assert metadata["section"] == "controls"
+    assert metadata["access_source"] in {"integration", "router_control"}
+    connection.user.permissions.check_entity.assert_called_once_with(
+        entity_id, "control"
     )
 
 
@@ -528,9 +595,10 @@ def test_select_control_requires_entity_control_permission() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is False
-    assert metadata["section"] == "connection"
-    assert metadata["access_source"] == "protected_json"
-    assert metadata["mutates_router"] is False
+    assert metadata["control_supported"] is True
+    assert metadata["section"] == "controls"
+    assert metadata["access_source"] == "router_control"
+    assert metadata["mutates_router"] is True
     connection.user.permissions.check_entity.assert_called_once_with(
         entry.entity_id, "control"
     )
@@ -592,6 +660,7 @@ def test_panel_never_promotes_an_unreviewed_entity_domain_to_control() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is False
+    assert metadata["control_supported"] is False
     assert metadata["mutates_router"] is False
     assert metadata["section"] != "controls"
     assert metadata["risk"] == "normal"
@@ -687,7 +756,8 @@ def test_read_only_inventory_control_requires_entity_control_permission() -> Non
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is False
-    assert metadata["section"] == "system"
+    assert metadata["control_supported"] is True
+    assert metadata["section"] == "controls"
     assert metadata["access_source"] == "integration"
     assert metadata["mutates_router"] is False
     connection.user.permissions.check_entity.assert_called_once_with(

@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=12";
+import { keepDialogFocus } from "./accessibility.js?schema=13";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=12";
+} from "./controls.js?schema=13";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=12";
+} from "./entity-state.js?schema=13";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=12";
+} from "./render-state.js?schema=13";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=12";
+} from "./translations.js?schema=13";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 12;
+const PANEL_SCHEMA_VERSION = 13;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -165,8 +165,10 @@ const ACCESS_SOURCE_INFO = {
 const CHILD_KIND_INFO = {
   client: { labelKey: "child.client", icon: "mdi:devices" },
   dect_handset: { labelKey: "child.dect_handset", icon: "mdi:phone-wireless" },
+  dect_repeater: { labelKey: "child.dect_repeater", icon: "mdi:access-point" },
   ip_phone: { labelKey: "child.ip_phone", icon: "mdi:deskphone" },
   mesh_node: { labelKey: "child.mesh_node", icon: "mdi:access-point-network" },
+  powerline_node: { labelKey: "child.powerline_node", icon: "mdi:power-plug" },
   receiver: { labelKey: "child.receiver", icon: "mdi:access-point-network" },
   telephone_line: { labelKey: "child.telephone_line", icon: "mdi:phone-in-talk" },
   usb_device: { labelKey: "child.usb_device", icon: "mdi:usb" },
@@ -1170,7 +1172,7 @@ export const ADMIN_IA = Object.freeze([
     fixedAdminSubsection({
       id: "home_assistant_diagnostics",
       icon: "mdi:database-search-outline",
-      entityGroups: ["controls_diagnostics"],
+      entityGroups: ["controls_diagnostics", "management_health"],
       controls: ["button:capture_read_only_inventory"],
       features: [
         fixedAdminFeature("home_assistant_capability_inventory", {
@@ -1306,6 +1308,10 @@ function humanize(value) {
   return String(value ?? "")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function isSemanticControl(meta) {
+  return meta?.control_supported === true || meta?.control === true;
 }
 
 export function splitPanelEntities(entities) {
@@ -1694,7 +1700,7 @@ for (const area of ADMIN_IA) {
 /** Return the reviewed Administration placement for an entity, if any. */
 export function adminPlacementFor(meta) {
   if (!meta) return undefined;
-  if (meta.control) {
+  if (isSemanticControl(meta)) {
     return ADMIN_CONTROL_PLACEMENT.get(
       `${String(meta.domain || "")}:${String(meta.translation_key || "")}`,
     );
@@ -1723,7 +1729,7 @@ export function highestAdminRisk(entities) {
   let highest;
   let highestRank = -1;
   for (const entity of entities || []) {
-    if (!entity?.control) continue;
+    if (!isSemanticControl(entity)) continue;
     const rank = ADMIN_RISK_ORDER.indexOf(entity.risk);
     if (rank > highestRank) {
       highest = entity.risk;
@@ -1748,8 +1754,56 @@ function capabilityGroupRank(sectionId, groupId) {
   return rank === -1 ? order.length : rank;
 }
 
-function iconFor(meta, state) {
+function iconFromRange(value, range) {
+  const thresholds = Object.entries(range)
+    .map(([threshold, icon]) => ({ icon, value: Number(threshold) }))
+    .filter(({ value: threshold }) => Number.isFinite(threshold))
+    .sort((left, right) => left.value - right.value);
+  if (thresholds.length === 0 || value < thresholds[0].value) return undefined;
+  let selectedThreshold = thresholds[0];
+  for (const threshold of thresholds) {
+    if (value < threshold.value) break;
+    selectedThreshold = threshold;
+  }
+  return selectedThreshold.icon;
+}
+
+function translatedIconFor(stateValue, translations) {
+  if (!translations) return undefined;
+  if (stateValue && translations.state?.[stateValue]) {
+    return translations.state[stateValue];
+  }
+  if (
+    stateValue !== undefined &&
+    translations.range &&
+    Number.isFinite(Number(stateValue))
+  ) {
+    return (
+      iconFromRange(Number(stateValue), translations.range) ??
+      translations.default
+    );
+  }
+  return translations.default;
+}
+
+export function iconFor(
+  meta,
+  state,
+  platformIcons = undefined,
+  componentIcons = undefined,
+  entityRegistryEntries = undefined,
+) {
+  const registryIcon = entityRegistryEntries?.[meta.entity_id]?.icon;
+  if (registryIcon) return registryIcon;
   if (state?.attributes?.icon) return state.attributes.icon;
+  const translated = platformIcons?.[meta.domain]?.[meta.translation_key];
+  const translatedIcon = translatedIconFor(state?.state, translated);
+  if (translatedIcon) return translatedIcon;
+  const domainIcons = componentIcons?.[meta.domain];
+  const componentTranslated =
+    domainIcons?.[state?.attributes?.device_class] || domainIcons?._;
+  const componentIcon = translatedIconFor(state?.state, componentTranslated);
+  if (componentIcon) return componentIcon;
   if (meta.domain === "switch") return "mdi:toggle-switch";
   if (meta.domain === "select") return "mdi:form-dropdown";
   if (meta.domain === "button") return "mdi:gesture-tap-button";
@@ -1905,6 +1959,9 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._panel = undefined;
     this._narrow = false;
     this._metadata = undefined;
+    this._platformIcons = undefined;
+    this._componentIcons = undefined;
+    this._platformIconsLoading = false;
     this._selectedEntry = undefined;
     this._activeView = "dashboard";
     this._adminRead = undefined;
@@ -1948,7 +2005,10 @@ export class SpeedportSmartPanel extends HTMLElement {
         }
       }
     }
-    if (firstAssignment) this._loadMetadata();
+    if (firstAssignment) {
+      this._loadPlatformIcons();
+      this._loadMetadata();
+    }
     if (shouldRender) this._scheduleRender();
   }
 
@@ -1967,6 +2027,9 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   connectedCallback() {
     if (this._hass && !this._metadata) this._loadMetadata();
+    if (this._hass && (!this._platformIcons || !this._componentIcons)) {
+      this._loadPlatformIcons();
+    }
     if (
       this._activeView === "administration" &&
       this._hass?.user?.is_admin === true &&
@@ -2008,6 +2071,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     return this._metadata.routers.some((router) =>
       router.entities.some(
         (entity) => {
+          if (
+            previous.entities?.[entity.entity_id]?.icon !==
+            next.entities?.[entity.entity_id]?.icon
+          ) {
+            return true;
+          }
           const previousState = previous.states?.[entity.entity_id];
           const nextState = next.states?.[entity.entity_id];
           return administrationActive
@@ -2030,8 +2099,62 @@ export class SpeedportSmartPanel extends HTMLElement {
     });
   }
 
+  async _loadPlatformIcons() {
+    if (
+      !this._hass ||
+      this._platformIconsLoading ||
+      (this._platformIcons && this._componentIcons)
+    ) {
+      return;
+    }
+    this._platformIconsLoading = true;
+    try {
+      const requests = [];
+      if (!this._platformIcons) {
+        requests.push(
+          this._hass.connection
+            .sendMessagePromise({
+              type: "frontend/get_icons",
+              category: "entity",
+              integration: "speedport_smart",
+            })
+            .then((result) => {
+              const icons = result?.resources?.speedport_smart;
+              this._platformIcons =
+                icons && typeof icons === "object" && !Array.isArray(icons)
+                  ? icons
+                  : {};
+            }),
+        );
+      }
+      if (!this._componentIcons) {
+        requests.push(
+          this._hass.connection
+            .sendMessagePromise({
+              type: "frontend/get_icons",
+              category: "entity_component",
+            })
+            .then((result) => {
+              const icons = result?.resources;
+              this._componentIcons =
+                icons && typeof icons === "object" && !Array.isArray(icons)
+                  ? icons
+                  : {};
+            }),
+        );
+      }
+      await Promise.allSettled(requests);
+    } finally {
+      this._platformIconsLoading = false;
+      if (!this._pendingAction) this._render();
+    }
+  }
+
   async _loadMetadata() {
     if (!this._hass || this._loading) return;
+    if (!this._platformIcons || !this._componentIcons) {
+      this._loadPlatformIcons();
+    }
     this._loading = true;
     this._loadError = "";
     try {
@@ -2941,7 +3064,13 @@ export class SpeedportSmartPanel extends HTMLElement {
       meta.domain === "button" && state?.state === "unknown"
         ? this._t("status.ready")
         : this._formatState(state);
-    const icon = iconFor(meta, state);
+    const icon = iconFor(
+      meta,
+      state,
+      this._platformIcons,
+      this._componentIcons,
+      this._hass?.entities,
+    );
     const sourceInfo =
       ACCESS_SOURCE_INFO[meta.access_source] || ACCESS_SOURCE_INFO.protected_json;
     const wanPresentation = wanTelemetryPresentation(meta, state, sourceState);
@@ -2984,7 +3113,9 @@ export class SpeedportSmartPanel extends HTMLElement {
           : meta.domain === "update"
             ? this._t("action.install")
             : this._t("action.run");
-    const riskBadge = meta.control ? this._renderRiskBadge(meta.risk) : "";
+    const riskBadge = isSemanticControl(meta)
+      ? this._renderRiskBadge(meta.risk)
+      : "";
     const control = meta.control
       ? `
         <button
@@ -3012,7 +3143,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         );
 
     return `
-      <article class="entity-card ${child ? "child-entity-card" : ""} ${stateClass} ${wanPresentation.lastConfirmed ? "last-confirmed" : ""} ${meta.control ? "control-card" : ""}">
+      <article class="entity-card ${child ? "child-entity-card" : ""} ${stateClass} ${wanPresentation.lastConfirmed ? "last-confirmed" : ""} ${isSemanticControl(meta) ? "control-card" : ""}">
         <button class="entity-main" data-more-info="${escapeHtml(meta.entity_id)}">
           <span class="entity-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></span>
           <span class="entity-copy">
@@ -3422,16 +3553,17 @@ export class SpeedportSmartPanel extends HTMLElement {
     capabilities,
     sourceAvailable,
   ) {
-    const controls = entities.filter(
+    const supportedControls = entities.filter(
       (entity) =>
-        entity.control === true &&
+        isSemanticControl(entity) &&
         feature.controls.includes(
           `${String(entity.domain || "")}:${String(entity.translation_key || "")}`,
         ),
     );
+    const controls = supportedControls.filter((entity) => entity.control === true);
     const reports = entities.filter(
       (entity) =>
-        entity.control !== true &&
+        !isSemanticControl(entity) &&
         feature.entityGroups.includes(capabilityGroupFor(entity)),
     );
     const observedRead = feature.readSections.some((sectionId) =>
@@ -3450,6 +3582,12 @@ export class SpeedportSmartPanel extends HTMLElement {
         icon: available
           ? "mdi:toggle-switch"
           : "mdi:toggle-switch-off-outline",
+      };
+    }
+    if (supportedControls.length > 0) {
+      return {
+        key: "control_permission_required",
+        icon: "mdi:shield-lock-outline",
       };
     }
 

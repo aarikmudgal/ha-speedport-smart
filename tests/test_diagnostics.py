@@ -17,8 +17,10 @@ from custom_components.speedport_smart.const import (
 from custom_components.speedport_smart.diagnostics import (
     _redact,
     async_get_config_entry_diagnostics,
+    safe_error_class_name,
 )
 from custom_components.speedport_smart.hub import SpeedportHub
+from custom_components.speedport_smart.models import CapabilityReport
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -59,6 +61,20 @@ def test_recursive_redaction() -> None:
     assert result["system_log"] == REDACTED
     assert result["message"] == REDACTED
     assert result["safe"] == 42
+
+
+def test_error_class_name_is_bounded_and_never_exposes_message_text() -> None:
+    """Only a strict exception class identifier may reach visible diagnostics."""
+    assert safe_error_class_name(RuntimeError("private router text")) == "RuntimeError"
+    assert safe_error_class_name("SpeedportSessionBusyError") == (
+        "SpeedportSessionBusyError"
+    )
+    assert safe_error_class_name("SpeedportError: private router text") == (
+        "SpeedportError"
+    )
+    assert safe_error_class_name("unsafe error: 192.0.2.1") == "UnknownError"
+    assert safe_error_class_name("E" * 65) == "UnknownError"
+    assert safe_error_class_name(object()) == "UnknownError"
 
 
 def test_router_reason_text_is_always_redacted() -> None:
@@ -205,6 +221,17 @@ async def test_config_entry_diagnostics(
     mock_speedport_client: MagicMock,
 ) -> None:
     """Config-entry diagnostics include runtime health with secrets removed."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=False,
+        failures=MappingProxyType(
+            {
+                "authentication": (
+                    "SpeedportAuthenticationError: private subscriber message"
+                )
+            }
+        ),
+    )
     mock_speedport_client.observed_feature_schema = MappingProxyType(
         {
             "wifi": (
@@ -245,3 +272,7 @@ async def test_config_entry_diagnostics(
             {"path": REDACTED, "shape": "string"},
         ]
     }
+    assert result["runtime"]["capability_report"]["failures"] == {
+        "authentication": "SpeedportAuthenticationError"
+    }
+    assert "private subscriber message" not in repr(result)

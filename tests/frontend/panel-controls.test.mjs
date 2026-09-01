@@ -121,6 +121,17 @@ test("panel confirmation rejects policy refresh and state races without service 
   }
 });
 
+test("permission-denied semantic controls make zero service calls", async () => {
+  const fixture = panelFixture({
+    meta: { ...WIFI_META, control: false, control_supported: true },
+  });
+
+  await fixture.panel._runPendingAction();
+
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(fixture.panel._pendingAction, undefined);
+});
+
 test("wrong typed phrase submitted with Enter makes zero service calls", async () => {
   const fixture = panelFixture({
     pending: pendingAction({ confirmationDraft: "turn off wi-fi" }),

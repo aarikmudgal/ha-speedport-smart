@@ -16,6 +16,18 @@
       "wan_last_sample": {
         "default": "mdi:clock-check-outline"
       },
+      "endpoint_failures": {
+        "default": "mdi:alert-circle-outline"
+      },
+      "fast_polling_health": {
+        "default": "mdi:timer-sync-outline"
+      },
+      "normal_polling_health": {
+        "default": "mdi:timer-check-outline"
+      },
+      "slow_polling_health": {
+        "default": "mdi:timer-sand"
+      },
       "internet_privacy_level": {
         "default": "mdi:shield-account-outline"
       },

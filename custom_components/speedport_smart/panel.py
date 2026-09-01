@@ -37,7 +37,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 12
+PANEL_SCHEMA_VERSION: Final = 13
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -157,11 +157,15 @@ _TOTR64_KEYS: Final = frozenset(
 _INTEGRATION_KEYS: Final = frozenset(
     {
         "capture_read_only_inventory",
+        "endpoint_failures",
+        "fast_polling_health",
         "last_successful_update",
         "management_access",
+        "normal_polling_health",
         "request_latency",
         "retry_protected_data",
         "router_problem",
+        "slow_polling_health",
         "update_failures",
     }
 )
@@ -540,7 +544,7 @@ def _entity_panel_data(
     supports_control = not protected_read_only and (
         is_non_mutating_control or write_contract is not None
     )
-    is_control = supports_control and _can_control_entity(
+    can_control = supports_control and _can_control_entity(
         connection,
         entity_id,
     )
@@ -548,7 +552,7 @@ def _entity_panel_data(
         translation_key,
         entity_domain,
         child_kind,
-        is_control=is_control,
+        is_control=supports_control,
     )
     panel_data: dict[str, Any] = {
         "entity_id": entity_id,
@@ -561,12 +565,13 @@ def _entity_panel_data(
         ),
         "section": (
             "controls"
-            if is_control
+            if supports_control
             else _section_for_entity(translation_key, entity_domain, child_kind)
         ),
         "access_source": access_source,
-        "control": is_control,
-        "mutates_router": is_control and write_contract is not None,
+        "control": can_control,
+        "control_supported": supports_control,
+        "mutates_router": supports_control and write_contract is not None,
         "risk": write_contract.risk.value if write_contract is not None else "normal",
         "confirmation": (
             write_contract.confirmation.value
@@ -650,10 +655,14 @@ def _section_for_entity(
     ):
         return "telephony"
     if key in {
+        "endpoint_failures",
+        "fast_polling_health",
         "last_successful_update",
         "management_access",
+        "normal_polling_health",
         "request_latency",
         "router_problem",
+        "slow_polling_health",
         "update_failures",
     }:
         return "management"

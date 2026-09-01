@@ -7,6 +7,22 @@ import pytest
 from custom_components.speedport_smart.normalizers import normalize_feature_payload
 
 
+def test_router_diagnostics_cannot_inject_integration_owned_failure_metadata() -> None:
+    """Router payloads cannot forge coordinator or endpoint health fields."""
+    diagnostics = normalize_feature_payload(
+        "diagnostics",
+        {
+            "problem": "1",
+            "failed_group": "slow",
+            "last_error": "InjectedError",
+            "endpoint_errors": {"status": "InjectedError"},
+            "polling": {"fast": {"available": False}},
+        },
+    )["diagnostics"]
+
+    assert diagnostics == {"problem": True}
+
+
 @pytest.mark.parametrize(
     ("global_state", "band_mode", "expected_2_4", "expected_5"),
     [

@@ -339,6 +339,31 @@
       "firmware_update_time": { "name": "Firmware update time" },
       "request_latency": { "name": "Request latency" },
       "update_failures": { "name": "Update failures" },
+      "endpoint_failures": { "name": "Endpoint failures" },
+      "fast_polling_health": {
+        "name": "Fast polling health",
+        "state": {
+          "healthy": "Healthy",
+          "failed": "Failed",
+          "initializing": "Initializing"
+        }
+      },
+      "normal_polling_health": {
+        "name": "Normal polling health",
+        "state": {
+          "healthy": "Healthy",
+          "failed": "Failed",
+          "initializing": "Initializing"
+        }
+      },
+      "slow_polling_health": {
+        "name": "Slow polling health",
+        "state": {
+          "healthy": "Healthy",
+          "failed": "Failed",
+          "initializing": "Initializing"
+        }
+      },
       "last_successful_update": { "name": "Last successful update" },
       "backhaul": { "name": "Backhaul" },
       "mesh_parent": { "name": "Mesh parent" },

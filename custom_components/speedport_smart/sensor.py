@@ -24,6 +24,7 @@ from homeassistant.const import (
 from homeassistant.core import callback
 
 from .coordinator import PollGroup
+from .diagnostics import safe_error_class_name
 from .entity import SpeedportDevice, SpeedportEntity
 from .platform_helpers import (
     as_datetime,
@@ -137,6 +138,25 @@ WAN_TELEMETRY_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+)
+
+_POLLING_HEALTH_GROUP_BY_KEY = {
+    f"{group.value}_polling_health": group for group in PollGroup
+}
+POLLING_HEALTH_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = tuple(
+    SensorEntityDescription(
+        key=key,
+        translation_key=key,
+        device_class=SensorDeviceClass.ENUM,
+        options=["healthy", "failed", "initializing"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    )
+    for key in _POLLING_HEALTH_GROUP_BY_KEY
+)
+ENDPOINT_FAILURE_SENSOR_DESCRIPTION = SensorEntityDescription(
+    key="endpoint_failures",
+    translation_key="endpoint_failures",
+    entity_category=EntityCategory.DIAGNOSTIC,
 )
 
 
@@ -2146,7 +2166,16 @@ async def async_setup_entry(
     )
 
     if hub.has_capability("diagnostics"):
-        async_add_entities([SpeedportManagementAccessSensor(hub)])
+        async_add_entities(
+            [
+                SpeedportManagementAccessSensor(hub),
+                SpeedportEndpointFailureSensor(hub),
+                *(
+                    SpeedportPollingHealthSensor(hub, description)
+                    for description in POLLING_HEALTH_SENSOR_DESCRIPTIONS
+                ),
+            ]
+        )
 
     known: set[tuple[str, str, str]] = set()
 
@@ -2227,6 +2256,8 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Fail closed when a firmware enum code is outside its contract."""
+        if self.entity_description.key == "update_failures":
+            return self.native_value is not None
         if not super().available:
             return False
         description = self.entity_description
@@ -2274,7 +2305,32 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
             return {
                 key: item for key, item in pool_attributes.items() if item is not None
             }
+        if self.entity_description.key == "update_failures":
+            failure_attributes: dict[str, Any] = {}
+            if failed_group := self.hub.get("diagnostics.failed_group"):
+                failure_attributes["last_failed_group"] = failed_group
+            if last_error := self.hub.get("diagnostics.last_error"):
+                failure_attributes["last_error_class"] = safe_error_class_name(
+                    last_error
+                )
+            return {
+                key: item
+                for key, item in failure_attributes.items()
+                if item is not None
+            }
         return None
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh the cross-group failure aggregate after every poll group."""
+        await super().async_added_to_hass()
+        if self.entity_description.key != "update_failures":
+            return
+        for group in (PollGroup.FAST, PollGroup.SLOW):
+            self.async_on_remove(
+                coordinator(self.hub, group).async_add_listener(
+                    self.async_write_ha_state
+                )
+            )
 
 
 class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
@@ -2349,6 +2405,94 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
         }
         attributes["source_available"] = not self.hub.has_endpoint_error("wan_counters")
         return attributes
+
+
+class SpeedportPollingHealthSensor(SpeedportEntity, SensorEntity):
+    """Expose one coordinator's health without hiding its failure state."""
+
+    _attr_entity_registry_enabled_default = True
+    entity_description: SensorEntityDescription
+
+    def __init__(
+        self,
+        hub: SpeedportHub,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Initialize polling-group health."""
+        group = _POLLING_HEALTH_GROUP_BY_KEY[description.key]
+        super().__init__(hub, coordinator(hub, group), description.key)
+        self._group = group
+        self.entity_description = description
+
+    @property
+    def native_value(self) -> str:
+        """Return a bounded health state."""
+        return str(self.hub.poll_group_health(self._group)["state"])
+
+    @property
+    def available(self) -> bool:
+        """Remain visible specifically so a failed coordinator can be explained."""
+        return True
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any]:
+        """Return bounded scheduling and failure metadata."""
+        attributes: dict[str, Any] = {}
+        if self.coordinator.update_interval is not None:
+            attributes["update_interval_seconds"] = (
+                self.coordinator.update_interval.total_seconds()
+            )
+        health = self.hub.poll_group_health(self._group)
+        if health["state"] == "failed":
+            if last_success := health["last_successful_update"]:
+                attributes["last_successful_update"] = last_success
+            if last_error := health["last_error_class"]:
+                attributes["last_error_class"] = safe_error_class_name(last_error)
+        return attributes
+
+
+class SpeedportEndpointFailureSensor(SpeedportEntity, SensorEntity):
+    """Expose bounded endpoint failure metadata without raw exception text."""
+
+    _attr_entity_registry_enabled_default = True
+    entity_description = ENDPOINT_FAILURE_SENSOR_DESCRIPTION
+
+    def __init__(self, hub: SpeedportHub) -> None:
+        """Initialize the endpoint failure count."""
+        super().__init__(
+            hub,
+            coordinator(hub, PollGroup.FAST),
+            self.entity_description.key,
+        )
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of currently failed semantic endpoint families."""
+        return len(self.hub.endpoint_errors)
+
+    @property
+    def available(self) -> bool:
+        """Remain visible while any polling group is unavailable."""
+        return True
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any]:
+        """Return sorted semantic family names and exception classes only."""
+        failures = {
+            family: safe_error_class_name(error_name)
+            for family, error_name in sorted(self.hub.endpoint_errors.items())
+        }
+        return {"failures": failures}
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh this aggregate when any polling group changes."""
+        await super().async_added_to_hass()
+        for group in (PollGroup.NORMAL, PollGroup.SLOW):
+            self.async_on_remove(
+                coordinator(self.hub, group).async_add_listener(
+                    self.async_write_ha_state
+                )
+            )
 
 
 class SpeedportManagementAccessSensor(SpeedportEntity, SensorEntity):

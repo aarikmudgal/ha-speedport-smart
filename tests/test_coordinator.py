@@ -67,3 +67,9 @@ async def test_coordinator_success_and_error_mapping(
     hub.async_update_group.side_effect = SpeedportError("invalid")
     with pytest.raises(UpdateFailed, match="Router update failed"):
         await coordinator._async_update_data()  # noqa: SLF001
+
+    hub.async_update_group.side_effect = RuntimeError("unexpected private detail")
+    with pytest.raises(RuntimeError, match="unexpected private detail"):
+        await coordinator._async_update_data()  # noqa: SLF001
+    assert hub.poll_group_health(PollGroup.FAST)["state"] == "failed"
+    assert hub.poll_group_health(PollGroup.FAST)["last_error_class"] == "RuntimeError"

@@ -64,6 +64,24 @@ test("Firmware-discovered detail families have localized capability labels", () 
   }
 });
 
+test("Every registered child-device kind has a localized label", () => {
+  const expected = {
+    en: {
+      dect_repeater: "DECT repeater",
+      powerline_node: "Powerline device",
+    },
+    de: {
+      dect_repeater: "DECT-Repeater",
+      powerline_node: "Powerline-Gerät",
+    },
+  };
+  for (const [language, labels] of Object.entries(expected)) {
+    for (const [kind, label] of Object.entries(labels)) {
+      assert.equal(panelTranslate(language, `child.${kind}`), label);
+    }
+  }
+});
+
 test("Panel translation interpolates values and falls back to English", () => {
   assert.equal(
     panelTranslate("de", "count.entities", { count: 4 }),
@@ -154,7 +172,7 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   const frontendSchema = panel.match(/PANEL_SCHEMA_VERSION = (\d+)/)?.[1];
   const backendSchema = backend.match(/PANEL_SCHEMA_VERSION: Final = (\d+)/)?.[1];
   assert.ok(frontendSchema);
-  assert.equal(frontendSchema, "12");
+  assert.equal(frontendSchema, "13");
   assert.equal(frontendSchema, backendSchema);
   assert.match(panel, new RegExp(`accessibility\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`translations\\.js\\?schema=${frontendSchema}`));
