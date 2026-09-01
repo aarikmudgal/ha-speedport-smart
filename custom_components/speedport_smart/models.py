@@ -123,6 +123,8 @@ class EndpointCapability:
     authenticated: bool = False
     referer: str | None = None
     evidence_keys: tuple[str, ...] = ()
+    automatic_probe: bool = True
+    inventory_safe: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +154,7 @@ class CandidateInventoryResult:
     unsupported: int
     failed: int
     observed: int
+    excluded: int = 0
 
 
 def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:

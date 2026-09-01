@@ -419,8 +419,18 @@ def _endpoint(
     authenticated: bool = False,
     referer: str | None = None,
     evidence_keys: tuple[str, ...] = (),
+    automatic_probe: bool = True,
+    inventory_safe: bool = True,
 ) -> EndpointCapability:
-    return EndpointCapability(family, path, authenticated, referer, evidence_keys)
+    return EndpointCapability(
+        family=family,
+        endpoint=path,
+        authenticated=authenticated,
+        referer=referer,
+        evidence_keys=evidence_keys,
+        automatic_probe=automatic_probe,
+        inventory_safe=inventory_safe,
+    )
 
 
 DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] = (
@@ -619,6 +629,8 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/network/wlan_environ.html",
                     evidence_keys=("wlan", "ssid", "channel", "environment"),
+                    automatic_probe=False,
+                    inventory_safe=False,
                 ),
             ),
             "port_forwarding": (
@@ -773,6 +785,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/check_for_updates_mesh.html",
                     evidence_keys=("mesh", "firmware", "fwupd", "update"),
+                    automatic_probe=False,
                 ),
             ),
             "mesh_update": (
@@ -782,6 +795,8 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/overview/index.html",
                     evidence_keys=("mesh", "firmware", "fwupd", "update"),
+                    automatic_probe=False,
+                    inventory_safe=False,
                 ),
             ),
             "mesh_reboot_status": (
@@ -791,6 +806,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/problem_handling_mesh.html",
                     evidence_keys=("mesh", "reboot", "reset", "device"),
+                    automatic_probe=False,
                 ),
             ),
             "dhcp": (
@@ -1038,6 +1054,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/problem_handling_dect.html",
                     evidence_keys=("dect", "handset", "base"),
+                    automatic_probe=False,
                 ),
             ),
             "dect_repeater": (
@@ -1054,8 +1071,17 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "analog",
                     "data/PhonePlugs.json",
                     authenticated=True,
+                    referer="html/content/phone/phone_devices.html",
+                    evidence_keys=("analog", "tae", "phone_plug", "phoneplug"),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "analog",
+                    "data/PhonePlugs.json",
+                    authenticated=True,
                     referer="html/content/phone/phone_analog.html",
                     evidence_keys=("analog", "tae", "phone_plug", "phoneplug"),
+                    automatic_probe=False,
                 ),
             ),
             "phonebook": (
@@ -1170,6 +1196,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/system_messages.html",
                     evidence_keys=("message", "log", "error", "warning"),
+                    automatic_probe=False,
                 ),
             ),
             "diagnostics": (
@@ -1188,6 +1215,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/system_services.html",
                     evidence_keys=("service", "active_service"),
+                    automatic_probe=False,
                 ),
             ),
             "energy": (
@@ -1197,6 +1225,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/energy.html",
                     evidence_keys=("energy", "power", "eco", "led"),
+                    automatic_probe=False,
                 ),
             ),
             "easy_support": (
@@ -1382,7 +1411,7 @@ class SpeedportClient:
         )
 
     async def capture_candidate_inventory(self) -> CandidateInventoryResult:
-        """Capture every candidate schema without changing active capabilities."""
+        """Capture every safe candidate schema without changing capabilities."""
         observed_candidate_schema: dict[
             str,
             dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
@@ -1395,12 +1424,34 @@ class SpeedportClient:
         succeeded = 0
         unsupported = 0
         failed = 0
+        all_contracts = {
+            (candidate.endpoint, candidate.authenticated, candidate.referer)
+            for candidates in self._endpoint_candidates.values()
+            for candidate in candidates
+        }
+
+        def inventory_candidate_is_safe(
+            family: str, candidate: EndpointCapability
+        ) -> bool:
+            return candidate.inventory_safe and (
+                _safe_observed_candidate_metadata(family, candidate) is not None
+            )
+
+        safe_contracts = {
+            (candidate.endpoint, candidate.authenticated, candidate.referer)
+            for family, candidates in self._endpoint_candidates.items()
+            for candidate in candidates
+            if inventory_candidate_is_safe(family, candidate)
+        }
+        excluded_contracts = all_contracts - safe_contracts
 
         async def capture_phase(*, authenticated: bool) -> None:
             nonlocal attempted, failed, succeeded, unsupported
             for family, candidates in self._endpoint_candidates.items():
                 for candidate in candidates:
                     if candidate.authenticated is not authenticated:
+                        continue
+                    if not inventory_candidate_is_safe(family, candidate):
                         continue
                     cache_key = (
                         candidate.endpoint,
@@ -1450,7 +1501,8 @@ class SpeedportClient:
             await capture_phase(authenticated=False)
             protected_candidates = any(
                 candidate.authenticated
-                for candidates in self._endpoint_candidates.values()
+                and inventory_candidate_is_safe(family, candidate)
+                for family, candidates in self._endpoint_candidates.items()
                 for candidate in candidates
             )
             if protected_candidates:
@@ -1473,6 +1525,7 @@ class SpeedportClient:
             observed=sum(
                 len(candidates) for candidates in observed_candidate_schema.values()
             ),
+            excluded=len(excluded_contracts),
         )
 
     async def close(self) -> None:
@@ -2092,6 +2145,7 @@ class SpeedportClient:
                     candidate
                     for candidate in candidates
                     if candidate.authenticated is authenticated
+                    and candidate.automatic_probe
                 ]
                 for candidate in phase_candidates:
                     cache_key = (

@@ -217,7 +217,7 @@ class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):
 
 
 class SpeedportCaptureReadOnlyInventoryButton(SpeedportEntity, ButtonEntity):
-    """Explicitly inspect every known read-only capability candidate."""
+    """Explicitly inspect every known safe read-only capability candidate."""
 
     _attr_translation_key = "capture_read_only_inventory"
     _attr_entity_category = EntityCategory.DIAGNOSTIC

@@ -231,9 +231,11 @@ slots, private Wi-Fi SSIDs, DDNS domain/update-server identity, providers,
 lines, DECT repeaters, PBX clients, storage, shares, VPN peers, and Powerline
 devices. These additions do not promote any matching write or record-mutation
 contract. It also provides an explicit candidate-only diagnostic scan that
-captures bounded, value-free schemas for every known endpoint/authentication/
-Referer contract without changing active capabilities, running WAN/TR-064
-polling, invoking a router command, or reloading the integration.
+captures bounded, value-free schemas for every known safe endpoint/
+authentication/Referer contract without changing active capabilities, running
+WAN/TR-064 polling, invoking a router command, or reloading the integration.
+Action-like GET endpoints are quarantined from both setup and inventory until
+their read-only behavior is proven.
 
 Representative blocked families:
 

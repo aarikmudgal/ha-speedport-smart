@@ -1957,7 +1957,7 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
         (
             "analog",
             "data/PhonePlugs.json",
-            "html/content/phone/phone_analog.html",
+            "html/content/phone/phone_devices.html",
         ),
         (
             "phonebook",
@@ -2019,6 +2019,39 @@ def test_speedport_smart_4r_candidates_prefer_proven_firmware_routes(
     assert candidate.authenticated is True
 
 
+def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
+    """Unimplemented families cannot enter setup polling by accident."""
+    inventory_only = {
+        "wifi_environment",
+        "mesh_firmware",
+        "mesh_update",
+        "mesh_reboot_status",
+        "dect_settings",
+        "analog",
+        "logs",
+        "system_services",
+        "energy",
+    }
+
+    assert inventory_only <= set(DEFAULT_FEATURE_CANDIDATES)
+    for family in inventory_only:
+        assert all(
+            candidate.automatic_probe is False
+            for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+        )
+    inventory_excluded = {"wifi_environment", "mesh_update"}
+    assert all(
+        candidate.inventory_safe is False
+        for family in inventory_excluded
+        for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+    )
+    assert all(
+        candidate.inventory_safe is True
+        for family in inventory_only - inventory_excluded
+        for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+    )
+
+
 @pytest.mark.parametrize(
     ("family", "endpoint"),
     [
@@ -2049,6 +2082,17 @@ def test_documented_cross_firmware_aliases_are_never_primary(
     )
 
     assert endpoint in endpoints[1:]
+
+
+def test_analog_endpoint_keeps_both_proven_referer_contracts() -> None:
+    """The same endpoint is retried under both captured firmware page contexts."""
+    assert tuple(
+        (candidate.endpoint, candidate.referer)
+        for candidate in DEFAULT_FEATURE_CANDIDATES["analog"]
+    ) == (
+        ("data/PhonePlugs.json", "html/content/phone/phone_devices.html"),
+        ("data/PhonePlugs.json", "html/content/phone/phone_analog.html"),
+    )
 
 
 def test_detail_endpoint_families_poll_beyond_summary_evidence() -> None:
@@ -2254,6 +2298,56 @@ async def test_probe_rejects_detail_evidence_the_normalizer_does_not_consume(
 
     assert family not in report.feature_endpoints
     assert family in report.failures
+
+
+@pytest.mark.asyncio
+async def test_probe_skips_inventory_only_candidates_without_failure() -> None:
+    """Setup reads only automatic candidates and leaves explicit ones untouched."""
+    automatic = EndpointCapability(
+        "automatic",
+        "data/Automatic.json",
+        evidence_keys=("automatic",),
+    )
+    explicit = EndpointCapability(
+        "explicit",
+        "data/Explicit.json",
+        evidence_keys=("explicit",),
+        automatic_probe=False,
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        endpoint_candidates={
+            "automatic": (automatic,),
+            "explicit": (explicit,),
+        },
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"automatic": {"available": True}}),
+        ) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    get.assert_awaited_once_with(
+        "data/Automatic.json",
+        authenticated=False,
+        referer=None,
+    )
+    assert "automatic" in report.feature_endpoints
+    assert "explicit" not in report.feature_endpoints
+    assert "explicit" not in report.failures
+    assert "explicit" not in client.observed_candidate_schema
 
 
 @pytest.mark.asyncio
@@ -2485,6 +2579,7 @@ async def test_explicit_candidate_inventory_is_fresh_bounded_and_state_neutral()
     assert result.unsupported == 0
     assert result.failed == 0
     assert result.observed == 4
+    assert result.excluded == 0
     assert [call.args[0] for call in get.await_args_list] == [
         "data/EnergyPreview.json",
         "data/Energy.json",
@@ -2512,6 +2607,63 @@ async def test_explicit_candidate_inventory_is_fresh_bounded_and_state_neutral()
             "html/content/config/system_messages.html",
         ),
     }
+
+
+@pytest.mark.asyncio
+async def test_explicit_inventory_skips_quarantined_candidates_and_login() -> None:
+    """Action-like candidates are neither read nor allowed to open a session."""
+    safe = EndpointCapability(
+        "safe",
+        "data/Safe.json",
+        automatic_probe=False,
+    )
+    quarantined = EndpointCapability(
+        "mesh_update",
+        "data/FwCheckForUpdateMesh.json",
+        authenticated=True,
+        automatic_probe=False,
+        inventory_safe=False,
+    )
+    unsafe_metadata = EndpointCapability(
+        "unsafe_metadata",
+        "data/aabbccddeeff.json",
+        automatic_probe=False,
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={
+            "safe": (safe,),
+            "mesh_update": (quarantined,),
+            "unsafe_metadata": (unsafe_metadata,),
+        },
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()) as logout,
+        patch.object(client, "login", AsyncMock()) as login,
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"safe": {"available": True}}),
+        ) as get,
+    ):
+        result = await client.capture_candidate_inventory()
+
+    get.assert_awaited_once_with(
+        "data/Safe.json",
+        authenticated=False,
+        referer=None,
+    )
+    login.assert_not_awaited()
+    assert logout.await_count == 2
+    assert result.attempted == 1
+    assert result.succeeded == 1
+    assert result.observed == 1
+    assert result.excluded == 2
+    assert "mesh_update" not in client.observed_candidate_schema
+    assert "unsafe_metadata" not in client.observed_candidate_schema
 
 
 @pytest.mark.asyncio

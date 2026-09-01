@@ -178,7 +178,8 @@ test("read-only inventory remains callable during backoff with exact safe copy",
       "en",
       [
         /Logout in every open Speedport web interface/,
-        /every known candidate source once/,
+        /every known safe candidate source once/,
+        /Wi-Fi scans, update checks, and other action-like endpoints are excluded/,
         /only value-free response shapes/,
         /changes no router setting/,
       ],
@@ -187,7 +188,8 @@ test("read-only inventory remains callable during backoff with exact safe copy",
       "de",
       [
         /Abmelden in jeder geöffneten Speedport-Weboberfläche/,
-        /jede bekannte mögliche Quelle genau einmal/,
+        /jede bekannte sichere mögliche Quelle genau einmal/,
+        /WLAN-Suchen, Update-Prüfungen und andere aktionsartige Endpunkte sind ausgeschlossen/,
         /nur wertfreie Antwortstrukturen/,
         /ändert keine Router-Einstellung/,
       ],
@@ -223,8 +225,8 @@ test("read-only inventory remains callable during backoff with exact safe copy",
     assert.equal(
       fixture.panel._notice,
       language === "de"
-        ? "Die schreibgeschützte Funktionsübersicht wurde erfasst. Wertfreie Antwortstrukturen sind jetzt in der Home-Assistant-Diagnose verfügbar."
-        : "Read-only capability inventory captured. Value-free response shapes are now available in Home Assistant diagnostics.",
+        ? "Die schreibgeschützte Funktionsübersicht ist abgeschlossen. Status, Zähler und wertfreie Antwortstrukturen findest du jetzt in der Home-Assistant-Diagnose."
+        : "Read-only inventory finished. Check Home Assistant diagnostics for its complete or partial status, counts, and value-free response shapes.",
     );
   }
 });

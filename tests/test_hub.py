@@ -1660,6 +1660,7 @@ async def test_candidate_inventory_records_complete_counts_without_reload(
             unsupported=12,
             failed=0,
             observed=76,
+            excluded=1,
         )
     )
 
@@ -1673,6 +1674,7 @@ async def test_candidate_inventory_records_complete_counts_without_reload(
     assert diagnostics["unsupported"] == 12
     assert diagnostics["failed"] == 0
     assert diagnostics["observed"] == 76
+    assert diagnostics["excluded"] == 1
     assert diagnostics["last_attempted_at"] is not None
     assert diagnostics["last_completed_at"] is not None
     assert diagnostics["last_error"] is None

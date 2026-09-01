@@ -258,6 +258,7 @@ class SpeedportHub:
             "unsupported": 0,
             "failed": 0,
             "observed": 0,
+            "excluded": 0,
         }
         self._candidate_inventory_last_attempt: datetime | None = None
         self._candidate_inventory_last_completed: datetime | None = None
@@ -489,6 +490,7 @@ class SpeedportHub:
                 "unsupported": result.unsupported,
                 "failed": result.failed,
                 "observed": result.observed,
+                "excluded": result.excluded,
             }
             self._candidate_inventory_last_completed = datetime.now(UTC)
 

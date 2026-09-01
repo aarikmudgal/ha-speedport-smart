@@ -235,17 +235,18 @@ recovery step.
 
 For support and capability development, administrators can use
 **Administration → Home Assistant → Read-only capability discovery → Capture
-inventory**. This explicit action checks every known candidate data source in
-one serialized session. It uses only the required login/logout lifecycle and
+inventory**. This explicit action checks every known safe candidate data source
+in one serialized session. It uses only the required login/logout lifecycle and
 JSON reads: it does not run WAN/TR-064 polling, submit a router setting, invoke
-a management command, or reload the integration. Log out of every Speedport
-web interface before starting it.
+a management command, or reload the integration. Endpoints that may trigger a
+Wi-Fi scan, update check, or other router activity are deliberately excluded.
+Log out of every Speedport web interface before starting it.
 
 The resulting diagnostics contain only bounded endpoint metadata and
 value-free field paths and shapes. They also report whether the scan completed,
-was partial, or failed, plus safe attempted/succeeded/unsupported/failure
-counts. Raw values and payloads are never retained. Review the diagnostics file
-before sharing it.
+was partial, or failed, plus safe attempted/succeeded/unsupported/failure and
+excluded counts. Raw values and payloads are never retained. Review the
+diagnostics file before sharing it.
 
 ## Router controls
 

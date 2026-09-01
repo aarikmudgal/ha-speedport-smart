@@ -1241,6 +1241,37 @@ def test_wifi_environment_stays_fail_closed_without_an_observed_row_schema() -> 
     )
 
 
+@pytest.mark.parametrize(
+    "family",
+    [
+        "wifi_environment",
+        "mesh_firmware",
+        "mesh_update",
+        "mesh_reboot_status",
+        "dect_settings",
+        "analog",
+        "logs",
+        "system_services",
+        "energy",
+    ],
+)
+def test_inventory_only_families_cannot_leak_through_generic_normalization(
+    family: str,
+) -> None:
+    """Unproven response fields remain absent until explicitly allowlisted."""
+    assert (
+        normalize_feature_payload(
+            family,
+            {
+                "use_wlan": "1",
+                "firmware_version": "PRIVATE-VALUE",
+                "message": "PRIVATE-MESSAGE",
+            },
+        )
+        == {}
+    )
+
+
 def test_dns_and_qos_administrator_rows_have_hard_size_bounds() -> None:
     """Router-controlled policy collections cannot grow the admin model forever."""
     dns = normalize_feature_payload(
