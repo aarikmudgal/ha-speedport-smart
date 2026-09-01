@@ -2116,9 +2116,8 @@ class SpeedportSmartPanel extends HTMLElement {
           white-space: nowrap;
         }
         .hero-metric.unavailable { opacity: .72; }
-        .sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
-        .dashboard-section { min-width: 0; }
-        .section-bandwidth, .section-clients, .section-controls { grid-column: 1 / -1; }
+        .sections { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+        .dashboard-section { grid-column: 1 / -1; min-width: 0; width: 100%; }
         .section-heading {
           display: grid;
           grid-template-columns: auto 1fr auto;
@@ -2146,7 +2145,12 @@ class SpeedportSmartPanel extends HTMLElement {
           font-size: 11px;
           font-weight: 700;
         }
-        .entity-source-groups { display: grid; gap: 20px; }
+        .entity-source-groups {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
+          align-items: start;
+          gap: 20px;
+        }
         .entity-source-group { min-width: 0; }
         .entity-source-heading {
           display: grid;
@@ -2524,10 +2528,12 @@ class SpeedportSmartPanel extends HTMLElement {
         .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
         :host([narrow]) .sections { grid-template-columns: 1fr; }
         :host([narrow]) .dashboard-section { grid-column: auto; }
+        :host([narrow]) .entity-source-groups { grid-template-columns: 1fr; }
         :host([narrow]) .entity-capability-grid { grid-template-columns: 1fr; }
         @media (max-width: 900px) {
           .sections { grid-template-columns: 1fr; }
           .dashboard-section { grid-column: auto; }
+          .entity-source-groups { grid-template-columns: 1fr; }
           .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 680px) {

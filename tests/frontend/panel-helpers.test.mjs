@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 globalThis.HTMLElement = class {};
@@ -15,6 +16,22 @@ const {
 } = await import(
   "../../custom_components/speedport_smart/frontend/speedport-smart-panel.js?test=panel-helpers"
 );
+const panelSource = await readFile(
+  new URL(
+    "../../custom_components/speedport_smart/frontend/speedport-smart-panel.js",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+function cssDeclarations(selector) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = panelSource.match(
+    new RegExp(`^\\s*${escapedSelector}\\s*\\{([^}]*)\\}`, "m"),
+  );
+  assert.ok(match, `Missing CSS rule for ${selector}`);
+  return match[1].replace(/\s+/g, " ");
+}
 
 test("dashboard fallback hierarchy keeps related router features together", () => {
   const cases = [
@@ -72,4 +89,28 @@ test("Internet connection presentation distinguishes unavailable from offline", 
     className: "online",
     labelKey: "hero.connected",
   });
+});
+
+test("major sections fill the dashboard while source groups respond inside them", () => {
+  const sections = cssDeclarations(".sections");
+  assert.match(
+    sections,
+    /grid-template-columns:\s*(?:1fr|minmax\(\s*0\s*,\s*1fr\s*\))\s*;/,
+  );
+  assert.doesNotMatch(sections, /repeat\(\s*2\s*,/);
+
+  const dashboardSection = cssDeclarations(".dashboard-section");
+  assert.match(dashboardSection, /grid-column:\s*1\s*\/\s*-1\s*;/);
+  assert.match(dashboardSection, /width:\s*100%\s*;/);
+
+  const sourceGroups = cssDeclarations(".entity-source-groups");
+  assert.match(
+    sourceGroups,
+    /grid-template-columns:\s*repeat\(\s*auto-fit\s*,\s*minmax\(\s*min\(\s*100%\s*,\s*400px\s*\)\s*,\s*1fr\s*\)\s*\)\s*;/,
+  );
+
+  const narrowSourceGroups = cssDeclarations(
+    ":host([narrow]) .entity-source-groups",
+  );
+  assert.match(narrowSourceGroups, /grid-template-columns:\s*1fr\s*;/);
 });
