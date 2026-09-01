@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=9";
+import { keepDialogFocus } from "./accessibility.js?schema=10";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=9";
+} from "./controls.js?schema=10";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=9";
+} from "./entity-state.js?schema=10";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=9";
+} from "./render-state.js?schema=10";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=9";
+} from "./translations.js?schema=10";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 9;
+const PANEL_SCHEMA_VERSION = 10;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -1654,6 +1654,7 @@ export function capabilityGroupFor(meta) {
 
 const ADMIN_CONTROL_PLACEMENT = new Map();
 const ADMIN_ENTITY_GROUP_PLACEMENT = new Map();
+const ADMIN_FEATURE_ENTITY_GROUPS = new Set();
 for (const area of ADMIN_IA) {
   for (const subsection of area.subsections) {
     const placement = Object.freeze({
@@ -1665,6 +1666,11 @@ for (const area of ADMIN_IA) {
     }
     for (const group of subsection.entityGroups) {
       ADMIN_ENTITY_GROUP_PLACEMENT.set(group, placement);
+    }
+    for (const feature of subsection.features) {
+      for (const group of feature.entityGroups) {
+        ADMIN_FEATURE_ENTITY_GROUPS.add(group);
+      }
     }
   }
 }
@@ -1681,6 +1687,19 @@ export function adminPlacementFor(meta) {
     return { areaId: "network", subsectionId: "network_mesh" };
   }
   return ADMIN_ENTITY_GROUP_PLACEMENT.get(capabilityGroupFor(meta));
+}
+
+function administrationEntityStateChanged(meta, previousState, nextState) {
+  if (adminPlacementFor(meta) !== undefined) {
+    return previousState !== nextState;
+  }
+  if (!ADMIN_FEATURE_ENTITY_GROUPS.has(capabilityGroupFor(meta))) {
+    return false;
+  }
+  return (
+    entityAvailability(meta, previousState) !==
+    entityAvailability(meta, nextState)
+  );
 }
 
 /** Return the exact highest backend-supplied risk represented by controls. */
@@ -1969,10 +1988,20 @@ export class SpeedportSmartPanel extends HTMLElement {
       return true;
     }
     if (this._pendingAction) return false;
+    const administrationActive = this._activeView === "administration";
     return this._metadata.routers.some((router) =>
       router.entities.some(
-        (entity) =>
-          previous.states?.[entity.entity_id] !== next.states?.[entity.entity_id],
+        (entity) => {
+          const previousState = previous.states?.[entity.entity_id];
+          const nextState = next.states?.[entity.entity_id];
+          return administrationActive
+            ? administrationEntityStateChanged(
+                entity,
+                previousState,
+                nextState,
+              )
+            : previousState !== nextState;
+        },
       ),
     );
   }

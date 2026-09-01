@@ -86,6 +86,39 @@ const CONTROL_META = Object.freeze({
   section: "controls",
   translation_key: "reboot_router",
 });
+const WAN_RATE_META = Object.freeze({
+  access_source: "wan_counters",
+  confirmation: "none",
+  control: false,
+  disruptive: false,
+  domain: "sensor",
+  entity_id: "sensor.speedport_wan_download_rate",
+  risk: "normal",
+  section: "bandwidth",
+  translation_key: "wan_download_rate",
+});
+const WAN_INTERFACE_META = Object.freeze({
+  access_source: "wan_counters",
+  confirmation: "none",
+  control: false,
+  disruptive: false,
+  domain: "sensor",
+  entity_id: "sensor.speedport_wan_interface_status",
+  risk: "normal",
+  section: "bandwidth",
+  translation_key: "wan_interface_status",
+});
+const LTE_TUNNEL_META = Object.freeze({
+  access_source: "protected_json",
+  confirmation: "none",
+  control: false,
+  disruptive: false,
+  domain: "sensor",
+  entity_id: "sensor.speedport_lte_tunnel_bytes_received",
+  risk: "normal",
+  section: "mobile",
+  translation_key: "lte_tunnel_bytes_received",
+});
 
 function adminPayload(entryId = "entry-a", sections = []) {
   return { entry_id: entryId, schema_version: 1, sections };
@@ -725,6 +758,173 @@ test("router change and disconnect clear private cached data", async () => {
   fixture.panel.disconnectedCallback();
   assert.equal(fixture.panel._adminRead, undefined);
   assert.equal(fixture.panel._adminReadEntry, undefined);
+});
+
+test("rapid WAN telemetry changes rerender Dashboard, not Administration", () => {
+  const fixture = panelFixture();
+  const configurationState = { attributes: {}, state: "weekly" };
+  const controlState = { attributes: {}, state: "unknown" };
+  fixture.panel._metadata = {
+    routers: [
+      router("entry-a", [WAN_RATE_META, CONFIG_META, CONTROL_META]),
+    ],
+  };
+  fixture.panel._hass = {
+    ...fixture.panel._hass,
+    states: {
+      [WAN_RATE_META.entity_id]: { attributes: {}, state: "1" },
+      [CONFIG_META.entity_id]: configurationState,
+      [CONTROL_META.entity_id]: controlState,
+    },
+  };
+  let scheduled = 0;
+  fixture.panel._scheduleRender = () => {
+    scheduled += 1;
+  };
+
+  fixture.panel.hass = {
+    ...fixture.panel._hass,
+    states: {
+      ...fixture.panel._hass.states,
+      [WAN_RATE_META.entity_id]: { attributes: {}, state: "2" },
+    },
+  };
+  assert.equal(scheduled, 1);
+
+  fixture.panel._activeView = "administration";
+  scheduled = 0;
+  for (let sample = 3; sample <= 20; sample += 1) {
+    fixture.panel.hass = {
+      ...fixture.panel._hass,
+      states: {
+        ...fixture.panel._hass.states,
+        [WAN_RATE_META.entity_id]: {
+          attributes: {},
+          state: String(sample),
+        },
+      },
+    };
+  }
+
+  assert.equal(scheduled, 0);
+
+  let renderedWanState;
+  fixture.panel._render = () => {
+    renderedWanState =
+      fixture.panel._hass.states[WAN_RATE_META.entity_id].state;
+  };
+  fixture.panel._selectView("dashboard");
+  assert.equal(renderedWanState, "20");
+});
+
+test("available feature-only WAN and LTE values do not rerender Administration", () => {
+  const fixture = panelFixture();
+  fixture.panel._activeView = "administration";
+  fixture.panel._metadata = {
+    routers: [router("entry-a", [WAN_INTERFACE_META, LTE_TUNNEL_META])],
+  };
+  fixture.panel._hass = {
+    ...fixture.panel._hass,
+    states: {
+      [WAN_INTERFACE_META.entity_id]: { attributes: {}, state: "down" },
+      [LTE_TUNNEL_META.entity_id]: { attributes: {}, state: "100" },
+    },
+  };
+  let scheduled = 0;
+  fixture.panel._scheduleRender = () => {
+    scheduled += 1;
+  };
+
+  fixture.panel.hass = {
+    ...fixture.panel._hass,
+    states: {
+      ...fixture.panel._hass.states,
+      [WAN_INTERFACE_META.entity_id]: { attributes: {}, state: "up" },
+    },
+  };
+  assert.equal(scheduled, 0);
+
+  for (let sample = 101; sample <= 120; sample += 1) {
+    fixture.panel.hass = {
+      ...fixture.panel._hass,
+      states: {
+        ...fixture.panel._hass.states,
+        [LTE_TUNNEL_META.entity_id]: {
+          attributes: {},
+          state: String(sample),
+        },
+      },
+    };
+  }
+  assert.equal(scheduled, 0);
+});
+
+test("feature-only availability recovery rerenders Administration", () => {
+  const fixture = panelFixture();
+  fixture.panel._activeView = "administration";
+  fixture.panel._metadata = {
+    routers: [router("entry-a", [WAN_INTERFACE_META])],
+  };
+  fixture.panel._hass = {
+    ...fixture.panel._hass,
+    states: {
+      [WAN_INTERFACE_META.entity_id]: {
+        attributes: {},
+        state: "unavailable",
+      },
+    },
+  };
+  let scheduled = 0;
+  fixture.panel._scheduleRender = () => {
+    scheduled += 1;
+  };
+
+  fixture.panel.hass = {
+    ...fixture.panel._hass,
+    states: {
+      ...fixture.panel._hass.states,
+      [WAN_INTERFACE_META.entity_id]: { attributes: {}, state: "up" },
+    },
+  };
+
+  assert.equal(scheduled, 1);
+});
+
+test("Administration rerenders for visible reporting and control changes", () => {
+  const fixture = panelFixture();
+  fixture.panel._activeView = "administration";
+  fixture.panel._metadata = {
+    routers: [router("entry-a", [CONFIG_META, CONTROL_META])],
+  };
+  fixture.panel._hass = {
+    ...fixture.panel._hass,
+    states: {
+      [CONFIG_META.entity_id]: { attributes: {}, state: "weekly" },
+      [CONTROL_META.entity_id]: { attributes: {}, state: "unknown" },
+    },
+  };
+  let scheduled = 0;
+  fixture.panel._scheduleRender = () => {
+    scheduled += 1;
+  };
+
+  fixture.panel.hass = {
+    ...fixture.panel._hass,
+    states: {
+      ...fixture.panel._hass.states,
+      [CONFIG_META.entity_id]: { attributes: {}, state: "disabled" },
+    },
+  };
+  assert.equal(scheduled, 1);
+
+  fixture.panel.hass = {
+    ...fixture.panel._hass,
+    states: {
+      ...fixture.panel._hass.states,
+      [CONTROL_META.entity_id]: { attributes: {}, state: "pressed" },
+    },
+  };
+  assert.equal(scheduled, 2);
 });
 
 test("administrator demotion rerenders and clears private cached data", () => {
