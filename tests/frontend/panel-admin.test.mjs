@@ -35,11 +35,14 @@ globalThis.customElements = {
 };
 
 const {
+  ADMIN_IA,
   ADMIN_READ_FIELD_KEYS,
   ADMIN_READ_SECTION_FIELDS,
   ADMIN_READ_SECTION_ORDER,
   SpeedportSmartPanel,
+  adminPlacementFor,
   formatAdminReadValue,
+  highestAdminRisk,
   normalizeAdminReadPayload,
   splitPanelEntities,
 } = await import(
@@ -59,6 +62,18 @@ const REPORTING_META = Object.freeze({
   risk: "normal",
   section: "system",
   translation_key: "system_cpu",
+});
+const CONFIG_META = Object.freeze({
+  access_source: "protected_json",
+  capability_group: "wireless_schedule",
+  confirmation: "none",
+  control: false,
+  disruptive: false,
+  domain: "sensor",
+  entity_id: "sensor.speedport_wifi_schedule_mode",
+  risk: "normal",
+  section: "wireless",
+  translation_key: "wifi_schedule_mode",
 });
 const CONTROL_META = Object.freeze({
   access_source: "router_control",
@@ -84,7 +99,7 @@ function router(entryId, entities = [REPORTING_META, CONTROL_META]) {
     entities,
     entry_id: entryId,
     entry_state: "loaded",
-    management: undefined,
+    management: { controls_available: true, state: "available" },
     model: "Speedport Smart 4R Typ A",
     title: entryId,
   };
@@ -119,18 +134,453 @@ function panelFixture({ admin = true, entries = ["entry-a"] } = {}) {
 }
 
 test("Dashboard and Administration use disjoint entity sets", () => {
-  assert.deepEqual(splitPanelEntities([REPORTING_META, CONTROL_META]), {
-    controls: [CONTROL_META],
-    reporting: [REPORTING_META],
-  });
+  assert.deepEqual(
+    splitPanelEntities([REPORTING_META, CONFIG_META, CONTROL_META]),
+    {
+      controls: [CONTROL_META],
+      reporting: [REPORTING_META, CONFIG_META],
+    },
+  );
 });
 
-test("panel renders reporting only on Dashboard and controls only in Administration", () => {
+test("fixed Administration manifest places reviewed controls and collections", () => {
+  assert.deepEqual(
+    ADMIN_IA.map((area) => area.id),
+    ["internet", "telephony", "network", "system", "home_assistant"],
+  );
+  const readPlacements = Object.fromEntries(
+    ADMIN_IA.flatMap((area) =>
+      area.subsections.flatMap((subsection) =>
+        subsection.readSections.map((read) => [read.id, area.id]),
+      ),
+    ),
+  );
+  const readSubsectionPlacements = Object.fromEntries(
+    ADMIN_IA.flatMap((area) =>
+      area.subsections.flatMap((subsection) =>
+        subsection.readSections.map((read) => [read.id, subsection.id]),
+      ),
+    ),
+  );
+  assert.deepEqual(readPlacements, {
+    clients: "network",
+    dect_handsets: "telephony",
+    dect_repeaters: "telephony",
+    ddns_identity: "internet",
+    dns_rebind_exceptions: "network",
+    ip_phones: "telephony",
+    mesh_nodes: "network",
+    nas_shares: "network",
+    pbx_clients: "telephony",
+    port_block_rules: "internet",
+    port_forward_rules: "internet",
+    powerline_nodes: "network",
+    qos_prioritized_clients: "network",
+    receivers: "internet",
+    storage_devices: "network",
+    telephony_providers: "telephony",
+    telephone_lines: "telephony",
+    usb_devices: "network",
+    vpn_peers: "internet",
+    wifi_2_4_identity: "network",
+    wifi_5_identity: "network",
+    wifi_guest_identity: "network",
+    wifi_office_identity: "network",
+  });
+  assert.deepEqual(
+    Object.keys(readPlacements).sort(),
+    [...ADMIN_READ_SECTION_ORDER].sort(),
+  );
+  assert.equal(readSubsectionPlacements.mesh_nodes, "network_mesh");
+  assert.equal(readSubsectionPlacements.powerline_nodes, "network_mesh");
+  assert.equal(readSubsectionPlacements.ddns_identity, "internet_ddns");
+  assert.equal(readSubsectionPlacements.wifi_2_4_identity, "network_wifi");
+  assert.equal(readSubsectionPlacements.wifi_5_identity, "network_wifi");
+  assert.equal(readSubsectionPlacements.wifi_guest_identity, "network_wifi_access");
+  assert.equal(readSubsectionPlacements.wifi_office_identity, "network_wifi_access");
+  const controls = ADMIN_IA.flatMap((area) =>
+    area.subsections.flatMap((subsection) => subsection.controls),
+  );
+  assert.deepEqual(controls.sort(), [
+    "button:reboot_router",
+    "button:reconnect_internet",
+    "button:retry_protected_data",
+    "button:wps",
+    "select:internet_privacy_level_control",
+    "select:receiver_led_mode_control",
+    "switch:client_fixed_dhcp",
+    "switch:guest_wifi",
+    "switch:hybrid_bonding",
+    "switch:office_wifi",
+    "switch:port_forward_rule",
+    "switch:wifi",
+    "text:client_name",
+  ]);
+  assert.deepEqual(adminPlacementFor(CONFIG_META), {
+    areaId: "network",
+    subsectionId: "network_wifi",
+  });
+  assert.deepEqual(adminPlacementFor(REPORTING_META), {
+    areaId: "system",
+    subsectionId: "system_information",
+  });
+  for (const [section, translationKey, expected] of [
+    ["connection", "internet_error_code", ["internet", "internet_connection"]],
+    ["mobile", "mobile_status_code", ["internet", "internet_mobile"]],
+    ["mobile", "mobile_nr_signal", ["internet", "internet_mobile"]],
+    ["mobile", "mobile_lte_band", ["internet", "internet_mobile"]],
+    ["system", "system_operating_mode", ["system", "system_information"]],
+    ["system", "router_https_enabled", ["system", "system_security"]],
+  ]) {
+    assert.deepEqual(
+      adminPlacementFor({
+        access_source: "public_status",
+        control: false,
+        domain: "sensor",
+        section,
+        translation_key: translationKey,
+      }),
+      { areaId: expected[0], subsectionId: expected[1] },
+      translationKey,
+    );
+  }
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "public_status",
+      capability_group: "mobile_receiver_status",
+      control: false,
+      domain: "sensor",
+      section: "mobile",
+      translation_key: "receiver_model",
+    }),
+    { areaId: "internet", subsectionId: "internet_mobile" },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      child_device: { device_id: "repeater-1", kind: "dect_repeater" },
+      control: false,
+      domain: "binary_sensor",
+      section: "telephony",
+      translation_key: "registered",
+    }),
+    { areaId: "telephony", subsectionId: "telephony_dect" },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      child_device: { device_id: "powerline-1", kind: "powerline_node" },
+      control: false,
+      domain: "sensor",
+      section: "clients",
+      translation_key: "powerline_mode",
+    }),
+    { areaId: "network", subsectionId: "network_mesh" },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      child_device: { device_id: "client-1", kind: "client" },
+      control: false,
+      domain: "binary_sensor",
+      section: "clients",
+      translation_key: "client_connected",
+    }),
+    { areaId: "network", subsectionId: "network_devices" },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      child_device: { device_id: "receiver-1", kind: "receiver" },
+      control: false,
+      domain: "sensor",
+      section: "mobile",
+      translation_key: "receiver_signal_strength",
+    }),
+    { areaId: "internet", subsectionId: "internet_mobile" },
+  );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      control: false,
+      domain: "sensor",
+      section: "telephony",
+      translation_key: "phonebook_entries",
+    }),
+    { areaId: "telephony", subsectionId: "telephony_dect" },
+  );
+  assert.equal(
+    adminPlacementFor({
+      ...CONTROL_META,
+      translation_key: "future_generic_admin_action",
+    }),
+    undefined,
+  );
+});
+
+test("Administration catalog covers every reviewed management family without generic controls", () => {
+  const subsections = ADMIN_IA.flatMap((area) => area.subsections);
+  const features = subsections.flatMap((subsection) => subsection.features);
+  const featureIds = features.map((feature) => feature.id);
+
+  assert.equal(subsections.length, 26);
+  assert.equal(features.length, 72);
+  assert.equal(new Set(featureIds).size, featureIds.length);
+  assert.deepEqual(
+    [...new Set(features.map((feature) => feature.contract))].sort(),
+    ["blocked", "read_only", "reviewed", "unsupported"],
+  );
+  assert.ok(features.some((feature) => feature.destructive));
+  assert.ok(
+    features
+      .filter((feature) => feature.destructive)
+      .every((feature) => feature.controls.length === 0),
+  );
+
+  const subsectionControls = subsections.flatMap(
+    (subsection) => subsection.controls,
+  );
+  const reviewedFeatureControls = features
+    .filter((feature) => feature.contract === "reviewed")
+    .flatMap((feature) => feature.controls);
+  assert.deepEqual(
+    [...new Set(reviewedFeatureControls)].sort(),
+    [...new Set(subsectionControls)].sort(),
+  );
+  assert.ok(
+    features
+      .filter((feature) => feature.contract !== "reviewed")
+      .every((feature) => feature.controls.length === 0),
+  );
+});
+
+test("feature status comes only from current entities, collections, and capabilities", () => {
   const fixture = panelFixture();
+  const features = ADMIN_IA.flatMap((area) => area.subsections).flatMap(
+    (subsection) => subsection.features,
+  );
+  const byId = (id) => features.find((feature) => feature.id === id);
+  const reconnect = {
+    ...CONTROL_META,
+    entity_id: "button.speedport_reconnect_internet",
+    translation_key: "reconnect_internet",
+  };
+  fixture.panel._hass.states[reconnect.entity_id] = {
+    attributes: {},
+    state: "unknown",
+  };
+  fixture.panel._hass.states[CONFIG_META.entity_id] = {
+    attributes: {},
+    state: "weekly",
+  };
+  const phonebookEntries = {
+    access_source: "protected_json",
+    control: false,
+    domain: "sensor",
+    entity_id: "sensor.speedport_phonebook_entries",
+    section: "telephony",
+    translation_key: "phonebook_entries",
+  };
+  fixture.panel._hass.states[phonebookEntries.entity_id] = {
+    attributes: {},
+    state: "3",
+  };
+
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      byId("internet_reconnect"),
+      [reconnect],
+      new Map(),
+      new Set(),
+      true,
+    ).key,
+    "control_available",
+  );
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      byId("network_wifi_schedule"),
+      [CONFIG_META],
+      new Map(),
+      new Set(),
+      true,
+    ).key,
+    "read_only",
+  );
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      byId("telephony_dect_base"),
+      [phonebookEntries],
+      new Map(),
+      new Set(),
+      true,
+    ).key,
+    "read_only",
+  );
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      byId("internet_vpn_management"),
+      [],
+      new Map(),
+      new Set(["vpn"]),
+      false,
+    ).key,
+    "temporarily_unavailable",
+  );
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      byId("system_safe_mail_allowlist"),
+      [],
+      new Map(),
+      new Set(),
+      true,
+    ).key,
+    "not_observed",
+  );
+
+  fixture.panel._hass.states[reconnect.entity_id] = {
+    attributes: {},
+    state: "unavailable",
+  };
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      byId("internet_reconnect"),
+      [reconnect],
+      new Map(),
+      new Set(),
+      true,
+    ).key,
+    "control_unavailable",
+  );
+});
+
+test("broad related telemetry never claims exact blocked-setting coverage", () => {
+  const fixture = panelFixture();
+  const providerFeature = ADMIN_IA.flatMap((area) => area.subsections)
+    .flatMap((subsection) => subsection.features)
+    .find((feature) => feature.id === "internet_provider_configuration");
+  const genericInternet = {
+    access_source: "public_status",
+    capability_group: "connection_internet",
+    control: false,
+    domain: "binary_sensor",
+    entity_id: "binary_sensor.speedport_internet_connected",
+    section: "connection",
+    translation_key: "internet_connected",
+  };
+  fixture.panel._hass.states[genericInternet.entity_id] = {
+    attributes: {},
+    state: "on",
+  };
+
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      providerFeature,
+      [genericInternet],
+      new Map(),
+      new Set(["internet"]),
+      true,
+    ).key,
+    "read_only",
+  );
+  assert.equal(
+    PANEL_TRANSLATIONS.en["admin.feature.status.read_only"],
+    "Related read-only data available",
+  );
+});
+
+test("highest Administration risk uses exact backend risk order only", () => {
+  assert.equal(
+    highestAdminRisk([
+      { control: true, risk: "normal" },
+      { control: true, risk: "sensitive" },
+      { control: true, risk: "lockout" },
+      { control: false, risk: "destructive" },
+    ]),
+    "lockout",
+  );
+  assert.equal(
+    highestAdminRisk([{ control: true, risk: "future-unknown" }]),
+    undefined,
+  );
+});
+
+test("unmanifested controls cannot appear in Administration", () => {
+  const fixture = panelFixture();
+  const unknown = {
+    ...CONTROL_META,
+    entity_id: "button.speedport_future_generic_admin_action",
+    translation_key: "future_generic_admin_action",
+  };
+  fixture.panel._hass.states = {
+    [unknown.entity_id]: { attributes: {}, state: "unknown" },
+  };
+
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", [unknown]),
+    [unknown],
+    [],
+    {},
+  );
+
+  assert.doesNotMatch(html, /button\.speedport_future_generic_admin_action/);
+  assert.match(html, /Router management capabilities/);
+  assert.doesNotMatch(html, /data-control="button\.speedport_future_generic_admin_action"/);
+});
+
+test("complete capability catalog remains visible and noninteractive without live data", () => {
+  const fixture = panelFixture();
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", []),
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  const featureCards =
+    html.match(/<article class="admin-feature-card[\s\S]*?<\/article>/g) || [];
+
+  assert.equal(featureCards.length, 72);
+  assert.equal(
+    (html.match(/class="administration-area"/g) || []).length,
+    ADMIN_IA.length,
+  );
+  assert.equal(
+    (html.match(/class="administration-subsection"/g) || []).length,
+    26,
+  );
+  for (const label of [
+    "Provider, account, MTU, VLAN, and fixed-IP configuration",
+    "Analog socket configuration",
+    "Wi-Fi environment scan",
+    "NAS shares and folders",
+    "Restore local configuration backup",
+    "Email notifications and event selection",
+    "Front-panel display and key actions",
+  ]) {
+    assert.match(html, new RegExp(label));
+  }
+  assert.match(html, /No local router control/);
+  assert.match(html, /Control contract not proven/);
+  assert.match(html, /Recovery-critical candidate/);
+  assert.ok(
+    featureCards.every(
+      (card) => !card.includes("<button") && !card.includes("data-control"),
+    ),
+  );
+});
+
+test("Dashboard keeps every report while Administration mirrors reviewed groups", () => {
+  const fixture = panelFixture();
+  fixture.panel._metadata = {
+    routers: [router("entry-a", [REPORTING_META, CONFIG_META, CONTROL_META])],
+  };
   fixture.panel._hass.states = {
     [REPORTING_META.entity_id]: {
       attributes: { friendly_name: "Router CPU" },
       state: "20",
+    },
+    [CONFIG_META.entity_id]: {
+      attributes: { friendly_name: "Wi-Fi schedule mode" },
+      state: "weekly",
     },
     [CONTROL_META.entity_id]: {
       attributes: { friendly_name: "Reboot router" },
@@ -152,6 +602,10 @@ test("panel renders reporting only on Dashboard and controls only in Administrat
 
   SpeedportSmartPanel.prototype._render.call(fixture.panel);
   assert.match(fixture.panel.shadowRoot.innerHTML, /sensor\.speedport_system_cpu/);
+  assert.match(
+    fixture.panel.shadowRoot.innerHTML,
+    /sensor\.speedport_wifi_schedule_mode/,
+  );
   assert.doesNotMatch(
     fixture.panel.shadowRoot.innerHTML,
     /button\.speedport_reboot_router|Cached laptop/,
@@ -164,10 +618,11 @@ test("panel renders reporting only on Dashboard and controls only in Administrat
     /button\.speedport_reboot_router/,
   );
   assert.match(fixture.panel.shadowRoot.innerHTML, /Cached laptop/);
-  assert.doesNotMatch(
+  assert.match(
     fixture.panel.shadowRoot.innerHTML,
-    /sensor\.speedport_system_cpu/,
+    /sensor\.speedport_wifi_schedule_mode/,
   );
+  assert.match(fixture.panel.shadowRoot.innerHTML, /sensor\.speedport_system_cpu/);
 });
 
 test("administrator payload validation keeps only fixed sections and fields", () => {
@@ -213,6 +668,27 @@ test("administrator payload validation keeps only fixed sections and fields", ()
     ),
     undefined,
   );
+  for (const id of ["__proto__", "constructor"]) {
+    for (const rows of [[], [{ name: "must not be read" }]]) {
+      assert.doesNotThrow(() =>
+        normalizeAdminReadPayload(
+          adminPayload("entry-a", [
+            { id, rows, source: "protected_json", truncated: false },
+          ]),
+          "entry-a",
+        ),
+      );
+      assert.equal(
+        normalizeAdminReadPayload(
+          adminPayload("entry-a", [
+            { id, rows, source: "protected_json", truncated: false },
+          ]),
+          "entry-a",
+        ),
+        undefined,
+      );
+    }
+  }
 });
 
 test("only Home Assistant administrators call the cached-read endpoint", async () => {
@@ -321,48 +797,307 @@ test("administrator read failure is isolated from normal metadata", async () => 
   assert.equal(fixture.panel._adminReadError, "error.admin_read_unavailable");
 });
 
-test("administrator renderer exposes nine read-only expandable groups", () => {
+test("administrator renderer nests all collections in fixed related areas", () => {
+  const fixture = panelFixture();
+  fixture.panel._adminReadEntry = "entry-a";
+  fixture.panel._adminRead = normalizeAdminReadPayload(
+    adminPayload(
+      "entry-a",
+      ADMIN_READ_SECTION_ORDER.map((id) => ({
+        id,
+        rows:
+          id === "clients"
+            ? [{ connected: true, name: "<script>unsafe</script>" }]
+            : [],
+        source: "protected_json",
+        truncated: id === "clients",
+      })),
+    ),
+    "entry-a",
+  );
+
+  const html = fixture.panel._renderAdministration(
+    router("entry-a"),
+    [CONTROL_META],
+    [
+      {
+        access_source: "protected_json",
+        child_device: { device_id: "client-1", kind: "client", name: "Laptop" },
+        confirmation: "none",
+        control: false,
+        disruptive: false,
+        domain: "binary_sensor",
+        entity_id: "binary_sensor.speedport_laptop_connected",
+        risk: "normal",
+        section: "clients",
+        translation_key: "client_connected",
+      },
+      {
+        access_source: "protected_json",
+        child_device: {
+          device_id: "receiver-1",
+          kind: "receiver",
+          name: "5G receiver",
+        },
+        confirmation: "none",
+        control: false,
+        disruptive: false,
+        domain: "sensor",
+        entity_id: "sensor.speedport_receiver_signal_strength",
+        risk: "normal",
+        section: "mobile",
+        translation_key: "receiver_signal_strength",
+      },
+    ],
+    { protected_json: { available: true } },
+  );
+
+  assert.equal(
+    (html.match(/class="admin-read-section /g) || []).length,
+    ADMIN_READ_SECTION_ORDER.length,
+  );
+  for (const id of [
+    "admin-area:internet",
+    "admin-area:telephony",
+    "admin-area:network",
+  ]) {
+    assert.match(html, new RegExp(`data-detail-id="${id}"`));
+  }
+  for (const title of [
+    "Network devices",
+    "Mesh nodes",
+    "Port forwarding rules",
+    "Port-blocking rules",
+    "DNS rebind exceptions",
+    "Prioritized client slots",
+    "VPN peers",
+    "Telephony providers",
+    "Telephone lines",
+    "DECT handsets",
+    "DECT repeaters",
+    "IP phones",
+    "Telephone-system clients",
+    "USB devices",
+    "Mobile receivers",
+    "Storage devices",
+    "NAS shares",
+    "Powerline devices",
+  ]) {
+    assert.match(html, new RegExp(title));
+  }
+  assert.match(html, /&lt;script&gt;unsafe&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>unsafe<\/script>/);
+  assert.doesNotMatch(html, /callService|sendMessagePromise/);
+  assert.match(html, /data-control="button\.speedport_reboot_router"/);
+  assert.match(html, /binary_sensor\.speedport_laptop_connected/);
+  assert.match(html, /sensor\.speedport_receiver_signal_strength/);
+  assert.doesNotMatch(
+    html,
+    /data-control="(?:binary_sensor\.speedport_laptop_connected|sensor\.speedport_receiver_signal_strength)"/,
+  );
+  assert.doesNotMatch(html, /sendMessagePromise|speedport_smart\/panel\/admin_read/);
+  assert.match(html, /bounded display/);
+  assert.match(html, /No displayable reviewed details/);
+  assert.ok(html.indexOf("Mobile receivers") < html.indexOf("Telephone lines"));
+  assert.ok(html.indexOf("Telephone lines") < html.indexOf("Network devices"));
+});
+
+test("known, empty, unavailable, and not-observed collections remain distinct", () => {
+  const fixture = panelFixture();
+  const natRouter = {
+    ...router("entry-a", []),
+    capabilities: ["nat"],
+  };
+
+  let html = fixture.panel._renderAdministration(
+    natRouter,
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  assert.match(html, /Port forwarding rules/);
+  assert.match(html, /Not present in the cached snapshot/);
+  assert.match(html, /Network devices|Mesh nodes|VPN peers/);
+
+  html = fixture.panel._renderAdministration(
+    natRouter,
+    [],
+    [],
+    { protected_json: { available: false } },
+  );
+  assert.match(html, /Temporarily unavailable/);
+  assert.match(html, /known collection is temporarily unavailable/);
+
+  fixture.panel._adminReadEntry = "entry-a";
+  fixture.panel._adminRead = normalizeAdminReadPayload(
+    adminPayload("entry-a", [
+      {
+        id: "clients",
+        rows: [],
+        source: "protected_json",
+        truncated: false,
+      },
+    ]),
+    "entry-a",
+  );
+  html = fixture.panel._renderAdministration(
+    router("entry-a", []),
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  assert.match(html, /0 cached rows/);
+  assert.match(html, /No displayable reviewed details/);
+  assert.doesNotMatch(html, /Temporarily unavailable/);
+});
+
+test("failed admin refresh marks cached feature evidence temporarily unavailable", () => {
   const fixture = panelFixture();
   fixture.panel._adminReadEntry = "entry-a";
   fixture.panel._adminRead = normalizeAdminReadPayload(
     adminPayload("entry-a", [
       {
         id: "clients",
-        rows: [{ connected: true, name: "<script>unsafe</script>" }],
+        rows: [{ connected: true, name: "Laptop" }],
         source: "protected_json",
-        truncated: true,
+        truncated: false,
       },
     ]),
     "entry-a",
   );
+  fixture.panel._adminReadError = "error.admin_read_unavailable";
 
-  const html = fixture.panel._renderAdminRead(router("entry-a"));
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", []),
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  const card = [...html.matchAll(/<article class="admin-feature-card ([^"]*)"[\s\S]*?<\/article>/g)]
+    .find((match) => match[0].includes("Connected-device inventory and addressing"));
 
-  assert.equal((html.match(/class="admin-read-section /g) || []).length, 9);
-  for (const title of [
-    "Network devices",
-    "Mesh nodes",
-    "Port forwarding rules",
-    "VPN peers",
-    "Telephone lines",
-    "DECT handsets",
-    "IP phones",
-    "USB devices",
-    "Mobile receivers",
-  ]) {
-    assert.match(html, new RegExp(title));
-  }
-  assert.match(html, /&lt;script&gt;unsafe&lt;\/script&gt;/);
-  assert.doesNotMatch(html, /<script>unsafe<\/script>/);
-  assert.doesNotMatch(html, /data-control|callService|sendMessagePromise/);
-  assert.match(html, /bounded display/);
-  assert.match(html, /not present in the current cached snapshot/);
+  assert.ok(card);
+  assert.match(card[1], /status-temporarily_unavailable/);
 });
 
-test("every administrator field has English and German labels", () => {
-  assert.equal(ADMIN_READ_SECTION_ORDER.length, 9);
+test("risk badges and summaries show exact backend-provided tiers", () => {
+  const fixture = panelFixture();
+  const normalControl = {
+    ...CONTROL_META,
+    disruptive: false,
+    domain: "button",
+    entity_id: "button.speedport_wps",
+    risk: "normal",
+    translation_key: "wps",
+  };
+  const lockoutControl = {
+    ...CONTROL_META,
+    entity_id: "button.speedport_reboot_router",
+    risk: "lockout",
+  };
+  fixture.panel._hass.states = {
+    [normalControl.entity_id]: { attributes: {}, state: "unknown" },
+    [lockoutControl.entity_id]: { attributes: {}, state: "unknown" },
+  };
+
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", [normalControl, lockoutControl]),
+    [normalControl, lockoutControl],
+    [],
+    {},
+  );
+
+  assert.match(html, /class="admin-risk-badge risk-normal"/);
+  assert.match(html, /class="admin-risk-badge risk-lockout"/);
+  assert.match(html, /aria-label="Risk: Lockout">Lockout/);
+  assert.match(html, /aria-label="Highest risk: Lockout">Lockout/);
+  assert.doesNotMatch(html, /Destructive/);
+});
+
+test("successful existing action refreshes only the active administrator cache", async () => {
+  const fixture = panelFixture();
+  const serviceCalls = [];
+  const reloads = [];
+  fixture.panel._activeView = "administration";
+  fixture.panel._hass.states = {
+    [CONTROL_META.entity_id]: { attributes: {}, state: "unknown" },
+  };
+  fixture.panel._hass.callService = async (...args) => serviceCalls.push(args);
+  fixture.panel._loadAdminRead = async (...args) => reloads.push(args);
+  fixture.panel._pendingAction = {
+    actionLabel: "Restart",
+    confirmationDraft: "",
+    confirmationPhrase: undefined,
+    confirmationPolicy: "confirm",
+    entityId: CONTROL_META.entity_id,
+    kind: "action",
+    risk: "disruptive",
+  };
+
+  await fixture.panel._runPendingAction();
+
+  assert.deepEqual(serviceCalls, [
+    ["button", "press", { entity_id: CONTROL_META.entity_id }],
+  ]);
+  assert.deepEqual(reloads, [["entry-a", { force: true }]]);
+});
+
+test("successful Dashboard action does not request administrator cache", async () => {
+  const fixture = panelFixture();
+  const reloads = [];
+  fixture.panel._activeView = "dashboard";
+  fixture.panel._hass.states = {
+    [CONTROL_META.entity_id]: { attributes: {}, state: "unknown" },
+  };
+  fixture.panel._hass.callService = async () => {};
+  fixture.panel._loadAdminRead = async (...args) => reloads.push(args);
+  fixture.panel._pendingAction = {
+    actionLabel: "Restart",
+    confirmationDraft: "",
+    confirmationPhrase: undefined,
+    confirmationPolicy: "confirm",
+    entityId: CONTROL_META.entity_id,
+    kind: "action",
+    risk: "disruptive",
+  };
+
+  await fixture.panel._runPendingAction();
+
+  assert.deepEqual(reloads, []);
+});
+
+test("every administrator field, section, and feature has English and German labels", () => {
+  assert.equal(ADMIN_READ_SECTION_ORDER.length, 23);
+  for (const section of ADMIN_READ_SECTION_ORDER) {
+    const key = `admin.section.${section}`;
+    assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.en, key), key);
+    assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.de, key), key);
+  }
   for (const field of ADMIN_READ_FIELD_KEYS) {
     const key = `admin.field.${field}`;
+    assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.en, key), key);
+    assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.de, key), key);
+  }
+  for (const area of ADMIN_IA) {
+    for (const key of [
+      area.titleKey,
+      ...area.subsections.map((subsection) => subsection.titleKey),
+      ...area.subsections.flatMap((subsection) =>
+        subsection.features.map((feature) => feature.titleKey),
+      ),
+    ]) {
+      assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.en, key), key);
+      assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.de, key), key);
+    }
+  }
+  for (const risk of [
+    "normal",
+    "sensitive",
+    "disruptive",
+    "lockout",
+    "destructive",
+  ]) {
+    const key = `admin.risk.${risk}`;
     assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.en, key), key);
     assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.de, key), key);
   }
@@ -390,7 +1125,10 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 print(json.dumps({
     "schema_version": module.ADMIN_READ_SCHEMA_VERSION,
-    "sections": {item.section_id: list(item.fields) for item in module._COLLECTIONS},
+    "sections": {
+        item.section_id: list(item.fields)
+        for item in (*module._COLLECTIONS, *module._RECORDS)
+    },
 }))
 `;
   const result = spawnSync(python, ["-c", script, modulePath], {
@@ -432,15 +1170,19 @@ test("Administration stays full-width, responsive, and theme-native", async () =
   assert.match(source, /\.administration-view\s*\{[^}]*width:\s*100%/s);
   assert.match(
     source,
-    /\.admin-read-sections\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s,
+    /\.administration-subsections\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s,
   );
   assert.match(
     source,
-    /@media \(max-width: 900px\)[\s\S]*?\.admin-read-sections\s*\{\s*grid-template-columns:\s*1fr;/,
+    /@media \(max-width: 900px\)[\s\S]*?\.administration-subsections\s*\{[^}]*grid-template-columns:\s*1fr;/,
   );
   assert.match(
     source,
     /\.admin-read-overview\s*\{[^}]*background:\s*var\(--sp-surface\)/s,
   );
+  assert.match(source, /data-detail-id="admin-area:/);
+  assert.match(source, /data-detail-id="admin-subsection:/);
+  assert.match(source, /color-mix\(in srgb, var\(--sp-warning\)/);
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
   assert.doesNotMatch(source, /localStorage|sessionStorage|console\./);
 });

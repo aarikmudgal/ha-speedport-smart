@@ -154,8 +154,11 @@ The panel:
 - asks for confirmation before executing a router-changing action
 
 Home Assistant administrators can also open reviewed structured details for
-clients, Mesh nodes, forwarding rules, VPN peers, telephony, USB devices, and
-mobile receivers. These details are projected from the integration's existing
+clients, Mesh nodes, port-forward and port-block rules, DNS-rebind exceptions,
+traffic-priority slots, private Wi-Fi SSIDs, DDNS domain/update-server identity,
+VPN peers, telephony providers and lines, DECT handsets and repeaters, IP phones
+and PBX clients, USB and storage devices, NAS shares, mobile receivers, and
+Powerline devices. These details are projected from the integration's existing
 cached normalized state: opening the view does not send another router request.
 The response is allowlisted, bounded, loaded only on demand, kept in browser
 memory, and cleared when the router selection, connection, or administrator

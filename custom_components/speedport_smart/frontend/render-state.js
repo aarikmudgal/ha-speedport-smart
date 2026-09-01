@@ -1,7 +1,18 @@
-const FOCUS_DATA_KEYS = ["control", "moreInfo", "router", "refresh"];
+const FOCUS_DATA_KEYS = [
+  "adminRefresh",
+  "control",
+  "moreInfo",
+  "router",
+  "refresh",
+];
 
 function detailsElements(root) {
   return [...(root?.querySelectorAll?.("details") || [])];
+}
+
+function detailId(detail) {
+  const value = detail?.dataset?.detailId;
+  return value === undefined ? undefined : String(value);
 }
 
 /** Capture interaction state before replacing dashboard shadow DOM. */
@@ -21,11 +32,21 @@ export function captureRenderState(root) {
     const detailIndex = details.findIndex(
       (detail) => detail.querySelector?.("summary") === active,
     );
-    if (detailIndex !== -1) focus = { kind: "summary", detailIndex };
+    if (detailIndex !== -1) {
+      const stableId = detailId(details[detailIndex]);
+      focus = stableId
+        ? { kind: "summary", detailId: stableId }
+        : { kind: "summary", detailIndex };
+    }
   }
 
   return {
     detailsOpen: details.map((detail) => Boolean(detail.open)),
+    detailsOpenById: Object.fromEntries(
+      details
+        .map((detail) => [detailId(detail), Boolean(detail.open)])
+        .filter(([id]) => id),
+    ),
     focus,
   };
 }
@@ -33,14 +54,25 @@ export function captureRenderState(root) {
 /** Restore expanded/collapsed state without retaining stale DOM references. */
 export function restoreDetailsState(root, state) {
   const openStates = state?.detailsOpen;
-  if (!Array.isArray(openStates)) return;
+  const openStatesById = state?.detailsOpenById;
+  if (!Array.isArray(openStates) && !openStatesById) return;
   for (const [index, detail] of detailsElements(root).entries()) {
-    if (index < openStates.length) detail.open = openStates[index];
+    const stableId = detailId(detail);
+    if (stableId && Object.hasOwn(openStatesById || {}, stableId)) {
+      detail.open = Boolean(openStatesById[stableId]);
+    } else if (
+      !stableId &&
+      Array.isArray(openStates) &&
+      index < openStates.length
+    ) {
+      detail.open = openStates[index];
+    }
   }
 }
 
 function dataCandidates(root, key) {
   const selectors = {
+    adminRefresh: "[data-admin-refresh]",
     control: "[data-control]",
     moreInfo: "[data-more-info]",
     router: "[data-router]",
@@ -57,7 +89,11 @@ export function restoreFocusState(root, state) {
 
   let target;
   if (focus.kind === "summary") {
-    target = detailsElements(root)[focus.detailIndex]?.querySelector?.("summary");
+    const details = detailsElements(root);
+    const detail = focus.detailId
+      ? details.find((candidate) => detailId(candidate) === focus.detailId)
+      : details[focus.detailIndex];
+    target = detail?.querySelector?.("summary");
   } else if (focus.kind === "data") {
     target = dataCandidates(root, focus.key).find(
       (candidate) => String(candidate.dataset?.[focus.key] ?? "") === focus.value,

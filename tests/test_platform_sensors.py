@@ -30,7 +30,10 @@ from custom_components.speedport_smart.models import (
     CapabilityReport,
     EndpointCapability,
 )
-from custom_components.speedport_smart.panel import _access_source_for_entity
+from custom_components.speedport_smart.panel import (
+    _PUBLIC_STATUS_KEYS,
+    _access_source_for_entity,
+)
 from custom_components.speedport_smart.sensor import (
     CHILD_SENSOR_COLLECTIONS,
     SENSOR_DESCRIPTIONS,
@@ -151,6 +154,32 @@ async def test_setup_adds_only_exposed_paths(
         "dsl_connected",
     }
     assert all(entity.is_on for entity in binary_sensors)
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
+
+
+async def test_smarthome_linked_uses_public_system_status_capability(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Status.json SmartHome state needs no nonexistent detail capability."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = hub.capabilities | {"system"}  # noqa: SLF001
+    hub._merge_data({"smarthome": {"linked": True}})  # noqa: SLF001
+    assert "smarthome" not in hub.capabilities
+    entry = MagicMock(runtime_data=hub)
+    binary_sensors: list[SpeedportBinarySensor] = []
+
+    await async_setup_binary_sensors(hass, entry, binary_sensors.extend)
+
+    linked = next(
+        entity
+        for entity in binary_sensors
+        if entity.entity_description.key == "smarthome_linked"
+    )
+    assert linked.is_on
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()
 
@@ -398,6 +427,97 @@ async def test_description_catalog_is_complete_and_entities_default_enabled(
     )
 
 
+def test_public_overview_read_only_descriptions_are_capability_gated() -> None:
+    """Exact public overview values are exposed as read-only entities only."""
+    sensor_paths = {
+        **{
+            f"lan_port_{port}_speed": f"lan.ports.port_{port}.speed_bps"
+            for port in range(1, 5)
+        },
+        "wifi_office_clients": "wifi.office.client_count",
+        "wifi_guest_remaining_time": "wifi.guest.remaining_minutes",
+        "system_operating_mode": "system.operating_mode",
+        "internet_provisioning_code": "internet.provisioning_code",
+        "internet_provider_family": "internet.provider_family",
+        "telephony_provisioning_code": "telephony.provisioning_code",
+        "telephony_provider_family": "telephony.provider_family",
+        "internet_error_code": "internet.error_code",
+        "dsl_error_code": "dsl.error_code",
+        "mobile_status_code": "mobile.status_code",
+        "mobile_nr_signal": "mobile.nr.signal_dbm",
+        "mobile_nr_band": "mobile.nr.band_code",
+        "mobile_lte_signal": "mobile.lte.signal_dbm",
+        "mobile_lte_band": "mobile.lte.band_code",
+        "receiver_model": "receiver.model",
+        "wifi_5_channel_width": "wifi.radio_5.channel_width_mode",
+        "lan_ula_address": "lan.ula_address",
+        "lan_usable_ipv6_range": "lan.usable_ipv6_range",
+        "dhcp_lease_duration_code": "dhcp.lease_duration_code",
+        "dect_paging_handsets": "dect.paging_handset_count",
+        "wifi_5_encryption_mode": "wifi.radio_5.encryption_mode",
+        "wifi_guest_2_4_clients": "wifi.guest.radio_2_4_client_count",
+        "wifi_guest_5_clients": "wifi.guest.radio_5_client_count",
+        "wifi_guest_wifi_4_clients": "wifi.guest.wifi_4_client_count",
+        "wifi_guest_wifi_5_clients": "wifi.guest.wifi_5_client_count",
+        "wifi_guest_wifi_6_clients": "wifi.guest.wifi_6_client_count",
+        "ddns_update_protocol": "ddns.update_protocol",
+        "ddns_update_port": "ddns.update_port",
+        "telephony_failed_lines": "telephony.failed_line_count",
+    }
+    binary_paths = {
+        **{
+            f"lan_port_{port}_connected": f"lan.ports.port_{port}.connected"
+            for port in range(1, 5)
+        },
+        "receiver_external_wan_link": "receiver.external_wan_link",
+        "dect_paging_active": "dect.paging_active",
+        "guest_wifi_display_key_enabled": "wifi.guest.display_key_enabled",
+        "office_wifi_wps_enabled": "wifi.office.wps_enabled",
+        "dsl_modem_lan_link": "dsl.modem_lan_link",
+        "settings_write_blocked": "system.settings_write_blocked",
+        "internet_bng_configured": "internet.bng_configured",
+        "telephony_hd_voice_active": "telephony.hd_voice_active",
+        "telephony_manual_configuration_available": (
+            "telephony.manual_configuration_available"
+        ),
+        "smarthome_linked": "smarthome.linked",
+        "router_https_enabled": "security.router_https_enabled",
+        "device_password_changed": "system.device_password_changed",
+        "initial_setup_completed": "system.initial_setup_completed",
+        "receiver_esim_supported": "receiver.esim_supported",
+    }
+
+    for key, data_path in sensor_paths.items():
+        description = _description(SENSOR_DESCRIPTIONS, key)
+        assert description.data_path == data_path
+        assert description.entity_registry_enabled_default
+        assert not hasattr(description, "command")
+    for key, data_path in binary_paths.items():
+        description = _description(BINARY_SENSOR_DESCRIPTIONS, key)
+        assert description.data_path == data_path
+        assert description.entity_registry_enabled_default
+        assert not hasattr(description, "command")
+
+    native_keys = {description.key for description in SENSOR_DESCRIPTIONS}
+    assert {
+        "wifi_2_4_ssid",
+        "wifi_5_ssid",
+        "wifi_guest_ssid",
+        "wifi_office_ssid",
+        "ddns_domain",
+        "ddns_update_server",
+    }.isdisjoint(native_keys)
+
+    assert (
+        _description(SENSOR_DESCRIPTIONS, "system_operating_mode").device_class
+        is SensorDeviceClass.ENUM
+    )
+    assert (
+        _description(BINARY_SENSOR_DESCRIPTIONS, "settings_write_blocked").device_class
+        is BinarySensorDeviceClass.PROBLEM
+    )
+
+
 async def test_normalized_read_only_metadata_entities(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -633,9 +753,8 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
         assert not hasattr(description, "command")
         assert entity.native_value is None
         assert not entity.available
-        assert (
-            _access_source_for_entity(key, "sensor", None, is_control=False)
-            == "protected_json"
+        assert _access_source_for_entity(key, "sensor", None, is_control=False) == (
+            "public_status" if key in _PUBLIC_STATUS_KEYS else "protected_json"
         )
     for key, (data_path, _expected) in expected_binary.items():
         description = _description(BINARY_SENSOR_DESCRIPTIONS, key)
@@ -645,10 +764,9 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
         assert not hasattr(description, "command")
         assert entity.is_on is None
         assert not entity.available
-        assert (
-            _access_source_for_entity(key, "binary_sensor", None, is_control=False)
-            == "protected_json"
-        )
+        assert _access_source_for_entity(
+            key, "binary_sensor", None, is_control=False
+        ) == ("public_status" if key in _PUBLIC_STATUS_KEYS else "protected_json")
 
     hub._capabilities = hub.capabilities | {  # noqa: SLF001
         "dect",
@@ -849,6 +967,18 @@ def test_dect_count_and_receiver_link_speed_have_native_entity_coverage() -> Non
     assert dect.data_path == "dect.handset_count"
     assert dect.transform("3") == 3
 
+    phonebook_entries = _description(SENSOR_DESCRIPTIONS, "phonebook_entries")
+    assert phonebook_entries.data_path == "dect.phonebook_entry_count"
+    assert phonebook_entries.transform("42") == 42
+
+    repeater = next(
+        collection
+        for collection in CHILD_BINARY_SENSOR_COLLECTIONS
+        if collection.kind == "dect_repeater"
+    )
+    assert repeater.data_paths == ("dect.repeaters",)
+    assert _description(repeater.fields, "registered").field == "registered"
+
     receiver = next(
         collection
         for collection in CHILD_SENSOR_COLLECTIONS
@@ -875,13 +1005,13 @@ async def test_p1_safe_read_fields_have_native_entity_coverage(
     hub._merge_data(  # noqa: SLF001 - entity contract fixture
         {
             "lan": {
-                "ipv4_address": "10.168.10.1",
+                "ipv4_address": "192.0.2.1",
                 "subnet_mask": "255.255.255.0",
                 "ipv6_enabled": True,
             },
             "dhcp": {
-                "pool_start_ipv4": "10.168.10.20",
-                "pool_end_ipv4": "10.168.10.200",
+                "pool_start_ipv4": "192.0.2.20",
+                "pool_end_ipv4": "192.0.2.200",
                 "pool_size": 181,
             },
             "ddns": {"provider": "4", "status_code": 2},
@@ -889,7 +1019,7 @@ async def test_p1_safe_read_fields_have_native_entity_coverage(
     )
 
     expected = {
-        "lan_ipv4_address": "10.168.10.1",
+        "lan_ipv4_address": "192.0.2.1",
         "lan_subnet_mask": "255.255.255.0",
         "dhcp_pool_size": 181,
         "ddns_provider": "4",
@@ -902,8 +1032,8 @@ async def test_p1_safe_read_fields_have_native_entity_coverage(
 
     pool = SpeedportSensor(hub, _description(SENSOR_DESCRIPTIONS, "dhcp_pool_size"))
     assert pool.extra_state_attributes == {
-        "start_ipv4": "10.168.10.20",
-        "end_ipv4": "10.168.10.200",
+        "start_ipv4": "192.0.2.20",
+        "end_ipv4": "192.0.2.200",
     }
     ipv6 = SpeedportBinarySensor(
         hub,

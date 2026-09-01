@@ -119,6 +119,259 @@ _LTE_MODE_ENDPOINT: Final = "data/LTE.json"
 _LTE_MODE_REFERER: Final = "html/content/internet/lte_mode.html"
 _THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
 _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
+_OBSERVED_SCHEMA_MAX_DEPTH: Final = 6
+_OBSERVED_SCHEMA_MAX_FIELDS: Final = 128
+_OBSERVED_SCHEMA_MAX_FAMILIES: Final = 64
+_OBSERVED_SCHEMA_MAX_ARRAY_ITEMS: Final = 8
+_OBSERVED_SCHEMA_MAX_MAPPING_ITEMS: Final = 256
+_OBSERVED_SCHEMA_MAX_NAME_LENGTH: Final = 64
+_OBSERVED_SCHEMA_SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]*(?:\[\])?$")
+_OBSERVED_SCHEMA_ARRAY_INDEX = re.compile(r"\[\d+\]")
+_OBSERVED_SCHEMA_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+_OBSERVED_SCHEMA_MAC = re.compile(r"(?i)^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$")
+_OBSERVED_SCHEMA_SEPARATED_MAC = re.compile(
+    r"(?i)(?:^|_)(?:[0-9a-f]{2}_){5}[0-9a-f]{2}(?:_|$)"
+)
+_OBSERVED_SCHEMA_COMPACT_IDENTIFIER = re.compile(r"(?i)^[0-9a-f]{12,}$")
+_OBSERVED_SCHEMA_IP_TOKENS = re.compile(r"(?:^|_)(?:\d{1,3}_){3}\d{1,3}(?:_|$)")
+_OBSERVED_SCHEMA_LONG_NUMBER = re.compile(r"\d{6,}")
+_OBSERVED_SCHEMA_DYNAMIC_KEY = re.compile(
+    r"^(?:client|device|entry|host|peer|row|rule|user)_"
+    r"(?:\d+|[0-9a-f]{8,}|[a-z0-9]{16,})$"
+)
+_OBSERVED_SCHEMA_BLOCKED_TOKENS: Final = frozenset(
+    {
+        "authorization",
+        "auth",
+        "authentication",
+        "challenge",
+        "cookie",
+        "credential",
+        "csrf",
+        "endpoint",
+        "fingerprint",
+        "host",
+        "hostname",
+        "httoken",
+        "id",
+        "key",
+        "login",
+        "nonce",
+        "origin",
+        "passphrase",
+        "password",
+        "payload",
+        "pin",
+        "puk",
+        "raw",
+        "referer",
+        "referrer",
+        "secret",
+        "session",
+        "token",
+        "uid",
+        "url",
+        "username",
+        "uuid",
+    }
+)
+_OBSERVED_SCHEMA_SAFE_SINGLE_FIELDS: Final = frozenset(
+    {
+        "active",
+        "available",
+        "bond",
+        "call",
+        "calls",
+        "channel",
+        "client",
+        "clients",
+        "connected",
+        "count",
+        "deep",
+        "device",
+        "devices",
+        "dsl",
+        "empty",
+        "enabled",
+        "energy",
+        "errors",
+        "firewall",
+        "firmware",
+        "frequency",
+        "guest",
+        "hybrid",
+        "internet",
+        "ip",
+        "item",
+        "items",
+        "lan",
+        "lte",
+        "matrix",
+        "mesh",
+        "mobile",
+        "mode",
+        "nas",
+        "node",
+        "nodes",
+        "office",
+        "online",
+        "packets",
+        "pbx",
+        "phone",
+        "phonebook",
+        "port",
+        "ports",
+        "qos",
+        "receiver",
+        "result",
+        "router",
+        "rows",
+        "safe",
+        "service",
+        "services",
+        "speedport",
+        "state",
+        "status",
+        "system",
+        "telephony",
+        "type",
+        "upnp",
+        "usb",
+        "values",
+        "version",
+        "vpn",
+        "wan",
+        "wide",
+        "wifi",
+        "wireguard",
+        "wlan",
+        "wps",
+    }
+)
+_OBSERVED_SCHEMA_SAFE_FIELDS: Final = _OBSERVED_SCHEMA_SAFE_SINGLE_FIELDS | frozenset(
+    {
+        "addipclient",
+        "addipnumber",
+        "addipphoneprovider",
+        "addrepeater",
+        "adddnsexcept",
+        "addmdevice",
+        "addmpriodevice",
+        "addmwlan5device",
+        "addmwlandevice",
+        "addnasdevice",
+        "addnasmediareplay",
+        "addpwlinedevice",
+        "addvpn",
+        "addwgdevice",
+        "auto_external_modem",
+        "auto_update",
+        "br_active",
+        "dns_rebind_active",
+        "dect_detect_status",
+        "dect_real_count",
+        "dsl_errnr",
+        "dsl_link_status",
+        "dyndns_active",
+        "dyndns_domain",
+        "dyndns_updport",
+        "dyndns_updprot",
+        "dyndns_updsrv",
+        "easy_support_deactive",
+        "ex5g_eid",
+        "ex5g_freq_5g",
+        "ex5g_freq_lte",
+        "ex5g_fw_version",
+        "ex5g_fwupd_avail",
+        "ex5g_fwupd_planned",
+        "ex5g_fwupd_time",
+        "ex5g_fwupd_version",
+        "ex5g_led_mode",
+        "ex5g_model_name",
+        "ex5g_signal_5g",
+        "ex5g_signal_lte",
+        "extwan_status",
+        "extwan_typ",
+        "fail_reason",
+        "hdvoice",
+        "inet_errnr",
+        "inet_isp",
+        "internet_extrule_active",
+        "internet_timerule_active",
+        "ipclient_status",
+        "isp_selection",
+        "lan1_device",
+        "lan2_device",
+        "lan3_device",
+        "lan4_device",
+        "lan4_link_status",
+        "lan_dhcp_validtime",
+        "lan_ip_v6",
+        "lan_ip_v6_range",
+        "lan_ip_v6_used",
+        "lte_status",
+        "mdevice_connected",
+        "mdevice_gua_ipv6",
+        "mdevice_hasui",
+        "mdevice_standards",
+        "mdevice_type",
+        "mdevice_ula_ipv6",
+        "mesh_lan1",
+        "mesh_lan2",
+        "mesh_type",
+        "nas_active",
+        "nas_device_connection",
+        "nas_device_total",
+        "nas_device_type",
+        "nas_device_used",
+        "nas_folder_nur_lesen",
+        "nas_folder_name",
+        "nas_secure",
+        "number_status",
+        "num_entries",
+        "onlinestatus",
+        "privacy_policy",
+        "provis_inet",
+        "provis_voip",
+        "pwline_connect_to",
+        "pwline_downspeed",
+        "pwline_firmware",
+        "pwline_mac",
+        "pwline_manufacturer",
+        "pwline_mode",
+        "pwline_upspeed",
+        "qos_pc",
+        "router_firewall_active",
+        "router_state",
+        "save_fails",
+        "smarthome_status",
+        "source_kind",
+        "use_bonding",
+        "use_https",
+        "use_lte",
+        "use_wlan",
+        "varid",
+        "varvalue",
+        "vpn_status",
+        "wlan0_num",
+        "wlan1_num",
+        "wlan_5ghz_speed_act",
+        "wlan_active",
+        "wlan_band",
+        "wlan_finished",
+        "wlan_guest_active",
+        "wlan_guest_display_key",
+        "wlan_guest_ssid",
+        "wlan_guest_timeleft",
+        "wlan_office_active",
+        "wlan_office_ssid",
+        "wlan_office_wps",
+        "wlan_ssid",
+        "wlan_5ghz_ssid",
+        "wlan_visible",
+        "wlanfinished",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,6 +1009,19 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("dect", "handset"),
                 ),
             ),
+            "dect_status": (
+                _endpoint(
+                    "dect_status",
+                    "data/DECTInfo.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_mobiles.html",
+                    evidence_keys=(
+                        "dect_real_count",
+                        "dect_detect_status",
+                        "pagingstat",
+                    ),
+                ),
+            ),
             "dect_settings": (
                 _endpoint(
                     "dect_settings",
@@ -1004,6 +1270,7 @@ class SpeedportClient:
             for family, candidates in endpoint_candidates.items()
         }
         self._selected_endpoints: dict[str, EndpointCapability] = {}
+        self._observed_feature_schema: dict[str, tuple[tuple[str, str], ...]] = {}
         self._wan_interface: WanInterface | None = None
         self._wan_optional_counter_faults: set[int] = set()
         self._dsl_parameter_names: tuple[str, ...] | None = None
@@ -1037,6 +1304,21 @@ class SpeedportClient:
     ) -> SpeedportError | None:
         """Return the latest typed management gate without logging owner details."""
         return self._last_management_error
+
+    @property
+    def observed_feature_schema(
+        self,
+    ) -> Mapping[str, tuple[Mapping[str, str], ...]]:
+        """Return an immutable value-free snapshot for runtime diagnostics."""
+        return MappingProxyType(
+            {
+                family: tuple(
+                    MappingProxyType({"path": path, "shape": shape})
+                    for path, shape in fields
+                )
+                for family, fields in self._observed_feature_schema.items()
+            }
+        )
 
     async def setup(
         self, *, allow_protected_degraded: bool = False
@@ -1405,11 +1687,39 @@ class SpeedportClient:
         if capability is None:
             msg = f"Router capability not confirmed: {family}"
             raise SpeedportUnsupportedError(msg)
-        return await self.get_json(
+        data = await self.get_json(
             capability.endpoint,
             authenticated=capability.authenticated,
             referer=capability.referer,
         )
+        self.observe_feature_data(family, data)
+        return data
+
+    def observe_feature_data(self, family: str, data: Mapping[str, Any]) -> None:
+        """Record bounded response structure without values or additional I/O."""
+        if family not in self._selected_endpoints:
+            return
+        safe_family = _safe_observed_schema_name(family)
+        if safe_family != family:
+            return
+        if (
+            safe_family not in self._observed_feature_schema
+            and len(self._observed_feature_schema) >= _OBSERVED_SCHEMA_MAX_FAMILIES
+        ):
+            return
+
+        observed = _describe_observed_schema(data)
+        current = self._observed_feature_schema.get(safe_family, ())
+        merged = list(current)
+        known = set(current)
+        for descriptor in observed:
+            if descriptor in known:
+                continue
+            if len(merged) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                break
+            merged.append(descriptor)
+            known.add(descriptor)
+        self._observed_feature_schema[safe_family] = tuple(merged)
 
     async def get_parameter_values(
         self, names: Sequence[str]
@@ -2522,6 +2832,128 @@ def _iter_mapping_keys(value: object) -> tuple[str, ...]:
         for item in value:
             keys.extend(_iter_mapping_keys(item))
     return tuple(keys)
+
+
+def _describe_observed_schema(
+    data: Mapping[Any, Any],
+) -> tuple[tuple[str, str], ...]:
+    """Describe bounded JSON structure while retaining no response values."""
+    descriptors: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(path: str, value: object) -> bool:
+        shape = _observed_schema_shape(value)
+        if shape is None:
+            return False
+        descriptor = (path, shape)
+        if descriptor not in seen:
+            if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                return False
+            descriptors.append(descriptor)
+            seen.add(descriptor)
+        return True
+
+    def visit(value: object, path: str, depth: int) -> None:
+        if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS or not add(path, value):
+            return
+        if depth >= _OBSERVED_SCHEMA_MAX_DEPTH:
+            return
+        if isinstance(value, Mapping):
+            for index, (raw_name, item) in enumerate(value.items()):
+                if index >= _OBSERVED_SCHEMA_MAX_MAPPING_ITEMS:
+                    return
+                if not isinstance(raw_name, str):
+                    continue
+                safe_name = _safe_observed_schema_field_name(raw_name)
+                if safe_name is None:
+                    continue
+                child_path = f"{path}.{safe_name}" if path else safe_name
+                visit(item, child_path, depth + 1)
+                if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                    return
+            return
+        if isinstance(value, list | tuple):
+            item_path = f"{path}[]"
+            for item in value[:_OBSERVED_SCHEMA_MAX_ARRAY_ITEMS]:
+                visit(item, item_path, depth + 1)
+                if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                    return
+
+    for index, (raw_name, value) in enumerate(data.items()):
+        if index >= _OBSERVED_SCHEMA_MAX_MAPPING_ITEMS:
+            break
+        if not isinstance(raw_name, str):
+            continue
+        safe_name = _safe_observed_schema_field_name(raw_name)
+        if safe_name is None:
+            continue
+        visit(value, safe_name, 1)
+        if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+            break
+    return tuple(descriptors)
+
+
+def _safe_observed_schema_name(raw_name: str) -> str | None:
+    """Keep only exact schema-like names; normalize array indexes and reject PII."""
+    if (
+        not raw_name
+        or raw_name != raw_name.strip()
+        or len(raw_name) > _OBSERVED_SCHEMA_MAX_NAME_LENGTH
+        or raw_name != raw_name.casefold()
+        or _OBSERVED_SCHEMA_EMAIL.fullmatch(raw_name)
+        or _OBSERVED_SCHEMA_MAC.fullmatch(raw_name)
+        or _OBSERVED_SCHEMA_SEPARATED_MAC.search(raw_name)
+        or _OBSERVED_SCHEMA_COMPACT_IDENTIFIER.fullmatch(raw_name)
+        or _OBSERVED_SCHEMA_IP_TOKENS.search(raw_name)
+    ):
+        return None
+    try:
+        ipaddress.ip_address(raw_name.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return None
+
+    normalized = _OBSERVED_SCHEMA_ARRAY_INDEX.sub("[]", raw_name)
+    number_check = normalized.replace("[]", "")
+    tokens = frozenset(number_check.split("_"))
+    if (
+        _OBSERVED_SCHEMA_LONG_NUMBER.search(number_check)
+        or _OBSERVED_SCHEMA_DYNAMIC_KEY.fullmatch(number_check)
+        or tokens & _OBSERVED_SCHEMA_BLOCKED_TOKENS
+        or not any(character.isalpha() for character in number_check)
+        or not _OBSERVED_SCHEMA_SAFE_NAME.fullmatch(normalized)
+    ):
+        return None
+    return normalized
+
+
+def _safe_observed_schema_field_name(raw_name: str) -> str | None:
+    """Retain only fixed, non-identifying firmware schema field names."""
+    normalized = _safe_observed_schema_name(raw_name)
+    if normalized is None:
+        return None
+    candidate = normalized.replace("[]", "")
+    return normalized if candidate in _OBSERVED_SCHEMA_SAFE_FIELDS else None
+
+
+def _observed_schema_shape(value: object) -> str | None:
+    """Return only JSON shape metadata, never a scalar value."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list | tuple):
+        return "array"
+    return None
 
 
 def _as_int(value: object) -> int | None:

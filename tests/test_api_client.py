@@ -205,6 +205,274 @@ def test_client_has_no_public_arbitrary_json_write_boundary() -> None:
 
 
 @pytest.mark.asyncio
+async def test_feature_read_records_value_free_schema_without_extra_request() -> None:
+    """One successful feature GET records only its already-returned structure."""
+    session = _FakeSession()
+    session.add(
+        encode_payload(
+            '{"wlan_active":"private-value","rows":['
+            '{"enabled":true,"channel":11}],"empty":[],"matrix":[[true]]}'
+        )
+    )
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["wifi"] = EndpointCapability(  # noqa: SLF001
+        "wifi",
+        "data/WLANBasic.json",
+        referer="html/content/network/wlan_basic.html",
+    )
+
+    result = await client.get_feature_data("wifi")
+
+    assert result == {
+        "wlan_active": "private-value",
+        "rows": [{"enabled": True, "channel": 11}],
+        "empty": [],
+        "matrix": [[True]],
+    }
+    assert len(session.requests) == 1
+    assert session.responses == []
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in client.observed_feature_schema["wifi"]
+    } == {
+        ("wlan_active", "string"),
+        ("rows", "array"),
+        ("rows[]", "object"),
+        ("rows[].enabled", "boolean"),
+        ("rows[].channel", "integer"),
+        ("empty", "array"),
+        ("matrix", "array"),
+        ("matrix[]", "array"),
+        ("matrix[][]", "boolean"),
+    }
+    rendered = repr(client.observed_feature_schema)
+    assert "speedport.ip" not in rendered
+    assert "data/WLANBasic.json" not in rendered
+    assert "html/content/network/wlan_basic.html" not in rendered
+
+
+def test_observed_schema_rejects_identifiers_values_and_is_immutable() -> None:
+    """PII-like names and all scalar values stay outside immutable snapshots."""
+    session = _FakeSession()
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["wifi"] = EndpointCapability(  # noqa: SLF001
+        "wifi", "data/WLANBasic.json"
+    )
+    client.observe_feature_data(
+        "wifi",
+        {
+            "wlan_active": "private-credential-value",
+            "rows": [
+                {
+                    "state": True,
+                    "item[37]": None,
+                    "aa:bb:cc:dd:ee:ff": "mac-key",
+                    "aa_bb_cc_dd_ee_ff": "separated-mac-key",
+                    "aabbccddeeff": "compact-mac-key",
+                    "192.0.2.12": "ip-key",
+                    "host_192_0_2_12": "embedded-ip-key",
+                    "private@example.test": "email-key",
+                    "row_1": "short-row-id",
+                    "device_aabbccdd": "hex-device-id",
+                    "row_123456789": "long-number-key",
+                    "source_row_id": "row-id-field",
+                    "auth_token": "credential-field",
+                    "endpoint": "data/private.json",
+                    "router_password": "password-field",
+                    "raw_payload": "raw-field",
+                    "aarik": "opaque-user-label",
+                    "livingroom": "opaque-device-label",
+                    "living_room": "underscore-device-label",
+                    "wifi_alice": "prefixed-user-label",
+                    "MixedCase": "dynamic-label",
+                    "user-label": "dynamic-label",
+                }
+            ],
+            "values": ["one", "two", "three"],
+        },
+    )
+
+    snapshot = client.observed_feature_schema
+    rendered = repr(snapshot)
+    paths = {descriptor["path"] for descriptor in snapshot["wifi"]}
+
+    assert "wlan_active" in paths
+    assert "rows[].state" in paths
+    assert "rows[].item[]" in paths
+    assert "values[]" in paths
+    for forbidden in (
+        "private-credential-value",
+        "aa:bb:cc:dd:ee:ff",
+        "aa_bb_cc_dd_ee_ff",
+        "aabbccddeeff",
+        "192.0.2.12",
+        "host_192_0_2_12",
+        "private@example.test",
+        "row_1",
+        "device_aabbccdd",
+        "123456789",
+        "source_row_id",
+        "auth_token",
+        "endpoint",
+        "router_password",
+        "raw_payload",
+        "data/private.json",
+        "aarik",
+        "livingroom",
+        "living_room",
+        "wifi_alice",
+        "MixedCase",
+        "user-label",
+        "one",
+        "two",
+        "three",
+        "[37]",
+    ):
+        assert forbidden not in rendered
+    assert session.requests == []
+
+    with pytest.raises(TypeError):
+        snapshot["wifi"] = ()  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot["wifi"][0]["path"] = "changed"  # type: ignore[index]
+
+    client.observe_feature_data("wifi", {"wlan_visible": False})
+    assert "wlan_visible" not in {descriptor["path"] for descriptor in snapshot["wifi"]}
+    assert "wlan_visible" in {
+        descriptor["path"] for descriptor in client.observed_feature_schema["wifi"]
+    }
+
+
+def test_policy_schema_records_only_fixed_value_free_contract_names() -> None:
+    """DNS/QoS structure is discoverable without domains or client identity."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["dns_rebind"] = EndpointCapability(  # noqa: SLF001
+        "dns_rebind", "data/DNSExcept.json"
+    )
+    client._selected_endpoints["qos"] = EndpointCapability(  # noqa: SLF001
+        "qos", "data/QOS.json"
+    )
+
+    client.observe_feature_data(
+        "dns_rebind",
+        {"adddnsexcept": [{"hostname": "private-service.example"}]},
+    )
+    client.observe_feature_data(
+        "qos",
+        {
+            "qos_pc[1]": "1",
+            "hostname": "private-client",
+            "mac": "aa:bb:cc:dd:ee:ff",
+        },
+    )
+
+    dns_paths = {
+        descriptor["path"]
+        for descriptor in client.observed_feature_schema["dns_rebind"]
+    }
+    qos_paths = {
+        descriptor["path"] for descriptor in client.observed_feature_schema["qos"]
+    }
+    assert dns_paths == {"adddnsexcept", "adddnsexcept[]"}
+    assert qos_paths == {"qos_pc[]"}
+    rendered = repr(client.observed_feature_schema)
+    for private_value in (
+        "private-service.example",
+        "private-client",
+        "aa:bb:cc:dd:ee:ff",
+        "hostname",
+        "mac",
+    ):
+        assert private_value not in rendered
+
+
+def test_telephony_schema_keeps_only_safe_inventory_shapes() -> None:
+    """Repeater membership and counts are visible without telephony identity."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["dect"] = EndpointCapability(  # noqa: SLF001
+        "dect", "data/DECTStation.json"
+    )
+
+    client.observe_feature_data(
+        "dect",
+        {
+            "addrepeater": [{"id": "private-repeater-id", "name": "Private"}],
+            "num_entries": 42,
+            "dect_pin": "1234",
+            "phone_number": "+49 30 123456",
+        },
+    )
+
+    assert {
+        descriptor["path"] for descriptor in client.observed_feature_schema["dect"]
+    } == {"addrepeater", "addrepeater[]", "num_entries"}
+    rendered = repr(client.observed_feature_schema)
+    for forbidden in (
+        "private-repeater-id",
+        "Private",
+        "dect_pin",
+        "phone_number",
+        "+49 30 123456",
+    ):
+        assert forbidden not in rendered
+
+
+def test_observed_schema_inventory_is_strictly_bounded() -> None:
+    """Depth, field count, array samples and key length have hard limits."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["wifi"] = EndpointCapability(  # noqa: SLF001
+        "wifi", "data/WLANBasic.json"
+    )
+    deep: dict[str, Any] = {}
+    cursor = deep
+    for _index in range(10):
+        child: dict[str, Any] = {}
+        cursor["rows"] = child
+        cursor = child
+    sampled_fields = (
+        "active",
+        "available",
+        "bond",
+        "call",
+        "channel",
+        "connected",
+        "count",
+        "enabled",
+        "energy",
+    )
+    client.observe_feature_data(
+        "wifi",
+        {
+            "deep": deep,
+            "rows": [{field: True} for field in sampled_fields],
+            "wide": {field: index for index, field in enumerate(sampled_fields)},
+            f"field_{'x' * 65}": True,
+        },
+    )
+
+    fields = client.observed_feature_schema["wifi"]
+    paths = {descriptor["path"] for descriptor in fields}
+
+    assert len(fields) <= 128
+    assert all(path.count(".") + path.count("[]") + 1 <= 6 for path in paths)
+    assert "rows[].enabled" in paths
+    assert "rows[].energy" not in paths
+    assert not any("x" * 65 in path for path in paths)
+
+    client._selected_endpoints["mesh"] = EndpointCapability(  # noqa: SLF001
+        "mesh", "data/Mesh.json"
+    )
+    client.observe_feature_data(
+        "mesh",
+        {
+            **{f"unsafe-label-{index}": True for index in range(300)},
+            "late_field": True,
+        },
+    )
+    assert client.observed_feature_schema["mesh"] == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "base_kwargs"),
     [
@@ -1735,6 +2003,7 @@ def test_detail_endpoint_families_poll_beyond_summary_evidence() -> None:
         == "data/DeviceList.json"
     )
     assert DEFAULT_FEATURE_CANDIDATES["dect"][0].endpoint == "data/DECTStation.json"
+    assert DEFAULT_FEATURE_CANDIDATES["dect_status"][0].endpoint == "data/DECTInfo.json"
     assert (
         DEFAULT_FEATURE_CANDIDATES["dect_repeater"][0].endpoint
         == "data/DECTRepeater.json"

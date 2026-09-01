@@ -62,6 +62,7 @@ NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
         "telephony",
         "calls",
         "active_calls",
+        "dect_status",
         "ip",
         "wps",
     }
@@ -90,6 +91,7 @@ _FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "calls": ("telephony", "calls"),
         "connection_privacy": ("internet", "privacy"),
         "dect": ("dect",),
+        "dect_status": ("dect", "status"),
         "dect_repeater": ("dect", "repeaters"),
         "dns_rebind": ("security", "dns_rebind"),
         "easy_support": ("system", "easy_support"),
@@ -238,6 +240,7 @@ class SpeedportHub:
         self._last_successful_update: datetime | None = None
         self._family_data: dict[str, dict[str, Any]] = {}
         self._public_status_data: dict[str, Any] = {}
+        self._settings_write_blocked_latch: bool | None = None
         self._management_state = "unknown"
         self._management_owner: str | None = None
         self._management_retry_after: int | None = None
@@ -338,6 +341,7 @@ class SpeedportHub:
         return (
             self._management_state == "available"
             and self._monotonic_time() >= self._protected_retry_at
+            and self._settings_write_blocked_latch is not True
         )
 
     async def async_setup(self) -> None:
@@ -1264,6 +1268,7 @@ class SpeedportHub:
                     authenticated_succeeded |= authenticated
                     for family in endpoint_families:
                         self._endpoint_errors.pop(family, None)
+                        self.client.observe_feature_data(family, value)
                         normalized = normalize_feature_payload(family, value)
                         previous = self._family_data.get(family)
                         if previous is not None:
@@ -1528,11 +1533,15 @@ class SpeedportHub:
     def diagnostics(self) -> dict[str, Any]:
         """Return plain diagnostic data; diagnostics module performs redaction."""
         monotonic_now = self._monotonic_time()
+        observed_schema: object = self.client.observed_feature_schema
+        if not isinstance(observed_schema, Mapping):
+            observed_schema = MappingProxyType({})
         return {
             "router": _normalise_router_info(self._router_info),
             "capabilities": sorted(self._capabilities),
             "capability_report": _thaw(self._capability_report),
             "data": _thaw(self._data),
+            "observed_feature_schema": _thaw(observed_schema),
             "endpoint_errors": dict(self.endpoint_errors),
             "telemetry": {
                 "public_status": {
@@ -1608,6 +1617,11 @@ class SpeedportHub:
 
     def _merge_data(self, partial: Mapping[str, Any]) -> tuple[StateTransition, ...]:
         """Deep-merge normalized data and collect meaningful state transitions."""
+        system = partial.get("system")
+        if isinstance(system, Mapping):
+            write_blocked = system.get("settings_write_blocked", _MISSING)
+            if isinstance(write_blocked, bool):
+                self._settings_write_blocked_latch = write_blocked
         previous_values = dict(self._transition_values)
         self._mutable_data = _deep_merge_dicts(self._mutable_data, _thaw(partial))
         self._data = cast("Mapping[str, Any]", _freeze(self._mutable_data))

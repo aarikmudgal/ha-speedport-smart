@@ -53,10 +53,37 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
                     "id": "rule-id",
                     "name": "HTTPS",
                     "active": True,
+                    "target": "Web server",
+                    "tcp_mappings": "443 -> 443",
+                    "udp_mappings": "443 -> 443",
                     "_identity_fingerprint": "rule-fingerprint",
                     "payload": {"active": "1"},
                 }
             ]
+        },
+        "security": {
+            "port_block_rules": [
+                {
+                    "rule_group": "extended",
+                    "id": "block-rule-1",
+                    "active": True,
+                    "tcp_ports": "80,443",
+                    "udp_ports": "53",
+                    "client_scope": "must-not-leak",
+                }
+            ]
+        },
+        "wifi": {
+            "radio_2_4": {"ssid": "Private 2.4 GHz", "key": "hidden"},
+            "radio_5": {"ssid": "Private 5 GHz", "key": "hidden"},
+            "guest": {"ssid": "Private guest", "key": "hidden"},
+            "office": {"ssid": "Private office", "key": "hidden"},
+        },
+        "ddns": {
+            "domain": "subscriber.example.net",
+            "update_server": "updates.example.net",
+            "username": "hidden-user",
+            "password": "hidden-password",
         },
         "vpn": {
             "peers": [
@@ -68,7 +95,10 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
             ]
         },
         "telephony": {"numbers": [{"name": "Line 1", "registered": True}]},
-        "dect": {"handsets": [{"name": "Handset", "battery_percent": 80}]},
+        "dect": {
+            "handsets": [{"name": "Handset", "battery_percent": 80}],
+            "repeaters": [{"id": "repeater-1", "registered": True}],
+        },
         "pbx": {"ip_phones": [{"name": "Desk phone", "registered": True}]},
         "usb": {"items": [{"name": "Storage", "total_bytes": 1024}]},
         "receiver": {"items": [{"name": "5G receiver", "rsrp_dbm": -84.5}]},
@@ -84,12 +114,19 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
         "clients",
         "mesh_nodes",
         "port_forward_rules",
+        "port_block_rules",
         "vpn_peers",
         "telephone_lines",
         "dect_handsets",
+        "dect_repeaters",
         "ip_phones",
         "usb_devices",
         "receivers",
+        "ddns_identity",
+        "wifi_2_4_identity",
+        "wifi_5_identity",
+        "wifi_guest_identity",
+        "wifi_office_identity",
     )
     assert sections["clients"]["rows"] == [
         {
@@ -103,10 +140,40 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
     assert sections["mesh_nodes"]["rows"] == [
         {"name": "Mesh repeater", "connected": True, "role": "agent"}
     ]
-    assert sections["port_forward_rules"]["rows"] == [{"name": "HTTPS", "active": True}]
+    assert sections["port_forward_rules"]["rows"] == [
+        {
+            "name": "HTTPS",
+            "active": True,
+            "target": "Web server",
+            "tcp_mappings": "443 -> 443",
+            "udp_mappings": "443 -> 443",
+        }
+    ]
+    assert sections["port_block_rules"]["rows"] == [
+        {
+            "rule_group": "extended",
+            "id": "block-rule-1",
+            "active": True,
+            "tcp_ports": "80,443",
+            "udp_ports": "53",
+        }
+    ]
     assert sections["vpn_peers"]["rows"] == [
         {"connected": False, "last_handshake": observed_at.isoformat()}
     ]
+    assert sections["dect_repeaters"]["rows"] == [
+        {"id": "repeater-1", "registered": True}
+    ]
+    assert sections["ddns_identity"]["rows"] == [
+        {
+            "domain": "subscriber.example.net",
+            "update_server": "updates.example.net",
+        }
+    ]
+    assert sections["wifi_2_4_identity"]["rows"] == [{"ssid": "Private 2.4 GHz"}]
+    assert sections["wifi_5_identity"]["rows"] == [{"ssid": "Private 5 GHz"}]
+    assert sections["wifi_guest_identity"]["rows"] == [{"ssid": "Private guest"}]
+    assert sections["wifi_office_identity"]["rows"] == [{"ssid": "Private office"}]
     serialized = json.dumps(result)
     for forbidden in (
         "internal-client-id",
@@ -115,6 +182,9 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
         "rule-fingerprint",
         "must-not-leak",
         "/data/hidden.json",
+        "hidden-user",
+        "hidden-password",
+        '"key"',
     ):
         assert forbidden not in serialized
 
@@ -176,3 +246,193 @@ def test_admin_read_payload_accepts_recursively_immutable_hub_data() -> None:
 
     assert result["sections"][0]["rows"] == [{"name": "Tablet", "connected": True}]
     assert data["clients"]["items"] == (client,)
+
+
+def test_admin_read_payload_projects_new_management_collections() -> None:
+    """New collections remain fixed, admin-only, and secret-free."""
+    data = {
+        "clients": {
+            "items": [
+                {
+                    "name": "Laptop",
+                    "wifi_standard": "IEEE 802.11ax",
+                    "has_web_ui": True,
+                    "web_ui_port": 443,
+                    "web_ui_scheme": "https",
+                    "ipv6_ula": "fd00::40",
+                    "ipv6_gua": "2001:db8::40",
+                }
+            ]
+        },
+        "vpn": {
+            "peers": [
+                {
+                    "name": "Road warrior",
+                    "enabled": True,
+                    "connected": True,
+                    "vpn_userip": "192.0.2.50",
+                }
+            ]
+        },
+        "security": {
+            "dns_rebind_exceptions": [
+                {
+                    "domain": "private-service.example",
+                    "password": "hidden",
+                }
+            ]
+        },
+        "qos": {
+            "prioritized_clients": [
+                {"slot": 2, "prioritized": True, "hostname": "hidden-host"}
+            ]
+        },
+        "telephony": {
+            "providers": [
+                {"id": "provider-1", "provider_code": 99, "password": "hidden"}
+            ],
+            "numbers": [
+                {
+                    "id": "line-1",
+                    "status": "warning",
+                    "provider_code": 99,
+                    "error_code": "403",
+                    "error_reason": "registration rejected",
+                    "ip_number": "+49 30 123456",
+                }
+            ],
+        },
+        "pbx": {
+            "clients": [
+                {
+                    "id": "pbx-1",
+                    "status": "registered",
+                    "name": "Desk phone",
+                    "ipv4": "192.0.2.20",
+                    "mac": "aa:bb:cc:dd:ee:ff",
+                    "password": "hidden",
+                }
+            ]
+        },
+        "usb": {
+            "storage_items": [
+                {
+                    "name": "Backup SSD",
+                    "storage_type": "NAS",
+                    "connection": "USB",
+                    "total_bytes": 4096,
+                    "used_bytes": 1024,
+                    "free_bytes": 3072,
+                    "serial": "hidden-serial",
+                }
+            ],
+            "shares": [
+                {
+                    "name": "Backup",
+                    "path": "/mnt/backup",
+                    "enabled": True,
+                    "read_only": True,
+                    "secure": True,
+                    "username": "hidden-user",
+                }
+            ],
+        },
+        "powerline": {
+            "nodes": [
+                {
+                    "id": "powerline-1",
+                    "name": "Living room",
+                    "parent": "aa:bb:cc:dd:ee:ff",
+                    "manufacturer": "Devolo",
+                    "mac": "aa:bb:cc:dd:ee:ff",
+                    "firmware": "1.2.3",
+                    "mode": "mesh",
+                    "download_link_speed_bps": 750_000_000,
+                    "upload_link_speed_bps": 250_000_000,
+                    "management_url": "http://192.0.2.30",
+                }
+            ]
+        },
+    }
+
+    result = admin_read_payload(data, entry_id="entry-1")
+    sections = {section["id"]: section["rows"] for section in result["sections"]}
+
+    assert sections["clients"] == [
+        {
+            "name": "Laptop",
+            "wifi_standard": "IEEE 802.11ax",
+            "has_web_ui": True,
+            "web_ui_port": 443,
+            "web_ui_scheme": "https",
+            "ipv6_ula": "fd00::40",
+            "ipv6_gua": "2001:db8::40",
+        }
+    ]
+    assert sections["vpn_peers"] == [
+        {"name": "Road warrior", "enabled": True, "connected": True}
+    ]
+    assert sections["dns_rebind_exceptions"] == [{"domain": "private-service.example"}]
+    assert sections["qos_prioritized_clients"] == [{"slot": 2, "prioritized": True}]
+    assert sections["telephony_providers"] == [
+        {"id": "provider-1", "provider_code": 99}
+    ]
+    assert sections["telephone_lines"] == [
+        {
+            "id": "line-1",
+            "status": "warning",
+            "provider_code": 99,
+            "error_code": "403",
+        }
+    ]
+    assert sections["pbx_clients"] == [
+        {
+            "id": "pbx-1",
+            "status": "registered",
+            "name": "Desk phone",
+            "ipv4": "192.0.2.20",
+            "mac": "aa:bb:cc:dd:ee:ff",
+        }
+    ]
+    assert sections["storage_devices"] == [
+        {
+            "name": "Backup SSD",
+            "storage_type": "NAS",
+            "connection": "USB",
+            "total_bytes": 4096,
+            "used_bytes": 1024,
+            "free_bytes": 3072,
+        }
+    ]
+    assert sections["nas_shares"] == [
+        {
+            "name": "Backup",
+            "enabled": True,
+            "read_only": True,
+            "secure": True,
+        }
+    ]
+    assert sections["powerline_nodes"] == [
+        {
+            "id": "powerline-1",
+            "name": "Living room",
+            "parent": "aa:bb:cc:dd:ee:ff",
+            "manufacturer": "Devolo",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "firmware": "1.2.3",
+            "mode": "mesh",
+            "download_link_speed_bps": 750_000_000,
+            "upload_link_speed_bps": 250_000_000,
+        }
+    ]
+    serialized = json.dumps(result)
+    for forbidden in (
+        "192.0.2.50",
+        "+49 30 123456",
+        "registration rejected",
+        "hidden-serial",
+        "hidden-user",
+        "/mnt/backup",
+        "http://192.0.2.30",
+    ):
+        assert forbidden not in serialized

@@ -103,17 +103,21 @@ Read-only fields do not imply a matching write. In particular:
   connectivity. Connectivity requires a separate connection field.
 - Client `access_possible` is exposed as read-only Internet-access allowance.
   It is not inverted into an unproven pause state or writable switch.
+- Initial-setup completion, device-password-changed, router HTTPS, and
+  SmartHome linked state are diagnostics only. They do not prove or enable the
+  corresponding setup, password, HTTPS, or activation writes.
 
 | Area | Current read-only coverage |
 | --- | --- |
 | Internet, WAN, DSL, and Hybrid | Connection state, addressing, uptime, DSL metrics, WAN totals, packets, errors, live rate, and utilization |
-| Wi-Fi | Correct global and per-band state, channels, client counts, guest and office state, and Mesh topology |
-| LAN, DHCP, and DNS | Clients, presence, signal, links, DHCP state, leases, LAN ports, and client access allowance when returned |
-| Mesh and Powerline | Topology and node metrics |
-| Telephony and DECT | Registration, lines, calls, handsets, IP phones, and phonebook counts when exposed |
-| USB and NAS | Device state, mount state, capacity, free space, media state, and temperature when exposed |
-| DDNS, VPN, parental controls, and security | DDNS enablement and status; VPN profile enablement, connection, type, and peer state; parental profile state; firewall, rebind-protection, and remote-management state when exposed |
-| System, energy, update, and notifications | Uptime, health, temperature, firmware, and update metadata when exposed |
+| Wi-Fi | Correct global and per-band state, channels, client counts, guest and office state, and Mesh topology; bounded 2.4 GHz, 5 GHz, guest, and office SSIDs in the administrator-only cached view, with keys excluded |
+| LAN and DHCP | Clients, presence, signal, links, DHCP state, leases, pool/lease summaries, IPv4/IPv6 state, aggregate linked ports, per-port LAN 1-4 link and negotiated speed, and client access allowance when returned |
+| NAT, DNS, traffic prioritization, and security | Port-forward counts plus bounded rule name, state, target, and TCP/UDP mapping summaries; port-block state/counts plus bounded rule-group, ID, state, and validated port-list rows, aggregating distinct extended and extra groups without merging colliding IDs; DNS-rebind state/count plus bounded exception-domain rows; traffic-priority count plus exact slot flags without inferred client identity; firewall, remote-management, and router-side HTTPS state when returned |
+| Mesh and Powerline | Mesh topology and node metrics; bounded Powerline ID, name, parent, manufacturer, MAC, firmware, mode, and upload/download link-rate rows in the administrator-only cached view |
+| Telephony and DECT | Registration, provider/line summaries, calls, paging state, handsets, PBX/IP-phone counts and rows, DECT repeater count and bounded membership rows, and phonebook count plus the returned entry-count aggregate when present |
+| USB and NAS | Device state, mount state, aggregate capacity/free space, media/temperature, NAS safe flags, and bounded storage-device/share rows when returned; the private share name/folder identifier can be path-like and remains administrator-only, while users and credentials are excluded |
+| DDNS, VPN, and parental controls | DDNS enablement and status plus bounded domain/update-server identity in the administrator-only cached view; VPN profile enablement, connection, type, peer counts and bounded peer rows; and parental profile state when returned |
+| Setup, SmartHome, system, energy, and update | Initial-setup/password prerequisite flags, SmartHome linked state, operating mode, uptime, health, temperature, device firmware, and update metadata when exposed |
 | Mobile and 5G | Connection, radio type, signal measurements, band, frequency, cell, and receiver state when exposed |
 
 ## Firmware-evidenced but blocked
@@ -168,22 +172,30 @@ Assistant, or cannot be verified safely.
 The native panel already provides a separate **Administration** view. Reviewed
 native entities appear there as ordinary Home Assistant controls, while the
 main **Dashboard** remains a reporting surface. An administrator-only WebSocket
-read method can additionally project bounded, allowlisted fields from the
+read method additionally projects bounded, allowlisted fields from the
 integration's current normalized cache for these collections:
 
 - clients and Mesh nodes
-- existing port-forward rules and VPN peers
-- telephone lines, DECT handsets, and IP phones
-- USB devices and mobile receivers
+- existing port-forward and port-block rules
+- DNS-rebind exception domains and traffic-priority slot flags
+- 2.4 GHz, 5 GHz, guest, and office SSIDs
+- DDNS domain and update-server identity
+- VPN peers
+- telephony providers and lines, DECT handsets and repeaters, IP phones, and
+  PBX clients
+- USB devices, mobile receivers, storage devices, and NAS shares
+- Powerline devices
 
 This cached read method cannot contact the router and cannot execute an action.
-It accepts only a loaded Speedport config-entry ID, returns only fixed scalar
-fields, limits each collection to 256 source rows, and never exposes raw source
-records, internal row identifiers, request details, passwords, keys, or other
-secret material. The frontend requests it only when an administrator opens the
-Administration view, keeps it only in memory, and clears it when access or the
-selected router changes. This read surface is deliberately separate from the
-future mutation contract below.
+It accepts only a loaded Speedport config-entry ID, returns only fixed,
+explicitly allowlisted scalar fields, and limits each collection to 256 source
+rows. A bounded identifier is included only where the reviewed view needs it to
+distinguish otherwise anonymous rows. Raw source records, hidden form/request
+details, passwords, keys, and other secret material are never returned. The
+frontend requests the data only when an administrator opens the Administration
+view, keeps it only in memory, and clears it when access or the selected router
+changes. This read surface is deliberately separate from the future mutation
+contract below.
 
 A structured editor will be added only with its first fully proven operation;
 the integration does not ship an empty generic executor. Native scalar and

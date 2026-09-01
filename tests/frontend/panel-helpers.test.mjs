@@ -42,7 +42,14 @@ test("dashboard fallback hierarchy keeps related router features together", () =
     ["wireless", "wifi_wps_active", "wireless_wps"],
     ["wireless", "wifi_mac_filter_enabled", "wireless_access"],
     ["wireless", "wifi_schedule_enabled", "wireless_schedule"],
+    ["wireless", "wifi_office_clients", "wireless_office"],
     ["telephony", "pbx_enabled", "telephony_pbx"],
+    ["dsl", "dsl_error_code", "dsl_errors"],
+    ["mobile", "mobile_nr_signal", "mobile_signal"],
+    ["mobile", "mobile_lte_signal", "mobile_signal"],
+    ["mobile", "mobile_nr_band", "mobile_radio"],
+    ["mobile", "mobile_lte_band", "mobile_radio"],
+    ["system", "router_https_enabled", "system_security"],
   ];
 
   for (const [section, translationKey, expectedGroup] of cases) {
@@ -67,6 +74,18 @@ test("explicit backend capability groups remain authoritative", () => {
       domain: "sensor",
     }),
     "wireless_radios",
+  );
+});
+
+test("Powerline child entities stay in the LAN hierarchy", () => {
+  assert.equal(
+    capabilityGroupFor({
+      section: "clients",
+      translation_key: "powerline_download_link_speed",
+      child_device: { kind: "powerline_node" },
+      domain: "sensor",
+    }),
+    "clients_lan",
   );
 });
 

@@ -26,6 +26,16 @@ class _CollectionSpec:
     source: str = "protected_json"
 
 
+@dataclass(frozen=True, slots=True)
+class _RecordSpec:
+    """One exact normalized mapping allowed through the admin read API."""
+
+    section_id: str
+    path: tuple[str, ...]
+    fields: tuple[str, ...]
+    source: str = "protected_json"
+
+
 _COMMON_DEVICE_FIELDS: Final = (
     "name",
     "hostname",
@@ -57,9 +67,15 @@ _COLLECTIONS: Final = (
             "configured_reserved_ipv4",
             "reserved_ipv4",
             "ipv6",
+            "ipv6_ula",
+            "ipv6_gua",
             "connected",
             "medium",
             "wifi_generation",
+            "wifi_standard",
+            "has_web_ui",
+            "web_ui_port",
+            "web_ui_scheme",
             "signal_dbm",
             *_TRAFFIC_FIELDS,
             "access_point",
@@ -83,6 +99,7 @@ _COLLECTIONS: Final = (
             "connected",
             "parent",
             "device_type",
+            "medium",
             "ipv4",
             "wifi_enabled",
             *_TRAFFIC_FIELDS,
@@ -94,17 +111,39 @@ _COLLECTIONS: Final = (
             "backhaul",
             "uptime_seconds",
             "linked_lan_port_count",
+            "lan_port_1_speed_bps",
+            "lan_port_2_speed_bps",
         ),
     ),
     _CollectionSpec(
         section_id="port_forward_rules",
         path=("nat", "port_forward_rules"),
-        fields=("name", "active"),
+        fields=("name", "active", "target", "tcp_mappings", "udp_mappings"),
+    ),
+    _CollectionSpec(
+        section_id="port_block_rules",
+        path=("security", "port_block_rules"),
+        fields=("rule_group", "id", "active", "tcp_ports", "udp_ports"),
+    ),
+    _CollectionSpec(
+        section_id="dns_rebind_exceptions",
+        path=("security", "dns_rebind_exceptions"),
+        fields=("domain",),
+    ),
+    _CollectionSpec(
+        section_id="qos_prioritized_clients",
+        path=("qos", "prioritized_clients"),
+        fields=("slot", "prioritized"),
     ),
     _CollectionSpec(
         section_id="vpn_peers",
         path=("vpn", "peers"),
-        fields=("connected", "last_handshake"),
+        fields=("name", "enabled", "connected", "last_handshake"),
+    ),
+    _CollectionSpec(
+        section_id="telephony_providers",
+        path=("telephony", "providers"),
+        fields=("id", "provider_code"),
     ),
     _CollectionSpec(
         section_id="telephone_lines",
@@ -115,6 +154,10 @@ _COLLECTIONS: Final = (
             "enabled",
             "active_call",
             "call_state",
+            "id",
+            "status",
+            "provider_code",
+            "error_code",
         ),
     ),
     _CollectionSpec(
@@ -134,6 +177,11 @@ _COLLECTIONS: Final = (
         ),
     ),
     _CollectionSpec(
+        section_id="dect_repeaters",
+        path=("dect", "repeaters"),
+        fields=("id", "registered"),
+    ),
+    _CollectionSpec(
         section_id="ip_phones",
         path=("pbx", "ip_phones"),
         fields=(
@@ -143,6 +191,11 @@ _COLLECTIONS: Final = (
             "active_call",
             "call_state",
         ),
+    ),
+    _CollectionSpec(
+        section_id="pbx_clients",
+        path=("pbx", "clients"),
+        fields=("id", "status", "name", "ipv4", "mac"),
     ),
     _CollectionSpec(
         section_id="usb_devices",
@@ -178,6 +231,66 @@ _COLLECTIONS: Final = (
             "temperature_celsius",
         ),
     ),
+    _CollectionSpec(
+        section_id="storage_devices",
+        path=("usb", "storage_items"),
+        fields=(
+            "name",
+            "storage_type",
+            "connection",
+            "total_bytes",
+            "used_bytes",
+            "free_bytes",
+        ),
+    ),
+    _CollectionSpec(
+        section_id="nas_shares",
+        path=("usb", "shares"),
+        fields=("name", "enabled", "read_only", "secure"),
+    ),
+    _CollectionSpec(
+        section_id="powerline_nodes",
+        path=("powerline", "nodes"),
+        fields=(
+            "id",
+            "name",
+            "parent",
+            "manufacturer",
+            "mac",
+            "firmware",
+            "mode",
+            "download_link_speed_bps",
+            "upload_link_speed_bps",
+        ),
+    ),
+)
+
+_RECORDS: Final = (
+    _RecordSpec(
+        section_id="ddns_identity",
+        path=("ddns",),
+        fields=("domain", "update_server"),
+    ),
+    _RecordSpec(
+        section_id="wifi_2_4_identity",
+        path=("wifi", "radio_2_4"),
+        fields=("ssid",),
+    ),
+    _RecordSpec(
+        section_id="wifi_5_identity",
+        path=("wifi", "radio_5"),
+        fields=("ssid",),
+    ),
+    _RecordSpec(
+        section_id="wifi_guest_identity",
+        path=("wifi", "guest"),
+        fields=("ssid",),
+    ),
+    _RecordSpec(
+        section_id="wifi_office_identity",
+        path=("wifi", "office"),
+        fields=("ssid",),
+    ),
 )
 
 
@@ -205,6 +318,22 @@ def admin_read_payload(
                 "source": spec.source,
                 "rows": projected_rows,
                 "truncated": len(collection) > MAX_ADMIN_READ_ROWS,
+            }
+        )
+
+    for record_spec in _RECORDS:
+        record = _nested_value(data, record_spec.path)
+        if not isinstance(record, Mapping):
+            continue
+        projected = _project_row(record, record_spec.fields)
+        if not projected:
+            continue
+        sections.append(
+            {
+                "id": record_spec.section_id,
+                "source": record_spec.source,
+                "rows": [projected],
+                "truncated": False,
             }
         )
 

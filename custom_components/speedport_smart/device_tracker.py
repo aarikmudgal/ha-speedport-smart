@@ -148,7 +148,13 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
         item = self._item
         if item is None:
             return None
-        raw = item.get("ipv4") or item.get("ip") or item.get("ipv6")
+        raw = (
+            item.get("ipv4")
+            or item.get("ip")
+            or item.get("ipv6")
+            or item.get("ipv6_gua")
+            or item.get("ipv6_ula")
+        )
         return str(raw) if raw else None
 
     @property
@@ -168,7 +174,14 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
         allowed = (
             "reserved_ipv4",
             "ipv6",
+            "ipv6_ula",
+            "ipv6_gua",
             "medium",
+            "wifi_generation",
+            "wifi_standard",
+            "has_web_ui",
+            "web_ui_port",
+            "web_ui_scheme",
             "signal_dbm",
             "link_speed_bps",
             "access_point",

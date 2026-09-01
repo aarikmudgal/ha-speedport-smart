@@ -289,8 +289,10 @@ def speedport_child_device(
     default_names = {
         "client": "Network client",
         "dect_handset": "DECT handset",
+        "dect_repeater": "DECT repeater",
         "ip_phone": "IP phone",
         "mesh_node": "Mesh node",
+        "powerline_node": "Powerline device",
         "receiver": "5G/LTE receiver",
         "telephone_line": "Telephone line",
         "usb_device": "USB device",

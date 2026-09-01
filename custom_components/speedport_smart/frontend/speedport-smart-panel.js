@@ -195,12 +195,26 @@ export const ADMIN_READ_SECTION_ORDER = Object.freeze([
   "clients",
   "mesh_nodes",
   "port_forward_rules",
+  "port_block_rules",
+  "dns_rebind_exceptions",
+  "qos_prioritized_clients",
   "vpn_peers",
+  "telephony_providers",
   "telephone_lines",
   "dect_handsets",
+  "dect_repeaters",
   "ip_phones",
+  "pbx_clients",
   "usb_devices",
   "receivers",
+  "storage_devices",
+  "nas_shares",
+  "powerline_nodes",
+  "ddns_identity",
+  "wifi_2_4_identity",
+  "wifi_5_identity",
+  "wifi_guest_identity",
+  "wifi_office_identity",
 ]);
 const ADMIN_READ_SECTION_INFO = Object.freeze({
   clients: {
@@ -212,9 +226,15 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "configured_reserved_ipv4",
       "reserved_ipv4",
       "ipv6",
+      "ipv6_ula",
+      "ipv6_gua",
       "connected",
       "medium",
       "wifi_generation",
+      "wifi_standard",
+      "has_web_ui",
+      "web_ui_port",
+      "web_ui_scheme",
       "signal_dbm",
       ...ADMIN_TRAFFIC_FIELDS,
       "access_point",
@@ -238,6 +258,7 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "connected",
       "parent",
       "device_type",
+      "medium",
       "ipv4",
       "wifi_enabled",
       ...ADMIN_TRAFFIC_FIELDS,
@@ -249,17 +270,44 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "backhaul",
       "uptime_seconds",
       "linked_lan_port_count",
+      "lan_port_1_speed_bps",
+      "lan_port_2_speed_bps",
     ],
   },
   port_forward_rules: {
     titleKey: "admin.section.port_forward_rules",
     icon: "mdi:router-network",
-    fields: ["name", "active"],
+    fields: ["name", "active", "target", "tcp_mappings", "udp_mappings"],
+  },
+  port_block_rules: {
+    titleKey: "admin.section.port_block_rules",
+    icon: "mdi:shield-lock-outline",
+    fields: ["rule_group", "id", "active", "tcp_ports", "udp_ports"],
+  },
+  dns_rebind_exceptions: {
+    titleKey: "admin.section.dns_rebind_exceptions",
+    icon: "mdi:dns-outline",
+    fields: ["domain"],
+  },
+  qos_prioritized_clients: {
+    titleKey: "admin.section.qos_prioritized_clients",
+    icon: "mdi:priority-high",
+    fields: ["slot", "prioritized"],
+  },
+  ddns_identity: {
+    titleKey: "admin.section.ddns_identity",
+    icon: "mdi:dns-outline",
+    fields: ["domain", "update_server"],
   },
   vpn_peers: {
     titleKey: "admin.section.vpn_peers",
     icon: "mdi:vpn",
-    fields: ["connected", "last_handshake"],
+    fields: ["name", "enabled", "connected", "last_handshake"],
+  },
+  telephony_providers: {
+    titleKey: "admin.section.telephony_providers",
+    icon: "mdi:phone-cog",
+    fields: ["id", "provider_code"],
   },
   telephone_lines: {
     titleKey: "admin.section.telephone_lines",
@@ -270,6 +318,10 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "enabled",
       "active_call",
       "call_state",
+      "id",
+      "status",
+      "provider_code",
+      "error_code",
     ],
   },
   dect_handsets: {
@@ -288,6 +340,11 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "paging",
     ],
   },
+  dect_repeaters: {
+    titleKey: "admin.section.dect_repeaters",
+    icon: "mdi:access-point-network",
+    fields: ["id", "registered"],
+  },
   ip_phones: {
     titleKey: "admin.section.ip_phones",
     icon: "mdi:deskphone",
@@ -298,6 +355,11 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "active_call",
       "call_state",
     ],
+  },
+  pbx_clients: {
+    titleKey: "admin.section.pbx_clients",
+    icon: "mdi:phone-switch",
+    fields: ["id", "status", "name", "ipv4", "mac"],
   },
   usb_devices: {
     titleKey: "admin.section.usb_devices",
@@ -333,6 +395,58 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "temperature_celsius",
     ],
   },
+  storage_devices: {
+    titleKey: "admin.section.storage_devices",
+    icon: "mdi:harddisk",
+    fields: [
+      "name",
+      "storage_type",
+      "connection",
+      "total_bytes",
+      "used_bytes",
+      "free_bytes",
+    ],
+  },
+  nas_shares: {
+    titleKey: "admin.section.nas_shares",
+    icon: "mdi:folder-network",
+    fields: ["name", "enabled", "read_only", "secure"],
+  },
+  powerline_nodes: {
+    titleKey: "admin.section.powerline_nodes",
+    icon: "mdi:power-plug-outline",
+    fields: [
+      "id",
+      "name",
+      "parent",
+      "manufacturer",
+      "mac",
+      "firmware",
+      "mode",
+      "download_link_speed_bps",
+      "upload_link_speed_bps",
+    ],
+  },
+  wifi_2_4_identity: {
+    titleKey: "admin.section.wifi_2_4_identity",
+    icon: "mdi:wifi",
+    fields: ["ssid"],
+  },
+  wifi_5_identity: {
+    titleKey: "admin.section.wifi_5_identity",
+    icon: "mdi:wifi",
+    fields: ["ssid"],
+  },
+  wifi_guest_identity: {
+    titleKey: "admin.section.wifi_guest_identity",
+    icon: "mdi:wifi-star",
+    fields: ["ssid"],
+  },
+  wifi_office_identity: {
+    titleKey: "admin.section.wifi_office_identity",
+    icon: "mdi:wifi-lock",
+    fields: ["ssid"],
+  },
 });
 export const ADMIN_READ_SECTION_FIELDS = Object.freeze(
   Object.fromEntries(
@@ -351,6 +465,718 @@ export const ADMIN_READ_FIELD_KEYS = Object.freeze([
 ]);
 const MAX_ADMIN_READ_ROWS = 256;
 const MAX_ADMIN_READ_TEXT_LENGTH = 256;
+
+function fixedAdminSubsection({
+  id,
+  icon,
+  entityGroups = [],
+  controls = [],
+  readSections = [],
+  features = [],
+}) {
+  return Object.freeze({
+    id,
+    titleKey: `admin.subsection.${id}`,
+    icon,
+    entityGroups: Object.freeze(entityGroups),
+    controls: Object.freeze(controls),
+    features: Object.freeze(features),
+    readSections: Object.freeze(
+      readSections.map(({ id: sectionId, capabilities = [] }) =>
+        Object.freeze({
+          id: sectionId,
+          capabilities: Object.freeze(capabilities),
+        }),
+      ),
+    ),
+  });
+}
+
+function fixedAdminFeature(
+  id,
+  {
+    contract = "blocked",
+    controls = [],
+    entityGroups = [],
+    readSections = [],
+    capabilities = [],
+    destructive = false,
+  } = {},
+) {
+  return Object.freeze({
+    id,
+    titleKey: `admin.feature.${id}`,
+    contract,
+    controls: Object.freeze(controls),
+    entityGroups: Object.freeze(entityGroups),
+    readSections: Object.freeze(readSections),
+    capabilities: Object.freeze(capabilities),
+    destructive,
+  });
+}
+
+function fixedAdminArea(id, icon, subsections) {
+  return Object.freeze({
+    id,
+    titleKey: `admin.area.${id}`,
+    icon,
+    subsections: Object.freeze(subsections),
+  });
+}
+
+/**
+ * Fixed, reviewed Administration information architecture.
+ *
+ * Entries contain semantic Home Assistant keys only. They never contain router
+ * endpoints, methods, request fields, or payload templates. An entity absent
+ * from this manifest cannot appear as an Administration control.
+ */
+export const ADMIN_IA = Object.freeze([
+  fixedAdminArea("internet", "mdi:web", [
+    fixedAdminSubsection({
+      id: "internet_connection",
+      icon: "mdi:web-check",
+      entityGroups: [
+        "connection_internet",
+        "connection_addressing",
+        "connection_privacy",
+      ],
+      controls: [
+        "button:reconnect_internet",
+        "select:internet_privacy_level_control",
+      ],
+      features: [
+        fixedAdminFeature("internet_reconnect", {
+          contract: "reviewed",
+          controls: ["button:reconnect_internet"],
+          entityGroups: ["connection_internet", "connection_addressing"],
+          capabilities: ["internet"],
+        }),
+        fixedAdminFeature("internet_provider_configuration", {
+          entityGroups: ["connection_internet", "bandwidth_interface"],
+          capabilities: ["internet"],
+        }),
+        fixedAdminFeature("internet_dns_servers", {
+          capabilities: ["internet", "dns"],
+        }),
+        fixedAdminFeature("internet_privacy", {
+          contract: "reviewed",
+          controls: ["select:internet_privacy_level_control"],
+          entityGroups: ["connection_privacy"],
+          capabilities: ["internet_privacy"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "internet_mobile",
+      icon: "mdi:signal-5g",
+      entityGroups: [
+        "mobile_connection",
+        "mobile_radio",
+        "mobile_signal",
+        "mobile_receiver_status",
+        "mobile_receiver_firmware",
+        "mobile_receivers",
+        "system_usb_tethering",
+      ],
+      controls: [
+        "switch:hybrid_bonding",
+        "select:receiver_led_mode_control",
+      ],
+      readSections: [{ id: "receivers", capabilities: ["receiver"] }],
+      features: [
+        fixedAdminFeature("internet_usb_tethering", {
+          entityGroups: ["system_usb_tethering"],
+          capabilities: ["usb_tethering"],
+        }),
+        fixedAdminFeature("internet_hybrid_bonding", {
+          contract: "reviewed",
+          controls: ["switch:hybrid_bonding"],
+          entityGroups: ["mobile_connection", "mobile_tunnel"],
+          capabilities: ["hybrid"],
+        }),
+        fixedAdminFeature("internet_receiver_led", {
+          contract: "reviewed",
+          controls: ["select:receiver_led_mode_control"],
+          entityGroups: ["mobile_receiver_status"],
+          readSections: ["receivers"],
+          capabilities: ["receiver"],
+        }),
+        fixedAdminFeature("internet_receiver_management", {
+          entityGroups: [
+            "mobile_connection",
+            "mobile_radio",
+            "mobile_signal",
+            "mobile_receiver_status",
+            "mobile_receiver_firmware",
+            "mobile_receivers",
+          ],
+          readSections: ["receivers"],
+          capabilities: ["receiver", "mobile"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "internet_parental",
+      icon: "mdi:account-child-outline",
+      entityGroups: ["system_parental"],
+      features: [
+        fixedAdminFeature("internet_parental_controls", {
+          entityGroups: ["system_parental"],
+          capabilities: ["parental"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "internet_forwarding",
+      icon: "mdi:router-network",
+      entityGroups: [
+        "clients_forwarding",
+        "clients_upnp",
+        "system_security_port_block",
+      ],
+      controls: ["switch:port_forward_rule"],
+      readSections: [
+        { id: "port_forward_rules", capabilities: ["nat"] },
+        { id: "port_block_rules", capabilities: ["port_blocking"] },
+      ],
+      features: [
+        fixedAdminFeature("internet_port_forward_toggle", {
+          contract: "reviewed",
+          controls: ["switch:port_forward_rule"],
+          entityGroups: ["clients_forwarding"],
+          readSections: ["port_forward_rules"],
+          capabilities: ["nat"],
+        }),
+        fixedAdminFeature("internet_port_forward_editor", {
+          entityGroups: ["clients_forwarding"],
+          readSections: ["port_forward_rules"],
+          capabilities: ["nat"],
+        }),
+        fixedAdminFeature("internet_port_blocking", {
+          entityGroups: ["system_security_port_block"],
+          readSections: ["port_block_rules"],
+          capabilities: ["port_blocking"],
+        }),
+        fixedAdminFeature("internet_upnp", {
+          entityGroups: ["clients_upnp"],
+          capabilities: ["upnp"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "internet_ddns",
+      icon: "mdi:dns-outline",
+      entityGroups: ["system_ddns"],
+      readSections: [{ id: "ddns_identity", capabilities: ["ddns"] }],
+      features: [
+        fixedAdminFeature("internet_ddns_management", {
+          entityGroups: ["system_ddns"],
+          readSections: ["ddns_identity"],
+          capabilities: ["ddns"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "internet_vpn",
+      icon: "mdi:vpn",
+      entityGroups: ["system_vpn"],
+      readSections: [{ id: "vpn_peers", capabilities: ["vpn"] }],
+      features: [
+        fixedAdminFeature("internet_vpn_management", {
+          entityGroups: ["system_vpn"],
+          readSections: ["vpn_peers"],
+          capabilities: ["vpn"],
+        }),
+      ],
+    }),
+  ]),
+  fixedAdminArea("telephony", "mdi:phone", [
+    fixedAdminSubsection({
+      id: "telephony_numbers",
+      icon: "mdi:phone-classic",
+      entityGroups: [
+        "telephony_registration",
+        "telephony_lines",
+        "telephony_voip",
+      ],
+      readSections: [
+        { id: "telephony_providers", capabilities: ["telephony"] },
+        { id: "telephone_lines", capabilities: ["telephony"] },
+      ],
+      features: [
+        fixedAdminFeature("telephony_provider_registration", {
+          entityGroups: ["telephony_registration", "telephony_lines"],
+          readSections: ["telephony_providers", "telephone_lines"],
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_number_assignment", {
+          entityGroups: ["telephony_registration", "telephony_voip"],
+          readSections: ["telephone_lines"],
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_number_behavior", {
+          entityGroups: ["telephony_registration", "telephony_voip"],
+          capabilities: ["telephony"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "telephony_analog",
+      icon: "mdi:phone-outline",
+      features: [
+        fixedAdminFeature("telephony_analog_sockets", {
+          capabilities: ["telephony", "analog_telephony"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "telephony_dect",
+      icon: "mdi:phone-wireless",
+      entityGroups: ["telephony_dect"],
+      readSections: [
+        { id: "dect_handsets", capabilities: ["dect"] },
+        { id: "dect_repeaters", capabilities: ["dect"] },
+      ],
+      features: [
+        fixedAdminFeature("telephony_dect_base", {
+          entityGroups: ["telephony_dect"],
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_handsets", {
+          entityGroups: ["telephony_dect"],
+          readSections: ["dect_handsets"],
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_repeaters", {
+          entityGroups: ["telephony_dect"],
+          readSections: ["dect_repeaters"],
+          capabilities: ["dect"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "telephony_pbx",
+      icon: "mdi:phone-switch",
+      entityGroups: ["telephony_pbx", "telephony_ip"],
+      readSections: [
+        { id: "ip_phones", capabilities: ["pbx"] },
+        { id: "pbx_clients", capabilities: ["pbx"] },
+      ],
+      features: [
+        fixedAdminFeature("telephony_pbx_management", {
+          entityGroups: ["telephony_pbx", "telephony_ip"],
+          readSections: ["ip_phones", "pbx_clients"],
+          capabilities: ["pbx"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "telephony_calls",
+      icon: "mdi:phone-in-talk",
+      entityGroups: ["telephony_calls"],
+      features: [
+        fixedAdminFeature("telephony_call_lists", {
+          entityGroups: ["telephony_calls"],
+          capabilities: ["telephony", "calls"],
+        }),
+        fixedAdminFeature("telephony_keypad_functions", {
+          contract: "unsupported",
+          capabilities: ["telephony"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "telephony_phonebooks",
+      icon: "mdi:book-open-page-variant",
+      entityGroups: ["telephony_phonebooks"],
+      features: [
+        fixedAdminFeature("telephony_phonebook_management", {
+          entityGroups: ["telephony_phonebooks"],
+          capabilities: ["telephony", "phonebook"],
+        }),
+      ],
+    }),
+  ]),
+  fixedAdminArea("network", "mdi:lan", [
+    fixedAdminSubsection({
+      id: "network_devices",
+      icon: "mdi:devices",
+      entityGroups: ["clients_devices"],
+      controls: ["text:client_name", "switch:client_fixed_dhcp"],
+      readSections: [{ id: "clients", capabilities: ["clients"] }],
+      features: [
+        fixedAdminFeature("network_client_rename", {
+          contract: "reviewed",
+          controls: ["text:client_name"],
+          readSections: ["clients"],
+          capabilities: ["clients"],
+        }),
+        fixedAdminFeature("network_client_fixed_dhcp", {
+          contract: "reviewed",
+          controls: ["switch:client_fixed_dhcp"],
+          readSections: ["clients"],
+          capabilities: ["clients"],
+        }),
+        fixedAdminFeature("network_client_inventory", {
+          entityGroups: ["clients_devices"],
+          readSections: ["clients"],
+          capabilities: ["clients"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_mesh",
+      icon: "mdi:access-point-network",
+      entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
+      readSections: [
+        { id: "mesh_nodes", capabilities: ["mesh"] },
+        { id: "powerline_nodes", capabilities: ["powerline"] },
+      ],
+      features: [
+        fixedAdminFeature("network_mesh_powerline_management", {
+          entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
+          readSections: ["mesh_nodes", "powerline_nodes"],
+          capabilities: ["mesh", "powerline"],
+        }),
+        fixedAdminFeature("network_mesh_maintenance", {
+          entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
+          readSections: ["mesh_nodes"],
+          capabilities: ["mesh"],
+          destructive: true,
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_wifi",
+      icon: "mdi:wifi-cog",
+      entityGroups: [
+        "wireless_2_4",
+        "wireless_5",
+        "wireless_radios",
+        "wireless_schedule",
+        "wireless_general",
+      ],
+      controls: ["switch:wifi"],
+      readSections: [
+        { id: "wifi_2_4_identity", capabilities: ["wifi"] },
+        { id: "wifi_5_identity", capabilities: ["wifi"] },
+      ],
+      features: [
+        fixedAdminFeature("network_wifi_main", {
+          contract: "reviewed",
+          controls: ["switch:wifi"],
+          entityGroups: ["wireless_2_4", "wireless_5", "wireless_general"],
+          capabilities: ["wifi"],
+        }),
+        fixedAdminFeature("network_wifi_radio_settings", {
+          entityGroups: ["wireless_2_4", "wireless_5", "wireless_radios"],
+          readSections: ["wifi_2_4_identity", "wifi_5_identity"],
+          capabilities: ["wifi"],
+        }),
+        fixedAdminFeature("network_wifi_schedule", {
+          entityGroups: ["wireless_schedule"],
+          capabilities: ["wifi"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_wifi_access",
+      icon: "mdi:wifi-lock",
+      entityGroups: [
+        "wireless_guest",
+        "wireless_office",
+        "wireless_access",
+        "wireless_wps",
+      ],
+      controls: [
+        "switch:guest_wifi",
+        "switch:office_wifi",
+        "button:wps",
+      ],
+      readSections: [
+        { id: "wifi_guest_identity", capabilities: ["wifi"] },
+        { id: "wifi_office_identity", capabilities: ["wifi"] },
+      ],
+      features: [
+        fixedAdminFeature("network_wifi_guest", {
+          contract: "reviewed",
+          controls: ["switch:guest_wifi"],
+          entityGroups: ["wireless_guest"],
+          capabilities: ["wifi", "guest_wifi"],
+        }),
+        fixedAdminFeature("network_wifi_office", {
+          contract: "reviewed",
+          controls: ["switch:office_wifi"],
+          entityGroups: ["wireless_office"],
+          capabilities: ["wifi", "office_wifi"],
+        }),
+        fixedAdminFeature("network_wifi_wps_start", {
+          contract: "reviewed",
+          controls: ["button:wps"],
+          entityGroups: ["wireless_wps"],
+          capabilities: ["wifi", "wps"],
+        }),
+        fixedAdminFeature("network_wifi_wps_settings", {
+          entityGroups: ["wireless_wps"],
+          capabilities: ["wifi", "wps"],
+        }),
+        fixedAdminFeature("network_wifi_identity_security", {
+          entityGroups: [
+            "wireless_2_4",
+            "wireless_5",
+            "wireless_guest",
+            "wireless_office",
+          ],
+          readSections: [
+            "wifi_guest_identity",
+            "wifi_office_identity",
+          ],
+          capabilities: ["wifi"],
+        }),
+        fixedAdminFeature("network_wifi_allowlist", {
+          entityGroups: ["wireless_access"],
+          capabilities: ["wifi"],
+        }),
+        fixedAdminFeature("network_wifi_environment_scan", {
+          capabilities: ["wifi"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_lan",
+      icon: "mdi:ip-network",
+      entityGroups: ["clients_lan", "clients_dhcp"],
+      features: [
+        fixedAdminFeature("network_lan_dhcp", {
+          entityGroups: ["clients_lan", "clients_dhcp"],
+          capabilities: ["lan", "clients"],
+        }),
+        fixedAdminFeature("network_lan_port_status", {
+          contract: "read_only",
+          entityGroups: ["clients_lan"],
+          capabilities: ["lan"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_protection",
+      icon: "mdi:shield-lock-outline",
+      entityGroups: ["system_security_dns", "system_security_qos"],
+      readSections: [
+        { id: "dns_rebind_exceptions", capabilities: ["dns_rebind"] },
+        { id: "qos_prioritized_clients", capabilities: ["qos"] },
+      ],
+      features: [
+        fixedAdminFeature("network_traffic_prioritization", {
+          entityGroups: ["system_security_qos"],
+          readSections: ["qos_prioritized_clients"],
+          capabilities: ["qos"],
+        }),
+        fixedAdminFeature("network_dns_rebind", {
+          entityGroups: ["system_security_dns"],
+          readSections: ["dns_rebind_exceptions"],
+          capabilities: ["dns_rebind"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_storage",
+      icon: "mdi:nas",
+      entityGroups: ["system_usb", "system_nas"],
+      readSections: [
+        { id: "usb_devices", capabilities: ["usb"] },
+        { id: "storage_devices", capabilities: ["usb"] },
+        { id: "nas_shares", capabilities: ["usb"] },
+      ],
+      features: [
+        fixedAdminFeature("network_usb_printer_media", {
+          entityGroups: ["system_usb"],
+          readSections: ["usb_devices", "storage_devices"],
+          capabilities: ["usb"],
+        }),
+        fixedAdminFeature("network_nas_shares", {
+          entityGroups: ["system_nas", "system_usb"],
+          readSections: ["nas_shares", "storage_devices"],
+          capabilities: ["usb", "nas"],
+        }),
+        fixedAdminFeature("network_media_folders", {
+          entityGroups: ["system_nas", "system_usb"],
+          capabilities: ["usb", "nas", "media_server"],
+        }),
+      ],
+    }),
+  ]),
+  fixedAdminArea("system", "mdi:router-network", [
+    fixedAdminSubsection({
+      id: "system_setup",
+      icon: "mdi:progress-wrench",
+      entityGroups: ["system_health", "system_security"],
+      features: [
+        fixedAdminFeature("system_initial_setup", {
+          entityGroups: ["system_health", "system_security"],
+          capabilities: ["system"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "system_maintenance",
+      icon: "mdi:power-cycle",
+      controls: ["button:reboot_router"],
+      features: [
+        fixedAdminFeature("system_reboot", {
+          contract: "reviewed",
+          controls: ["button:reboot_router"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_configuration_backup", {
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_configuration_restore", {
+          capabilities: ["system"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_factory_reset", {
+          capabilities: ["system"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_dect_reset", {
+          entityGroups: ["telephony_dect"],
+          capabilities: ["dect"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_dsl_modem_mode", {
+          entityGroups: ["dsl_status", "connection_internet"],
+          capabilities: ["dsl"],
+          destructive: true,
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "system_firmware",
+      icon: "mdi:update",
+      entityGroups: ["system_firmware"],
+      features: [
+        fixedAdminFeature("system_router_mesh_firmware", {
+          entityGroups: ["system_firmware", "wireless_mesh_nodes"],
+          readSections: ["mesh_nodes"],
+          capabilities: ["firmware", "mesh"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_web_ui_version", {
+          contract: "read_only",
+          capabilities: ["system"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "system_security",
+      icon: "mdi:shield-lock-outline",
+      entityGroups: ["system_security"],
+      features: [
+        fixedAdminFeature("system_router_password", {
+          entityGroups: ["system_security"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_router_pass", {
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_https_access", {
+          entityGroups: ["system_security"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_firewall", {
+          contract: "read_only",
+          entityGroups: ["system_security"],
+          capabilities: ["firewall"],
+        }),
+        fixedAdminFeature("system_email_notifications", {
+          capabilities: ["system", "email_notifications"],
+        }),
+        fixedAdminFeature("system_safe_mail_allowlist", {
+          contract: "unsupported",
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "system_information",
+      icon: "mdi:information-outline",
+      entityGroups: ["system_health", "system_services"],
+      features: [
+        fixedAdminFeature("system_front_led_schedule", {
+          entityGroups: ["system_services"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_information_services", {
+          entityGroups: ["system_health", "system_services"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_messages", {
+          entityGroups: ["system_health"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_smarthome", {
+          entityGroups: ["system_services"],
+          capabilities: ["smarthome"],
+        }),
+        fixedAdminFeature("system_external_modem", {
+          entityGroups: [
+            "connection_internet",
+            "mobile_receiver_status",
+            "clients_lan",
+          ],
+          capabilities: ["receiver", "lan"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_front_panel", {
+          contract: "unsupported",
+          entityGroups: ["system_services", "wireless_general"],
+          capabilities: ["system"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "system_support",
+      icon: "mdi:lifebuoy",
+      entityGroups: ["system_support"],
+      features: [
+        fixedAdminFeature("system_cloud_backup", {
+          entityGroups: ["system_support"],
+          capabilities: ["system", "easysupport"],
+        }),
+        fixedAdminFeature("system_device_manager", {
+          contract: "unsupported",
+          entityGroups: ["system_support"],
+          capabilities: ["easysupport"],
+        }),
+      ],
+    }),
+  ]),
+  fixedAdminArea("home_assistant", "mdi:home-assistant", [
+    fixedAdminSubsection({
+      id: "home_assistant_session",
+      icon: "mdi:account-sync-outline",
+      entityGroups: ["management_session"],
+      controls: ["button:retry_protected_data"],
+      features: [
+        fixedAdminFeature("home_assistant_session_recovery", {
+          contract: "reviewed",
+          controls: ["button:retry_protected_data"],
+          entityGroups: ["management_session"],
+          capabilities: ["management"],
+        }),
+      ],
+    }),
+  ]),
+]);
+
+const ADMIN_RISK_ORDER = Object.freeze([
+  "normal",
+  "sensitive",
+  "disruptive",
+  "lockout",
+  "destructive",
+]);
 
 const DECIMAL_DATA_FACTORS = {
   B: 1,
@@ -491,9 +1317,9 @@ export function normalizeAdminReadPayload(payload, entryId) {
   const sections = [];
   for (const section of payload.sections) {
     const sectionId = section?.id;
-    const info = ADMIN_READ_SECTION_INFO[sectionId];
     if (
-      !info ||
+      typeof sectionId !== "string" ||
+      !Object.hasOwn(ADMIN_READ_SECTION_INFO, sectionId) ||
       seen.has(sectionId) ||
       section.source !== "protected_json" ||
       !Array.isArray(section.rows) ||
@@ -501,6 +1327,7 @@ export function normalizeAdminReadPayload(payload, entryId) {
     ) {
       return undefined;
     }
+    const info = ADMIN_READ_SECTION_INFO[sectionId];
     seen.add(sectionId);
 
     const rows = [];
@@ -634,9 +1461,12 @@ export function capabilityGroupFor(meta) {
     return section === "controls" ? "controls_clients" : "clients_devices";
   }
   if (childKind === "mesh_node") return "wireless_mesh_nodes";
+  if (childKind === "powerline_node") return "clients_lan";
   if (childKind === "receiver") return "mobile_receivers";
   if (childKind === "telephone_line") return "telephony_lines";
-  if (childKind === "dect_handset") return "telephony_dect";
+  if (["dect_handset", "dect_repeater"].includes(childKind)) {
+    return "telephony_dect";
+  }
   if (childKind === "ip_phone") return "telephony_ip";
   if (childKind === "usb_device") return "system_usb";
   if (childKind) return `${section}_other_devices`;
@@ -681,7 +1511,8 @@ export function capabilityGroupFor(meta) {
     if (
       key.startsWith("dsl_crc") ||
       key.startsWith("dsl_fec") ||
-      key === "dsl_error_seconds"
+      key === "dsl_error_seconds" ||
+      key === "dsl_error_code"
     ) {
       return "dsl_errors";
     }
@@ -699,14 +1530,18 @@ export function capabilityGroupFor(meta) {
       key.startsWith("mobile_rsrp") ||
       key.startsWith("mobile_rsrq") ||
       key.startsWith("mobile_sinr") ||
-      key.startsWith("mobile_rssi")
+      key.startsWith("mobile_rssi") ||
+      key === "mobile_nr_signal" ||
+      key === "mobile_lte_signal"
     ) {
       return "mobile_signal";
     }
     if (
       key.startsWith("mobile_band") ||
       key.startsWith("mobile_frequency") ||
-      key.startsWith("mobile_cell_id")
+      key.startsWith("mobile_cell_id") ||
+      key === "mobile_nr_band" ||
+      key === "mobile_lte_band"
     ) {
       return "mobile_radio";
     }
@@ -718,7 +1553,9 @@ export function capabilityGroupFor(meta) {
     if (key.startsWith("guest_wifi") || key.startsWith("wifi_guest")) {
       return "wireless_guest";
     }
-    if (key.startsWith("office_wifi")) return "wireless_office";
+    if (key.startsWith("office_wifi") || key.startsWith("wifi_office")) {
+      return "wireless_office";
+    }
     if (key.startsWith("wifi_wps")) return "wireless_wps";
     if (key === "wifi_mac_filter_enabled") return "wireless_access";
     if (key.startsWith("wifi_schedule")) return "wireless_schedule";
@@ -743,6 +1580,7 @@ export function capabilityGroupFor(meta) {
     ) {
       return "telephony_calls";
     }
+    if (key === "phonebook_entries") return "telephony_dect";
     if (key.startsWith("dect_") || key.startsWith("phonebook")) {
       return key.startsWith("phonebook")
         ? "telephony_phonebooks"
@@ -758,7 +1596,8 @@ export function capabilityGroupFor(meta) {
     if (
       key.startsWith("firewall") ||
       key.startsWith("dns_rebind") ||
-      key === "remote_management"
+      key === "remote_management" ||
+      key === "router_https_enabled"
     ) {
       return "system_security";
     }
@@ -811,6 +1650,52 @@ export function capabilityGroupFor(meta) {
     }
   }
   return `${section}_other`;
+}
+
+const ADMIN_CONTROL_PLACEMENT = new Map();
+const ADMIN_ENTITY_GROUP_PLACEMENT = new Map();
+for (const area of ADMIN_IA) {
+  for (const subsection of area.subsections) {
+    const placement = Object.freeze({
+      areaId: area.id,
+      subsectionId: subsection.id,
+    });
+    for (const control of subsection.controls) {
+      ADMIN_CONTROL_PLACEMENT.set(control, placement);
+    }
+    for (const group of subsection.entityGroups) {
+      ADMIN_ENTITY_GROUP_PLACEMENT.set(group, placement);
+    }
+  }
+}
+
+/** Return the reviewed Administration placement for an entity, if any. */
+export function adminPlacementFor(meta) {
+  if (!meta) return undefined;
+  if (meta.control) {
+    return ADMIN_CONTROL_PLACEMENT.get(
+      `${String(meta.domain || "")}:${String(meta.translation_key || "")}`,
+    );
+  }
+  if (meta.child_device?.kind === "powerline_node") {
+    return { areaId: "network", subsectionId: "network_mesh" };
+  }
+  return ADMIN_ENTITY_GROUP_PLACEMENT.get(capabilityGroupFor(meta));
+}
+
+/** Return the exact highest backend-supplied risk represented by controls. */
+export function highestAdminRisk(entities) {
+  let highest;
+  let highestRank = -1;
+  for (const entity of entities || []) {
+    if (!entity?.control) continue;
+    const rank = ADMIN_RISK_ORDER.indexOf(entity.risk);
+    if (rank > highestRank) {
+      highest = entity.risk;
+      highestRank = rank;
+    }
+  }
+  return highest;
 }
 
 function capabilityGroupInfo(groupId, sectionId) {
@@ -1594,6 +2479,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   async _runPendingAction() {
     if (!this._pendingAction || this._actionBusy || !this._hass) return;
     const pending = this._pendingAction;
+    const actionEntryId = this._currentRouter()?.entry_id;
     const meta = this._entityMetadata(pending.entityId);
     const state = this._state(meta);
     if (!meta?.control || this._isControlUnavailable(meta, state)) {
@@ -1715,6 +2601,15 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._noticeKind = "status";
       this._pendingAction = undefined;
       this._focusAfterRenderEntityId = pending.entityId;
+      const activeRouter = this._currentRouter();
+      if (
+        this._activeView === "administration" &&
+        this._hass.user?.is_admin === true &&
+        activeRouter?.entry_id === actionEntryId &&
+        activeRouter.entry_state === "loaded"
+      ) {
+        await this._loadAdminRead(actionEntryId, { force: true });
+      }
     } catch (_error) {
       this._notice = this._t("error.action_failed");
       this._noticeKind = "alert";
@@ -1954,6 +2849,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     return label;
   }
 
+  _renderRiskBadge(risk, { summary = false } = {}) {
+    if (!ADMIN_RISK_ORDER.includes(risk)) return "";
+    const label = this._t(`admin.risk.${risk}`);
+    const ariaLabel = summary
+      ? this._t("admin.risk.highest", { risk: label })
+      : this._t("admin.risk.label", { risk: label });
+    return `<span class="admin-risk-badge risk-${escapeHtml(risk)}" aria-label="${escapeHtml(ariaLabel)}">${escapeHtml(label)}</span>`;
+  }
+
   _renderEntity(
     meta,
     {
@@ -2018,10 +2922,11 @@ export class SpeedportSmartPanel extends HTMLElement {
           : meta.domain === "update"
             ? this._t("action.install")
             : this._t("action.run");
+    const riskBadge = meta.control ? this._renderRiskBadge(meta.risk) : "";
     const control = meta.control
       ? `
         <button
-          class="entity-action ${meta.disruptive ? "disruptive" : ""}"
+          class="entity-action risk-${escapeHtml(ADMIN_RISK_ORDER.includes(meta.risk) ? meta.risk : "unknown")} ${meta.disruptive ? "disruptive" : ""}"
           data-control="${escapeHtml(meta.entity_id)}"
           aria-label="${escapeHtml(this._t("action.for_entity", { action: actionLabel, entity: label }))}"
           ${controlUnavailable ? "disabled" : ""}
@@ -2057,6 +2962,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           </span>
           <span class="availability-dot" aria-hidden="true" title="${escapeHtml(availabilityTitle)}"></span>
         </button>
+        ${riskBadge}
         ${control}
       </article>
     `;
@@ -2337,25 +3243,55 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
-  _renderAdminReadSection(sectionId, section) {
+  _renderAdminReadSection(
+    sectionId,
+    section,
+    { sourceAvailable = true } = {},
+  ) {
     const info = ADMIN_READ_SECTION_INFO[sectionId];
     const observed = Boolean(section);
     const rows = section?.rows || [];
+    const temporarilyUnavailable =
+      sourceAvailable === false || Boolean(this._adminReadError);
+    const loading = !observed && this._adminReadLoading;
     const status = observed
       ? this._t("admin.count.rows", { count: rows.length })
-      : this._t("admin.status.not_observed");
-    const content = !observed
-      ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.not_observed"))}</p>`
-      : rows.length === 0
-        ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.no_details"))}</p>`
-        : `<div class="admin-read-rows">${rows
-            .map((row, index) => this._renderAdminReadRow(sectionId, row, index))
-            .join("")}</div>`;
+      : loading
+        ? this._t("admin.status.loading")
+        : temporarilyUnavailable
+          ? this._t("admin.status.temporarily_unavailable")
+          : this._t("admin.status.not_observed");
+    const content = loading
+      ? `<div class="admin-read-loading" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.loading"))}</div>`
+      : !observed && temporarilyUnavailable
+        ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.temporarily_unavailable"))}</p>`
+        : !observed
+          ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.not_observed"))}</p>`
+          : rows.length === 0
+            ? `<p class="admin-read-empty">${escapeHtml(this._t("admin.empty.no_details"))}</p>`
+            : `<div class="admin-read-rows">${rows
+                .map((row, index) =>
+                  this._renderAdminReadRow(sectionId, row, index),
+                )
+                .join("")}</div>`;
+    const stale =
+      observed && temporarilyUnavailable
+        ? `<p class="admin-read-warning"><ha-icon icon="mdi:cloud-alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.stale"))}</p>`
+        : "";
     const truncated = section?.truncated
       ? `<p class="admin-read-warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.truncated"))}</p>`
       : "";
+    const stateClass = observed
+      ? temporarilyUnavailable
+        ? "observed stale"
+        : "observed"
+      : loading
+        ? "loading"
+        : temporarilyUnavailable
+          ? "temporarily-unavailable"
+          : "not-observed";
     return `
-      <details class="admin-read-section ${observed ? "observed" : "not-observed"}">
+      <details class="admin-read-section ${stateClass}" data-detail-id="admin-read:${escapeHtml(sectionId)}">
         <summary>
           <span class="admin-read-section-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(info.icon)}"></ha-icon></span>
           <span>
@@ -2365,6 +3301,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           <ha-icon class="admin-read-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
         </summary>
         <div class="admin-read-section-content">
+          ${stale}
           ${truncated}
           ${content}
         </div>
@@ -2372,7 +3309,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
-  _renderAdminRead(router) {
+  _renderAdminReadOverview() {
     if (this._hass?.user?.is_admin !== true) {
       return `
         <section class="admin-read-overview restricted">
@@ -2385,22 +3322,12 @@ export class SpeedportSmartPanel extends HTMLElement {
       `;
     }
 
-    const payload =
-      this._adminReadEntry === router.entry_id ? this._adminRead : undefined;
-    const sections = new Map(
-      (payload?.sections || []).map((section) => [section.id, section]),
-    );
     const error = this._adminReadError
       ? `<div class="admin-read-error" role="alert"><ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon><span>${escapeHtml(this._t(this._adminReadError))}</span></div>`
       : "";
-    const content = payload
-      ? `<div class="admin-read-sections">${ADMIN_READ_SECTION_ORDER.map(
-          (sectionId) =>
-            this._renderAdminReadSection(sectionId, sections.get(sectionId)),
-        ).join("")}</div>`
-      : this._adminReadLoading
-        ? `<div class="admin-read-loading" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.loading"))}</div>`
-        : `<div class="admin-read-empty-state"><p>${escapeHtml(this._t("admin.read.unavailable"))}</p></div>`;
+    const loading = this._adminReadLoading
+      ? `<div class="admin-read-loading" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.loading"))}</div>`
+      : "";
 
     return `
       <section class="admin-read-overview">
@@ -2421,18 +3348,233 @@ export class SpeedportSmartPanel extends HTMLElement {
           </button>
         </header>
         ${error}
-        ${content}
+        ${loading}
       </section>
     `;
   }
 
-  _renderAdministration(router, controls, accessSourceStates) {
-    const controlSection = this._renderSection(
-      "controls",
-      controls,
-      router,
-      accessSourceStates,
+  _adminFeaturePresentation(
+    feature,
+    entities,
+    sections,
+    capabilities,
+    sourceAvailable,
+  ) {
+    const controls = entities.filter(
+      (entity) =>
+        entity.control === true &&
+        feature.controls.includes(
+          `${String(entity.domain || "")}:${String(entity.translation_key || "")}`,
+        ),
     );
+    const reports = entities.filter(
+      (entity) =>
+        entity.control !== true &&
+        feature.entityGroups.includes(capabilityGroupFor(entity)),
+    );
+    const observedRead = feature.readSections.some((sectionId) =>
+      sections.has(sectionId),
+    );
+    const capabilityKnown = feature.capabilities.some((capability) =>
+      capabilities.has(capability),
+    );
+
+    if (controls.length > 0) {
+      const available = controls.some(
+        (control) => !this._isControlUnavailable(control, this._state(control)),
+      );
+      return {
+        key: available ? "control_available" : "control_unavailable",
+        icon: available
+          ? "mdi:toggle-switch"
+          : "mdi:toggle-switch-off-outline",
+      };
+    }
+
+    const reportAvailable = reports.some(
+      (report) => entityAvailability(report, this._state(report)) === "available",
+    );
+    if (reportAvailable || (observedRead && sourceAvailable)) {
+      return { key: "read_only", icon: "mdi:eye-outline" };
+    }
+    if (
+      reports.length > 0 ||
+      (observedRead && !sourceAvailable) ||
+      (capabilityKnown && !sourceAvailable)
+    ) {
+      return {
+        key: "temporarily_unavailable",
+        icon: "mdi:cloud-alert-outline",
+      };
+    }
+    return { key: "not_observed", icon: "mdi:help-circle-outline" };
+  }
+
+  _renderAdminFeatureCatalog(
+    features,
+    entities,
+    sections,
+    capabilities,
+    sourceAvailable,
+  ) {
+    if (features.length === 0) return "";
+    const cards = features
+      .map((feature) => {
+        const presentation = this._adminFeaturePresentation(
+          feature,
+          entities,
+          sections,
+          capabilities,
+          sourceAvailable,
+        );
+        const status = this._t(`admin.feature.status.${presentation.key}`);
+        const contract = this._t(`admin.contract.${feature.contract}`);
+        const destructive = feature.destructive
+          ? `<span class="admin-feature-warning"><ha-icon icon="mdi:alert-octagon-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.feature.destructive"))}</span>`
+          : "";
+        return `
+          <article class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.destructive ? "destructive-candidate" : ""}">
+            <span class="admin-feature-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(presentation.icon)}"></ha-icon></span>
+            <div class="admin-feature-copy">
+              <strong>${escapeHtml(this._t(feature.titleKey))}</strong>
+              <div class="admin-feature-badges">
+                <span class="admin-feature-status">${escapeHtml(status)}</span>
+                <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}">${escapeHtml(contract)}</span>
+                ${destructive}
+              </div>
+            </div>
+          </article>
+        `;
+      })
+      .join("");
+    return `
+      <section class="admin-feature-catalog" aria-label="${escapeHtml(this._t("admin.feature.catalog"))}">
+        ${cards}
+      </section>
+    `;
+  }
+
+  _renderAdministrationEntities(entities, accessSourceStates) {
+    const rootEntities = entities.filter((entity) => !entity.child_device);
+    const childGroups = new Map();
+    for (const entity of entities) {
+      const child = entity.child_device;
+      if (!child) continue;
+      if (!childGroups.has(child.device_id)) {
+        childGroups.set(child.device_id, []);
+      }
+      childGroups.get(child.device_id).push(entity);
+    }
+    const rootGrid = rootEntities.length
+      ? `<div class="entity-grid administration-entity-grid">${rootEntities
+          .map((entity) =>
+            this._renderEntity(entity, {
+              capabilityGroup: capabilityGroupFor(entity),
+              sourceState: accessSourceStates[entity.access_source],
+            }),
+          )
+          .join("")}</div>`
+      : "";
+    const childGrid = childGroups.size
+      ? `<div class="child-device-grid">${[...childGroups.values()]
+          .map((group) => this._renderChildDevice(group))
+          .join("")}</div>`
+      : "";
+    return `${rootGrid}${childGrid}`;
+  }
+
+  _renderAdministration(router, controls, reporting, accessSourceStates) {
+    const payload =
+      this._adminReadEntry === router.entry_id ? this._adminRead : undefined;
+    const sections = new Map(
+      (payload?.sections || []).map((section) => [section.id, section]),
+    );
+    const capabilities = new Set([
+      ...(router.capabilities || []).map((capability) =>
+        String(capability).toLowerCase(),
+      ),
+      ...(router.capability_families || []).map((family) =>
+        String(family.name || "").toLowerCase(),
+      ),
+    ]);
+    const sourceAvailable =
+      accessSourceStates.protected_json?.available !== false;
+    const adminReadAvailable = sourceAvailable && !this._adminReadError;
+    const runtimeEntities = [...controls, ...reporting];
+    const administrationEntities = runtimeEntities.filter(
+      (entity) => adminPlacementFor(entity),
+    );
+    const areas = ADMIN_IA.map((area) => {
+      const subsectionMarkup = area.subsections
+        .map((subsection) => {
+          const entities = administrationEntities.filter((entity) => {
+            const placement = adminPlacementFor(entity);
+            return (
+              placement?.areaId === area.id &&
+              placement.subsectionId === subsection.id
+            );
+          });
+          const reads =
+            this._hass?.user?.is_admin === true
+              ? subsection.readSections
+              : [];
+          const risk = highestAdminRisk(entities);
+          const featureCount = subsection.features.length;
+          const readMarkup = reads
+            .map((read) => {
+              return this._renderAdminReadSection(
+                read.id,
+                sections.get(read.id),
+                { sourceAvailable },
+              );
+            })
+            .join("");
+          return `
+            <details class="administration-subsection" data-detail-id="admin-subsection:${escapeHtml(subsection.id)}">
+              <summary>
+                <span class="administration-summary-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(subsection.icon)}"></ha-icon></span>
+                <span class="administration-summary-copy">
+                  <strong>${escapeHtml(this._t(subsection.titleKey))}</strong>
+                  <small>${escapeHtml(this._t(featureCount === 1 ? "admin.count.feature" : "admin.count.features", { count: featureCount }))}</small>
+                </span>
+                ${this._renderRiskBadge(risk, { summary: true })}
+                <ha-icon class="administration-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
+              </summary>
+              <div class="administration-subsection-content">
+                ${this._renderAdminFeatureCatalog(subsection.features, runtimeEntities, sections, capabilities, adminReadAvailable)}
+                ${this._renderAdministrationEntities(entities, accessSourceStates)}
+                ${readMarkup}
+              </div>
+            </details>
+          `;
+        })
+        .filter(Boolean)
+        .join("");
+      const areaEntities = administrationEntities.filter(
+        (entity) => adminPlacementFor(entity)?.areaId === area.id,
+      );
+      const risk = highestAdminRisk(areaEntities);
+      const featureCount = area.subsections.reduce(
+        (count, subsection) => count + subsection.features.length,
+        0,
+      );
+      return `
+        <details class="administration-area" data-detail-id="admin-area:${escapeHtml(area.id)}">
+          <summary>
+            <span class="administration-summary-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(area.icon)}"></ha-icon></span>
+            <span class="administration-summary-copy">
+              <strong>${escapeHtml(this._t(area.titleKey))}</strong>
+              <small>${escapeHtml(this._t(featureCount === 1 ? "admin.count.feature" : "admin.count.features", { count: featureCount }))}</small>
+            </span>
+            ${this._renderRiskBadge(risk, { summary: true })}
+            <ha-icon class="administration-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
+          </summary>
+          <div class="administration-subsections">${subsectionMarkup}</div>
+        </details>
+      `;
+    })
+      .filter(Boolean)
+      .join("");
     return `
       <div class="administration-view">
         <section class="administration-intro">
@@ -2440,11 +3582,10 @@ export class SpeedportSmartPanel extends HTMLElement {
           <h2>${escapeHtml(this._t("administration.title"))}</h2>
           <p>${escapeHtml(this._t("administration.subtitle"))}</p>
         </section>
-        ${
-          controlSection ||
-          `<section class="dashboard-section administration-empty"><h2>${escapeHtml(this._t("administration.no_controls.title"))}</h2><p>${escapeHtml(this._t("administration.no_controls.body"))}</p></section>`
-        }
-        ${this._renderAdminRead(router)}
+        ${this._renderAdminReadOverview()}
+        <section class="administration-areas" aria-label="${escapeHtml(this._t("administration.areas.label"))}">
+          ${areas || `<div class="administration-empty"><h2>${escapeHtml(this._t("administration.no_controls.title"))}</h2><p>${escapeHtml(this._t("administration.no_controls.body"))}</p></div>`}
+        </section>
       </div>
     `;
   }
@@ -2759,7 +3900,12 @@ export class SpeedportSmartPanel extends HTMLElement {
 
     const viewContent =
       this._activeView === "administration"
-        ? this._renderAdministration(router, controls, accessSourceStates)
+        ? this._renderAdministration(
+            router,
+            controls,
+            reporting,
+            accessSourceStates,
+          )
         : this._renderDashboard(router, reporting, accessSourceStates);
     const notice = this._notice
       ? `<div class="notice" role="${this._noticeKind}" aria-live="${this._noticeKind === "alert" ? "assertive" : "polite"}"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._notice)}</div>`
@@ -3174,6 +4320,210 @@ export class SpeedportSmartPanel extends HTMLElement {
           color: var(--sp-muted);
           --mdc-icon-size: 30px;
         }
+        .administration-areas {
+          display: grid;
+          gap: 14px;
+          width: 100%;
+          margin-top: 18px;
+        }
+        .administration-area,
+        .administration-subsection {
+          min-width: 0;
+          border: 1px solid var(--sp-border);
+          background: var(--sp-surface);
+        }
+        .administration-area {
+          border-radius: 20px;
+          box-shadow: 0 10px 32px rgba(0,0,0,.045);
+        }
+        .administration-subsection {
+          border-radius: 15px;
+          background: var(--sp-surface-soft);
+        }
+        .administration-area > summary,
+        .administration-subsection > summary {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto auto;
+          align-items: center;
+          gap: 12px;
+          min-height: 64px;
+          padding: 13px 16px;
+          cursor: pointer;
+          list-style: none;
+        }
+        .administration-area > summary { min-height: 72px; padding-inline: 20px; }
+        .administration-area > summary::-webkit-details-marker,
+        .administration-subsection > summary::-webkit-details-marker {
+          display: none;
+        }
+        .administration-summary-icon {
+          display: grid;
+          place-items: center;
+          width: 40px;
+          height: 40px;
+          color: var(--sp-magenta);
+          border-radius: 12px;
+          background: color-mix(in srgb, var(--sp-magenta) 8%, var(--sp-surface));
+        }
+        .administration-summary-icon ha-icon { --mdc-icon-size: 22px; }
+        .administration-summary-copy { min-width: 0; }
+        .administration-summary-copy strong,
+        .administration-summary-copy small { display: block; }
+        .administration-summary-copy small {
+          margin-top: 3px;
+          color: var(--sp-muted);
+          font-size: 11px;
+        }
+        .administration-chevron {
+          color: var(--sp-muted);
+          transition: transform .16s ease;
+          --mdc-icon-size: 21px;
+        }
+        .administration-area[open] > summary .administration-chevron,
+        .administration-subsection[open] > summary .administration-chevron {
+          transform: rotate(180deg);
+        }
+        .administration-subsections {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          padding: 0 16px 16px;
+          border-top: 1px solid var(--sp-border);
+        }
+        .administration-subsection { margin-top: 14px; }
+        .administration-subsection[open] { grid-column: 1 / -1; }
+        .administration-subsection-content {
+          display: grid;
+          gap: 12px;
+          padding: 0 14px 14px;
+          border-top: 1px solid var(--sp-border);
+        }
+        .admin-feature-catalog {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+          gap: 10px;
+          width: 100%;
+          padding-top: 14px;
+        }
+        .admin-feature-card {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: start;
+          gap: 11px;
+          min-width: 0;
+          padding: 12px;
+          border: 1px solid var(--sp-border);
+          border-radius: 13px;
+          background: var(--sp-surface);
+        }
+        .admin-feature-card.status-control_available {
+          border-color: color-mix(in srgb, var(--sp-success) 40%, var(--sp-border));
+        }
+        .admin-feature-card.status-temporarily_unavailable,
+        .admin-feature-card.status-control_unavailable {
+          border-color: color-mix(in srgb, var(--sp-warning) 42%, var(--sp-border));
+        }
+        .admin-feature-card.status-not_observed { opacity: .76; }
+        .admin-feature-card.destructive-candidate {
+          border-color: color-mix(in srgb, var(--sp-error) 30%, var(--sp-border));
+        }
+        .admin-feature-icon {
+          display: grid;
+          place-items: center;
+          width: 34px;
+          height: 34px;
+          color: var(--sp-muted);
+          border-radius: 10px;
+          background: var(--sp-surface-soft);
+        }
+        .status-control_available .admin-feature-icon { color: var(--sp-success); }
+        .status-temporarily_unavailable .admin-feature-icon,
+        .status-control_unavailable .admin-feature-icon { color: var(--sp-warning); }
+        .admin-feature-icon ha-icon { --mdc-icon-size: 20px; }
+        .admin-feature-copy { min-width: 0; }
+        .admin-feature-copy > strong {
+          display: block;
+          overflow-wrap: anywhere;
+          font-size: 13px;
+          line-height: 1.35;
+        }
+        .admin-feature-badges {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 5px;
+          margin-top: 8px;
+        }
+        .admin-feature-status,
+        .admin-contract-badge,
+        .admin-feature-warning {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          min-height: 22px;
+          padding: 3px 7px;
+          border: 1px solid var(--sp-border);
+          border-radius: 999px;
+          color: var(--sp-muted);
+          background: var(--sp-surface-soft);
+          font-size: 9px;
+          font-weight: 800;
+          line-height: 1.15;
+        }
+        .status-control_available .admin-feature-status,
+        .admin-contract-badge.contract-reviewed {
+          color: var(--sp-success);
+          border-color: color-mix(in srgb, var(--sp-success) 38%, var(--sp-border));
+        }
+        .status-temporarily_unavailable .admin-feature-status,
+        .status-control_unavailable .admin-feature-status,
+        .admin-contract-badge.contract-blocked {
+          color: var(--sp-warning);
+          border-color: color-mix(in srgb, var(--sp-warning) 38%, var(--sp-border));
+        }
+        .admin-feature-warning {
+          color: var(--sp-error);
+          border-color: color-mix(in srgb, var(--sp-error) 38%, var(--sp-border));
+        }
+        .admin-feature-warning ha-icon { --mdc-icon-size: 13px; }
+        .administration-entity-grid { padding-top: 14px; }
+        .administration-subsection-content > .child-device-grid,
+        .administration-subsection-content > .admin-read-section:first-child {
+          margin-top: 14px;
+        }
+        .administration-empty {
+          padding: clamp(18px, 3vw, 28px);
+          border: 1px solid var(--sp-border);
+          border-radius: 20px;
+          background: var(--sp-surface);
+        }
+        .administration-empty h2 { margin: 0 0 5px; font-size: 18px; }
+        .admin-risk-badge {
+          display: inline-flex;
+          align-items: center;
+          width: max-content;
+          max-width: 100%;
+          min-height: 24px;
+          padding: 3px 8px;
+          color: var(--sp-muted);
+          border: 1px solid var(--sp-border);
+          border-radius: 999px;
+          background: var(--sp-surface);
+          font-size: 10px;
+          font-weight: 800;
+          line-height: 1.1;
+        }
+        .admin-risk-badge.risk-normal { color: var(--sp-success); }
+        .admin-risk-badge.risk-sensitive {
+          color: var(--sp-warning);
+          border-color: color-mix(in srgb, var(--sp-warning) 38%, var(--sp-border));
+        }
+        .admin-risk-badge.risk-disruptive,
+        .admin-risk-badge.risk-lockout,
+        .admin-risk-badge.risk-destructive {
+          color: var(--sp-error);
+          border-color: color-mix(in srgb, var(--sp-error) 38%, var(--sp-border));
+        }
+        .entity-card > .admin-risk-badge { margin: 0 12px 9px; }
         .admin-read-error,
         .admin-read-warning {
           display: flex;
@@ -3852,8 +5202,10 @@ export class SpeedportSmartPanel extends HTMLElement {
           .dashboard-section { grid-column: auto; }
           .entity-source-group { flex-basis: 100%; }
           .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .admin-read-sections { grid-template-columns: 1fr; }
+          .admin-read-sections,
+          .administration-subsections { grid-template-columns: 1fr; }
           .admin-read-section[open] { grid-column: auto; }
+          .administration-subsection[open] { grid-column: auto; }
         }
         @media (max-width: 680px) {
           .shell { padding: 12px; }
@@ -3867,6 +5219,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           .access-overview, .dashboard-section, .administration-intro, .admin-read-overview { margin-top: 14px; padding: 16px; border-radius: 17px; }
           .view-tabs { width: 100%; margin-top: 14px; }
           .admin-read-overview > header { align-items: flex-start; }
+          .administration-area > summary { padding-inline: 14px; }
+          .administration-subsections { padding-inline: 10px; padding-bottom: 10px; }
           .section-heading p { display: none; }
           .entity-source-heading { grid-template-columns: auto 1fr; }
           .entity-source-status { grid-column: 2; justify-self: start; }
@@ -3883,6 +5237,19 @@ export class SpeedportSmartPanel extends HTMLElement {
           .confirm-actions button { width: 100%; }
           .view-tabs button { padding-inline: 9px; }
           .admin-read-row dl { grid-template-columns: 1fr; }
+          .administration-area > summary,
+          .administration-subsection > summary {
+            grid-template-columns: auto minmax(0, 1fr) auto;
+          }
+          .administration-area > summary .admin-risk-badge,
+          .administration-subsection > summary .admin-risk-badge {
+            grid-column: 2;
+          }
+          .administration-area > summary .administration-chevron,
+          .administration-subsection > summary .administration-chevron {
+            grid-column: 3;
+            grid-row: 1;
+          }
         }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; }

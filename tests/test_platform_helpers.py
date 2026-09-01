@@ -158,6 +158,18 @@ def test_telephone_line_child_rejects_phone_number_identity() -> None:
     )
 
 
+def test_dect_repeater_child_uses_safe_default_name() -> None:
+    """An exact repeater row creates a stable child without a private label."""
+    device = speedport_child_device(
+        "dect_repeater",
+        {"id": "repeater-1", "registered": True},
+    )
+
+    assert device is not None
+    assert device.identifier == "repeater-1"
+    assert device.name == "DECT repeater"
+
+
 def test_collection_rejects_scalar_root() -> None:
     """Non-collection payload yields no child entities."""
     hub = SimpleNamespace(get=lambda *_: 5)

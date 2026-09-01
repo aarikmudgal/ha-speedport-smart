@@ -48,13 +48,76 @@ _PANEL_ADMIN_READ_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/admin_read"
 
 _PUBLIC_STATUS_KEYS: Final = frozenset(
     {
+        "ddns_connected",
+        "ddns_status",
+        "device_password_changed",
+        "dns_rebind_protection",
         "dsl_connected",
         "dsl_downstream",
+        "dsl_error_code",
         "dsl_upstream",
+        "firewall_enabled",
+        "hybrid_connected",
+        "hybrid_dsl_tunnel",
+        "hybrid_enabled",
+        "hybrid_lte_tunnel",
+        "initial_setup_completed",
+        "internet_bng_configured",
         "internet_connected",
+        "internet_error_code",
+        "internet_privacy_level",
+        "internet_provider_family",
+        "internet_provisioning_code",
         "internet_uptime",
+        "lan_linked_ports",
+        "lan_port_1_connected",
+        "lan_port_1_speed",
+        "lan_port_2_connected",
+        "lan_port_2_speed",
+        "lan_port_3_connected",
+        "lan_port_3_speed",
+        "lan_port_4_connected",
+        "lan_port_4_speed",
+        "mobile_band",
+        "mobile_connected",
+        "mobile_lte_band",
+        "mobile_lte_signal",
+        "mobile_network_type",
+        "mobile_nr_band",
+        "mobile_nr_signal",
+        "mobile_rsrp",
+        "mobile_status_code",
+        "parental_controls_enabled",
+        "port_blocking_enabled",
+        "receiver_esim_supported",
+        "receiver_external_modem_enabled",
+        "receiver_external_wan_link",
+        "receiver_lte_enabled",
+        "receiver_mode",
+        "remote_support_active",
+        "receiver_model",
+        "router_https_enabled",
+        "settings_write_blocked",
+        "smarthome_linked",
+        "easy_support_enabled",
+        "system_operating_mode",
+        "telephony_hd_voice_active",
+        "telephony_manual_configuration_available",
+        "telephony_provider_family",
+        "telephony_provisioning_code",
         "wan_download_capacity",
         "wan_upload_capacity",
+        "wifi_2_4_clients",
+        "wifi_5_channel_width",
+        "wifi_5_clients",
+        "wifi_guest_clients",
+        "wifi_guest_2_4_clients",
+        "wifi_guest_5_clients",
+        "wifi_guest_wifi_4_clients",
+        "wifi_guest_wifi_5_clients",
+        "wifi_guest_wifi_6_clients",
+        "wifi_guest_remaining_time",
+        "wifi_office_clients",
     }
 )
 _WAN_COUNTER_KEYS: Final = frozenset(
@@ -104,15 +167,30 @@ _INTEGRATION_KEYS: Final = frozenset(
 _CHILD_SECTIONS: Final = {
     "client": "clients",
     "dect_handset": "telephony",
+    "dect_repeater": "telephony",
     "ip_phone": "telephony",
     "mesh_node": "wireless",
+    "powerline_node": "clients",
     "receiver": "mobile",
     "telephone_line": "telephony",
     "usb_device": "system",
 }
 _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
+    # Public overview connection diagnostics. The group map is independent of
+    # transport source; `_PUBLIC_STATUS_KEYS` keeps these browser-independent.
+    "internet_bng_configured": "connection_internet",
+    "internet_provisioning_code": "connection_internet",
+    "internet_provider_family": "connection_internet",
+    "internet_error_code": "connection_internet",
     # Internet privacy.
     "internet_privacy_level": "connection_privacy",
+    # Public overview mobile state and receiver identity class.
+    "mobile_connected": "mobile_connection",
+    "mobile_status_code": "mobile_connection",
+    "mobile_nr_signal": "mobile_signal",
+    "mobile_lte_signal": "mobile_signal",
+    "mobile_nr_band": "mobile_radio",
+    "mobile_lte_band": "mobile_radio",
     # Wi-Fi radios, access policy, WPS, and schedule metadata.
     "wifi_band_mode": "wireless_radios",
     "wifi_2_4_encryption_mode": "wireless_2_4",
@@ -139,6 +217,9 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "ddns_status": "system_ddns",
     # External mobile receiver status and firmware.
     "receiver_mode": "mobile_receiver_status",
+    "receiver_model": "mobile_receiver_status",
+    "receiver_esim_supported": "mobile_receiver_status",
+    "receiver_external_wan_link": "mobile_receiver_status",
     "receiver_led_mode": "mobile_receiver_status",
     "receiver_external_modem_enabled": "mobile_receiver_status",
     "receiver_lte_enabled": "mobile_receiver_status",
@@ -162,6 +243,9 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "nas_secure": "system_nas",
     "nas_read_only": "system_nas",
     # Network security configuration summaries.
+    "firewall_enabled": "system_security",
+    "dns_rebind_protection": "system_security",
+    "router_https_enabled": "system_security",
     "dns_rebind_exceptions": "system_security_dns",
     "port_block_rules": "system_security_port_block",
     "active_port_block_rules": "system_security_port_block",
@@ -169,6 +253,7 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "qos_prioritized_clients": "system_security_qos",
     # DECT, PBX, and VoIP summaries.
     "dect_repeaters": "telephony_dect",
+    "phonebook_entries": "telephony_dect",
     "dect_scan_active": "telephony_dect",
     "dect_smart_home_enabled": "telephony_dect",
     "pbx_configured_clients": "telephony_pbx",
@@ -183,6 +268,10 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "telephony_warning_voip_numbers": "telephony_voip",
     "telephony_voip_possible": "telephony_voip",
     # Router firmware and support status.
+    "system_operating_mode": "system_health",
+    "settings_write_blocked": "system_health",
+    "device_password_changed": "system_health",
+    "initial_setup_completed": "system_health",
     "firmware_update_time": "system_firmware",
     "firmware_update_planned": "system_firmware",
     "firmware_automatic_updates": "system_firmware",
@@ -449,7 +538,7 @@ def _entity_panel_data(
         translation_key,
         entity_domain,
         child_kind,
-        is_control=supports_control,
+        is_control=is_control,
     )
     panel_data: dict[str, Any] = {
         "entity_id": entity_id,
@@ -462,7 +551,7 @@ def _entity_panel_data(
         ),
         "section": (
             "controls"
-            if supports_control
+            if is_control
             else _section_for_entity(translation_key, entity_domain, child_kind)
         ),
         "access_source": access_source,
@@ -572,14 +661,14 @@ def _access_source_for_entity(
     key = translation_key.casefold()
     if key in _INTEGRATION_KEYS:
         return "integration"
-    if key in _PROTECTED_READ_ONLY_GROUP_BY_KEY:
-        return "protected_json"
     if is_control:
         return "router_control"
     if child_kind is not None or entity_domain == "device_tracker":
         return "protected_json"
     if key in _PUBLIC_STATUS_KEYS:
         return "public_status"
+    if key in _PROTECTED_READ_ONLY_GROUP_BY_KEY:
+        return "protected_json"
     if key in _WAN_COUNTER_KEYS:
         return "wan_counters"
     if key in _TOTR64_KEYS:

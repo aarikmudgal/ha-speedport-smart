@@ -21,6 +21,15 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Separate Dashboard and Administration views in the native Home Assistant
   panel, with administrator-only, on-demand structured details projected from
   the existing normalized cache without additional router traffic.
+- A responsive Administration catalog covering 72 router-management features
+  across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
+  mobile receivers, and system services. Every entry distinguishes reviewed
+  controls, related read-only evidence, blocked contracts, and unsupported
+  local management.
+- Expanded privacy-bounded read models for LAN/DHCP, Wi-Fi identities and radio
+  configuration, managed clients, Mesh and Powerline nodes, port forwarding
+  and blocking, DNS exceptions, traffic-priority slots, DDNS, telephony, DECT,
+  PBX, USB storage, NAS, and mobile receivers when the firmware returns them.
 
 ### Fixed
 
@@ -28,6 +37,13 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   speeds are no longer presented as live traffic throughput.
 - Unproven router-global parental-time and phonebook-entry entities are withheld
   until their separate read-only request contracts are implemented.
+- Read-authorized users without control permission retain reporting placement
+  for reviewed entity state instead of losing it from both panel views.
+- Client and mobile-receiver child entities now appear in their matching
+  Administration sections, and port-block totals aggregate distinct firmware
+  rule groups consistently without merging colliding rule IDs.
+- Unknown Wi-Fi channel-width codes, malformed DNS exception names, free-form
+  telephony failure text, and phone-like line identifiers now fail closed.
 
 ### Security
 
@@ -42,6 +58,12 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Administrator structured details use fixed field allowlists and collection
   limits, remain browser-memory-only, and are cleared on router, connection, or
   permission changes.
+- SSID and DDNS identity values are excluded from Recorder-backed native
+  entities and exposed only to Home Assistant administrators through the
+  bounded in-memory view. Prototype-inherited section IDs are rejected.
+- A latched firmware write-block state cannot be cleared by transient missing
+  status, while explicit safe readback and existing session backoff continue to
+  gate all mutating requests.
 
 ## [0.2.0] - 2026-09-01
 

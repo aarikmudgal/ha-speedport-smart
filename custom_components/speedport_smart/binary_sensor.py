@@ -42,7 +42,7 @@ class SpeedportBinarySensorEntityDescription(BinarySensorEntityDescription):
     """Describe a normalized Speedport binary sensor."""
 
     data_path: str
-    capability: str
+    capability: str | tuple[str, ...]
     coordinator_group: PollGroup
 
 
@@ -165,6 +165,19 @@ CHILD_BINARY_SENSOR_COLLECTIONS: tuple[SpeedportChildBinarySensorCollection, ...
         ),
     ),
     SpeedportChildBinarySensorCollection(
+        kind="dect_repeater",
+        data_paths=("dect.repeaters",),
+        coordinator_group=SLOW,
+        fields=(
+            SpeedportChildBinarySensorDescription(
+                key="registered",
+                name="Registered",
+                field="registered",
+                device_class=BinarySensorDeviceClass.CONNECTIVITY,
+            ),
+        ),
+    ),
+    SpeedportChildBinarySensorCollection(
         kind="ip_phone",
         data_paths=("pbx.ip_phones",),
         coordinator_group=SLOW,
@@ -214,6 +227,15 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         capability="internet",
         coordinator_group=FAST,
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="internet_bng_configured",
+        translation_key="internet_bng_configured",
+        data_path="internet.bng_configured",
+        capability="internet",
+        coordinator_group=NORMAL,
+        device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
         key="dsl_connected",
@@ -273,6 +295,23 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         capability="receiver",
         coordinator_group=NORMAL,
         device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="receiver_external_wan_link",
+        translation_key="receiver_external_wan_link",
+        data_path="receiver.external_wan_link",
+        capability="receiver",
+        coordinator_group=NORMAL,
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="receiver_esim_supported",
+        translation_key="receiver_esim_supported",
+        data_path="receiver.esim_supported",
+        capability="receiver",
+        coordinator_group=NORMAL,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
@@ -425,6 +464,22 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
+        key="guest_wifi_display_key_enabled",
+        translation_key="guest_wifi_display_key_enabled",
+        data_path="wifi.guest.display_key_enabled",
+        capability="wifi",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="office_wifi_wps_enabled",
+        translation_key="office_wifi_wps_enabled",
+        data_path="wifi.office.wps_enabled",
+        capability="wifi",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
         key="mesh_enabled",
         translation_key="mesh_enabled",
         data_path="mesh.enabled",
@@ -449,6 +504,27 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         coordinator_group=SLOW,
         device_class=BinarySensorDeviceClass.RUNNING,
         entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="dsl_modem_lan_link",
+        translation_key="dsl_modem_lan_link",
+        data_path="dsl.modem_lan_link",
+        capability=("lan", "dsl"),
+        coordinator_group=SLOW,
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    *(
+        SpeedportBinarySensorEntityDescription(
+            key=f"lan_port_{port}_connected",
+            translation_key=f"lan_port_{port}_connected",
+            data_path=f"lan.ports.port_{port}.connected",
+            capability="lan",
+            coordinator_group=NORMAL,
+            device_class=BinarySensorDeviceClass.CONNECTIVITY,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        for port in range(1, 5)
     ),
     SpeedportBinarySensorEntityDescription(
         key="upnp_enabled",
@@ -536,6 +612,23 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
+        key="telephony_hd_voice_active",
+        translation_key="telephony_hd_voice_active",
+        data_path="telephony.hd_voice_active",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="telephony_manual_configuration_available",
+        translation_key="telephony_manual_configuration_available",
+        data_path="telephony.manual_configuration_available",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
         key="dect_enabled",
         translation_key="dect_enabled",
         data_path="dect.enabled",
@@ -554,12 +647,29 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
+        key="dect_paging_active",
+        translation_key="dect_paging_active",
+        data_path="dect.paging_active",
+        capability="dect",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
         key="dect_smart_home_enabled",
         translation_key="dect_smart_home_enabled",
         data_path="dect.smart_home_enabled",
         capability="dect",
         coordinator_group=SLOW,
         device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="smarthome_linked",
+        translation_key="smarthome_linked",
+        data_path="smarthome.linked",
+        capability="system",
+        coordinator_group=NORMAL,
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(
@@ -595,6 +705,15 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         data_path="security.remote_management",
         capability="security",
         coordinator_group=SLOW,
+        device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="router_https_enabled",
+        translation_key="router_https_enabled",
+        data_path="security.router_https_enabled",
+        capability="security",
+        coordinator_group=NORMAL,
         device_class=BinarySensorDeviceClass.RUNNING,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -736,6 +855,31 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         capability="system",
         coordinator_group=SLOW,
         device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="settings_write_blocked",
+        translation_key="settings_write_blocked",
+        data_path="system.settings_write_blocked",
+        capability="system",
+        coordinator_group=NORMAL,
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="device_password_changed",
+        translation_key="device_password_changed",
+        data_path="system.device_password_changed",
+        capability="system",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="initial_setup_completed",
+        translation_key="initial_setup_completed",
+        data_path="system.initial_setup_completed",
+        capability="system",
+        coordinator_group=NORMAL,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportBinarySensorEntityDescription(

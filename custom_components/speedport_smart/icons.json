@@ -70,6 +70,12 @@
       "mesh_linked_lan_ports": {
         "default": "mdi:ethernet"
       },
+      "connection_medium": {
+        "default": "mdi:connection"
+      },
+      "powerline_mode": {
+        "default": "mdi:transmission-tower"
+      },
       "receiver_mode": {
         "default": "mdi:access-point-network"
       },
@@ -117,6 +123,9 @@
       },
       "dect_repeaters": {
         "default": "mdi:phone-wireless"
+      },
+      "phonebook_entries": {
+        "default": "mdi:contacts-outline"
       },
       "pbx_configured_clients": {
         "default": "mdi:phone-switch"

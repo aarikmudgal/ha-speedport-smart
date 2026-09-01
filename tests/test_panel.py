@@ -14,15 +14,99 @@ from homeassistant.exceptions import Unauthorized
 from custom_components.speedport_smart.panel import (
     _PANEL_ADMIN_READ_WS_TYPE,
     _PROTECTED_READ_ONLY_GROUP_BY_KEY,
+    _PUBLIC_STATUS_KEYS,
     _access_source_for_entity,
     _capability_panel_data,
     _entity_panel_data,
     _permission_scoped_access_sources,
+    _section_for_entity,
     websocket_panel_admin_read,
 )
 
+_EXPECTED_PUBLIC_STATUS_KEYS = {
+    "ddns_connected",
+    "ddns_status",
+    "device_password_changed",
+    "dns_rebind_protection",
+    "dsl_connected",
+    "dsl_downstream",
+    "dsl_error_code",
+    "dsl_upstream",
+    "firewall_enabled",
+    "hybrid_connected",
+    "hybrid_dsl_tunnel",
+    "hybrid_enabled",
+    "hybrid_lte_tunnel",
+    "initial_setup_completed",
+    "internet_bng_configured",
+    "internet_connected",
+    "internet_error_code",
+    "internet_privacy_level",
+    "internet_provider_family",
+    "internet_provisioning_code",
+    "internet_uptime",
+    "lan_linked_ports",
+    "lan_port_1_connected",
+    "lan_port_1_speed",
+    "lan_port_2_connected",
+    "lan_port_2_speed",
+    "lan_port_3_connected",
+    "lan_port_3_speed",
+    "lan_port_4_connected",
+    "lan_port_4_speed",
+    "mobile_band",
+    "mobile_connected",
+    "mobile_lte_band",
+    "mobile_lte_signal",
+    "mobile_network_type",
+    "mobile_nr_band",
+    "mobile_nr_signal",
+    "mobile_rsrp",
+    "mobile_status_code",
+    "parental_controls_enabled",
+    "port_blocking_enabled",
+    "receiver_esim_supported",
+    "receiver_external_modem_enabled",
+    "receiver_external_wan_link",
+    "receiver_lte_enabled",
+    "receiver_mode",
+    "remote_support_active",
+    "receiver_model",
+    "router_https_enabled",
+    "settings_write_blocked",
+    "smarthome_linked",
+    "easy_support_enabled",
+    "system_operating_mode",
+    "telephony_hd_voice_active",
+    "telephony_manual_configuration_available",
+    "telephony_provider_family",
+    "telephony_provisioning_code",
+    "wan_download_capacity",
+    "wan_upload_capacity",
+    "wifi_2_4_clients",
+    "wifi_5_channel_width",
+    "wifi_5_clients",
+    "wifi_guest_clients",
+    "wifi_guest_2_4_clients",
+    "wifi_guest_5_clients",
+    "wifi_guest_wifi_4_clients",
+    "wifi_guest_wifi_5_clients",
+    "wifi_guest_wifi_6_clients",
+    "wifi_guest_remaining_time",
+    "wifi_office_clients",
+}
 _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
+    "internet_bng_configured": "connection_internet",
+    "internet_provisioning_code": "connection_internet",
+    "internet_provider_family": "connection_internet",
+    "internet_error_code": "connection_internet",
     "internet_privacy_level": "connection_privacy",
+    "mobile_connected": "mobile_connection",
+    "mobile_status_code": "mobile_connection",
+    "mobile_nr_signal": "mobile_signal",
+    "mobile_lte_signal": "mobile_signal",
+    "mobile_nr_band": "mobile_radio",
+    "mobile_lte_band": "mobile_radio",
     "wifi_band_mode": "wireless_radios",
     "wifi_wps_state_code": "wireless_wps",
     "wifi_2_4_encryption_mode": "wireless_2_4",
@@ -39,6 +123,9 @@ _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
     "ddns_provider": "system_ddns",
     "ddns_status": "system_ddns",
     "receiver_mode": "mobile_receiver_status",
+    "receiver_model": "mobile_receiver_status",
+    "receiver_esim_supported": "mobile_receiver_status",
+    "receiver_external_wan_link": "mobile_receiver_status",
     "receiver_led_mode": "mobile_receiver_status",
     "receiver_firmware_version": "mobile_receiver_firmware",
     "receiver_latest_firmware": "mobile_receiver_firmware",
@@ -49,10 +136,14 @@ _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
     "usb_storage_used": "system_nas",
     "usb_storage_free": "system_nas",
     "dns_rebind_exceptions": "system_security_dns",
+    "firewall_enabled": "system_security",
+    "dns_rebind_protection": "system_security",
+    "router_https_enabled": "system_security",
     "port_block_rules": "system_security_port_block",
     "active_port_block_rules": "system_security_port_block",
     "qos_prioritized_clients": "system_security_qos",
     "dect_repeaters": "telephony_dect",
+    "phonebook_entries": "telephony_dect",
     "pbx_configured_clients": "telephony_pbx",
     "pbx_disconnected_clients": "telephony_pbx",
     "pbx_registered_clients": "telephony_pbx",
@@ -64,6 +155,10 @@ _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
     "telephony_inactive_voip_numbers": "telephony_voip",
     "telephony_warning_voip_numbers": "telephony_voip",
     "firmware_update_time": "system_firmware",
+    "system_operating_mode": "system_health",
+    "settings_write_blocked": "system_health",
+    "device_password_changed": "system_health",
+    "initial_setup_completed": "system_health",
     "wifi_wps_enabled": "wireless_wps",
     "wifi_wps_disabled_by_firmware": "wireless_wps",
     "wifi_allow_all_devices": "wireless_access",
@@ -91,7 +186,32 @@ _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
     "remote_support_active": "system_support",
     "easy_support_enabled": "system_support",
 }
+_PUBLIC_STATUS_PLACEMENT_KEYS = {
+    "device_password_changed",
+    "dns_rebind_protection",
+    "firewall_enabled",
+    "initial_setup_completed",
+    "internet_bng_configured",
+    "internet_error_code",
+    "internet_provider_family",
+    "internet_provisioning_code",
+    "mobile_connected",
+    "mobile_lte_band",
+    "mobile_lte_signal",
+    "mobile_nr_band",
+    "mobile_nr_signal",
+    "mobile_status_code",
+    "receiver_esim_supported",
+    "receiver_external_wan_link",
+    "receiver_model",
+    "router_https_enabled",
+    "settings_write_blocked",
+    "system_operating_mode",
+}
 _PROTECTED_BINARY_KEYS = {
+    "device_password_changed",
+    "dns_rebind_protection",
+    "firewall_enabled",
     "wifi_wps_enabled",
     "wifi_wps_disabled_by_firmware",
     "wifi_allow_all_devices",
@@ -119,7 +239,26 @@ _PROTECTED_BINARY_KEYS = {
     "remote_support_active",
     "easy_support_enabled",
     "lan_ipv6_enabled",
+    "initial_setup_completed",
+    "internet_bng_configured",
+    "mobile_connected",
+    "receiver_esim_supported",
+    "receiver_external_wan_link",
+    "router_https_enabled",
+    "settings_write_blocked",
 }
+
+
+def test_powerline_child_entities_use_the_lan_section() -> None:
+    """Powerline node entities belong to the network/LAN capability area."""
+    assert (
+        _section_for_entity(
+            "powerline_download_link_speed",
+            "sensor",
+            "powerline_node",
+        )
+        == "clients"
+    )
 
 
 def _admin_read_message() -> dict[str, object]:
@@ -317,6 +456,9 @@ def test_panel_text_control_requires_entity_control_permission() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is False
+    assert metadata["section"] == "clients"
+    assert metadata["access_source"] == "protected_json"
+    assert metadata["mutates_router"] is False
     connection.user.permissions.check_entity.assert_called_once_with(
         "text.speedport_client_name", "control"
     )
@@ -382,6 +524,8 @@ def test_select_control_requires_entity_control_permission() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert metadata["control"] is False
+    assert metadata["section"] == "connection"
+    assert metadata["access_source"] == "protected_json"
     assert metadata["mutates_router"] is False
     connection.user.permissions.check_entity.assert_called_once_with(
         entry.entity_id, "control"
@@ -660,7 +804,7 @@ def test_protected_source_is_available_when_both_poll_groups_are_healthy() -> No
 
 
 def test_new_management_entities_are_explicitly_grouped_and_read_only() -> None:
-    """Every proven management summary stays protected data, never a control."""
+    """Every management summary has an explicit group and remains read-only."""
     assert _PROTECTED_READ_ONLY_GROUP_BY_KEY == _EXPECTED_PROTECTED_READ_ONLY_GROUPS
     connection = MagicMock()
 
@@ -676,7 +820,11 @@ def test_new_management_entities_are_explicitly_grouped_and_read_only() -> None:
         metadata = _entity_panel_data(entry, None, connection)
 
         assert metadata["capability_group"] == group
-        assert metadata["access_source"] == "protected_json"
+        assert metadata["access_source"] == (
+            "public_status"
+            if translation_key in _PUBLIC_STATUS_KEYS
+            else "protected_json"
+        )
         assert metadata["control"] is False
         assert metadata["mutates_router"] is False
         assert metadata["disruptive"] is False
@@ -688,6 +836,33 @@ def test_new_management_entities_are_explicitly_grouped_and_read_only() -> None:
             "clients": "clients",
         }.get(group.partition("_")[0], "system")
         assert metadata["section"] == expected_section
+
+
+def test_public_status_source_keys_are_exact_and_win_over_group_metadata() -> None:
+    """Only proven Status.json reads survive a competing browser session."""
+    assert _PUBLIC_STATUS_KEYS == _EXPECTED_PUBLIC_STATUS_KEYS
+
+    for translation_key in _PUBLIC_STATUS_KEYS:
+        assert (
+            _access_source_for_entity(
+                translation_key,
+                "sensor",
+                None,
+                is_control=False,
+            )
+            == "public_status"
+        )
+
+    # DECT paging is normalized from authenticated DECTInfo.json, not Status.json.
+    assert (
+        _access_source_for_entity(
+            "dect_paging_active",
+            "binary_sensor",
+            None,
+            is_control=False,
+        )
+        == "protected_json"
+    )
 
 
 def test_new_management_entities_have_labels_and_icons() -> None:
@@ -702,13 +877,15 @@ def test_new_management_entities_have_labels_and_icons() -> None:
         )
     ]
     icons = json.loads((root / "icons.json").read_text(encoding="utf-8"))["entity"]
-    protected_sensor_keys = (
-        _EXPECTED_PROTECTED_READ_ONLY_GROUPS.keys() - _PROTECTED_BINARY_KEYS
+    asset_keys = (
+        _EXPECTED_PROTECTED_READ_ONLY_GROUPS.keys() - _PUBLIC_STATUS_PLACEMENT_KEYS
     )
+    protected_sensor_keys = asset_keys - _PROTECTED_BINARY_KEYS
+    protected_binary_keys = asset_keys & _PROTECTED_BINARY_KEYS
 
     for catalog in catalogs:
         assert catalog["entity"]["sensor"].keys() >= protected_sensor_keys
-        assert catalog["entity"]["binary_sensor"].keys() >= _PROTECTED_BINARY_KEYS
+        assert catalog["entity"]["binary_sensor"].keys() >= protected_binary_keys
         assert catalog["entity"]["sensor"]["internet_privacy_level"][
             "state"
         ].keys() == {"off", "level_1", "level_2"}
@@ -740,4 +917,4 @@ def test_new_management_entities_have_labels_and_icons() -> None:
         assert "state" not in catalog["entity"]["sensor"]["receiver_mode"]
         assert "state" not in catalog["entity"]["sensor"]["usb_tethering_status"]
     assert icons["sensor"].keys() >= protected_sensor_keys
-    assert icons["binary_sensor"].keys() >= _PROTECTED_BINARY_KEYS
+    assert icons["binary_sensor"].keys() >= protected_binary_keys

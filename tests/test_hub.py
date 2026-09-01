@@ -116,10 +116,38 @@ async def test_devicelist_families_share_one_normal_poll(
         authenticated=True,
         referer="html/content/network/devices.html",
     )
+    mock_speedport_client.observe_feature_data.assert_has_calls(
+        [
+            call("clients", mock_speedport_client.get_json.return_value),
+            call("mesh_topology", mock_speedport_client.get_json.return_value),
+        ]
+    )
     mock_speedport_client.logout.assert_awaited_once()
     assert normal.data["clients"]["items"][0]["id"] == "client-1"
     assert normal.data["mesh"]["nodes"][0]["id"] == "mesh-1"
     assert slow.data["mesh"]["nodes"][0]["id"] == "mesh-1"
+
+
+def test_observed_schema_is_diagnostics_only_and_copy_safe(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Observed response structure never enters state and cannot mutate its source."""
+    mock_speedport_client.observed_feature_schema = MappingProxyType(
+        {"wifi": (MappingProxyType({"path": "rows[].enabled", "shape": "boolean"}),)}
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    first = hub.diagnostics()
+
+    assert "observed_feature_schema" not in hub.data
+    assert first["observed_feature_schema"] == {
+        "wifi": [{"path": "rows[].enabled", "shape": "boolean"}]
+    }
+    first["observed_feature_schema"]["wifi"][0]["path"] = "changed"
+    assert hub.diagnostics()["observed_feature_schema"] == {
+        "wifi": [{"path": "rows[].enabled", "shape": "boolean"}]
+    }
 
 
 def test_management_feature_families_publish_their_normalized_roots(
@@ -2016,6 +2044,55 @@ async def test_command_backoff_rejects_before_handler_io(
 
     handler.assert_not_awaited()
     mock_speedport_client.logout.assert_not_awaited()
+
+
+async def test_firmware_write_block_rejects_before_handler_io(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The firmware's global save-failure gate disables every mutation."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+    hub._merge_data(  # noqa: SLF001 - firmware-state safety fixture
+        {"system": {"settings_write_blocked": True}}
+    )
+
+    assert not hub.management_controls_available
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_failed"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+    hub._merge_data(  # noqa: SLF001 - transient Status.json failure fixture
+        {"system": {"settings_write_blocked": None}}
+    )
+    assert not hub.management_controls_available
+    with pytest.raises(HomeAssistantError):
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+    handler.assert_not_awaited()
+
+    hub._merge_data(  # noqa: SLF001 - explicit router readback clears latch
+        {"system": {"settings_write_blocked": False}}
+    )
+    assert hub.management_controls_available
+    assert (
+        await hub.async_execute(
+            "wifi_set_enabled",
+            enabled=False,
+            verify_group=None,
+        )
+        == "accepted"
+    )
+    handler.assert_awaited_once_with(enabled=False)
 
 
 async def test_commands_remain_serialized(

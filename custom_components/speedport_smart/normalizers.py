@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import urlsplit
 
 from .const import MANAGED_DEVICE_FORM_FIELDS, MANAGED_DEVICE_SOURCE_KINDS
 from .identity import port_forward_rule_fingerprint
@@ -25,17 +26,68 @@ Parser = Callable[[Any], Any | None]
 _EMPTY: Final = (None, "")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 _MAC = re.compile(r"^(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$")
+_DNS_LABEL = re.compile(r"(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_QOS_PC_SLOT = re.compile(r"^qos_pc\[(\d+)\]$")
 _MIN_PHONE_LABEL_DIGITS: Final = 5
+_MIN_BNG_CODE_LENGTH: Final = 2
 _SECONDS_PER_MINUTE: Final = 60
 _NAS_VALUE_BYTES: Final = 1_024
 _TETHERING_CONNECTED_STATUS: Final = 2
 _MAX_CLOCK_HOUR: Final = 23
 _MAX_CLOCK_MINUTE: Final = 59
+_MAX_TCP_PORT: Final = 65_535
+_PORT_RANGE_LENGTH: Final = 2
 _MAX_FIRMWARE_VERSION_LENGTH: Final = 64
+_MAX_COLLECTION_ROWS: Final = 256
+_MAX_COLLECTION_TEXT_LENGTH: Final = 256
+_MAX_ADDRESS_TEXT_LENGTH: Final = 128
+_MAX_DNS_NAME_LENGTH: Final = 253
+_LAN_LINK_SPEEDS_BPS: Final = frozenset(
+    {0, 10_000_000, 100_000_000, 200_000_000, 1_000_000_000, 2_500_000_000}
+)
 _IPV4_MAX_OCTET: Final = 255
 _IPV4_PREFIX_OCTETS: Final = 3
 _DDNS_REGISTERED_STATUS: Final = 2
 _MESH_WLAN_DISABLED: Final = 2
+_WIFI_CHANNEL_WIDTH_40_MHZ: Final = 1
+_WIFI_CHANNEL_WIDTH_80_MHZ: Final = 2
+_WIFI_CHANNEL_WIDTH_160_MHZ: Final = 3
+_ROUTER_OPERATING_MODES: Final = {
+    "OK": "normal",
+    "THROWN": "thrown",
+    "MODEM": "modem",
+    "TR64": "tr64",
+    "TR69": "tr69",
+    "EMCALL": "emergency_call",
+    "DECTUPD": "dect_update",
+    "BOTNET": "botnet_protection",
+}
+_MOBILE_STATUS_CODES: Final = frozenset(
+    {10, 11, 20, 21, 22, 23, 25, 30, 31, 32, 40, 50}
+)
+_MOBILE_CONNECTED_STATUS_CODES: Final = frozenset({10, 11})
+_CLIENT_MEDIUM_CODES: Final = {
+    0: "lan",
+    1: "wifi_2_4",
+    2: "wifi_5",
+    4: "wifi_office",
+}
+_NR_BAND_CODES: Final = frozenset(
+    {
+        "NR2100",
+        "NR1800",
+        "NR2600",
+        "NR900",
+        "NR800",
+        "NR700",
+        "NR1427",
+        "NR1432",
+        "NR3500",
+    }
+)
+_LTE_BAND_CODES: Final = frozenset(
+    {"LTE2100", "LTE1800", "LTE2600", "LTE900", "LTE800", "LTE700", "LTE1500"}
+)
 _WIFI_SCHEDULE_DAYS: Final = (
     ("mo", "monday"),
     ("di", "tuesday"),
@@ -96,6 +148,7 @@ _MANAGEMENT_SCOPED_FAMILIES: Final = frozenset(
         "usb_tethering",
         "wifi_access",
         "wifi_configuration",
+        "wifi_environment",
         "wifi_schedule",
         "wps",
         "vpn_details",
@@ -187,12 +240,14 @@ def normalize_feature_payload(
         "telephony": _normalize_telephony,
         "pbx": _normalize_pbx,
         "dect": _normalize_dect,
+        "dect_status": _normalize_dect,
         "dect_repeater": _normalize_dect_repeater,
         "receiver": _normalize_receiver,
         "security": _normalize_security,
         "dns_rebind": _normalize_security,
         "port_blocking": _normalize_security,
         "qos": _normalize_qos,
+        "wifi_environment": _normalize_wifi_environment,
         "usb": _normalize_usb,
         "nas": _normalize_usb,
         "usb_tethering": _normalize_usb,
@@ -258,6 +313,11 @@ def _normalize_known_flat(raw: Mapping[str, Any]) -> NormalizedData:
             ),
             "mtu": (("inet_mtu", "wan_mtu"), _integer),
             "ip_stack": (("dualstack",), _text),
+            "privacy_level": (("privacy_policy",), _privacy_level),
+            "provisioning_code": (("provis_inet",), _provisioning_code),
+            "bng_configured": (("provis_inet",), _bng_configured),
+            "provider_family": (("inet_isp",), _internet_provider_family),
+            "error_code": (("inet_errnr",), _bounded_error_code),
         },
     )
     uptime_seconds = _online_uptime_seconds(view)
@@ -273,9 +333,52 @@ def _normalize_known_flat(raw: Mapping[str, Any]) -> NormalizedData:
     _merge_root(result, "dhcp", _dhcp_fields(raw, view))
     _merge_root(result, "dect", _dect_fields(view))
     _merge_root(result, "pbx", _pbx_fields(view))
+    _merge_root(
+        result,
+        "telephony",
+        _fields(
+            view,
+            {
+                "hd_voice_active": (("hdvoice",), _nonzero_boolean),
+                "provisioning_code": (("provis_voip",), _provisioning_code),
+                "manual_configuration_available": (
+                    ("provis_voip",),
+                    _manual_telephony_configuration,
+                ),
+            },
+        ),
+    )
+    telephony_provider = _telephony_provider_family_from_view(view)
+    if telephony_provider is not None:
+        _merge_root(
+            result,
+            "telephony",
+            {"provider_family": telephony_provider},
+        )
     _merge_root(result, "vpn", _vpn_fields(view, include_generic=False))
     _merge_root(result, "system", _system_fields(view))
     _merge_root(result, "security", _security_fields(view))
+    parental_enabled = _first(view, ("internet_timerule_active",), _boolean)
+    if parental_enabled is not None:
+        _merge_root(result, "parental", {"enabled": parental_enabled})
+    ddns_status = _first(
+        view,
+        ("dyndns_active", "dyndns_status"),
+        _ddns_status_code,
+    )
+    if ddns_status is not None:
+        _merge_root(
+            result,
+            "ddns",
+            {
+                "status_code": ddns_status,
+                "connected": ddns_status == _DDNS_REGISTERED_STATUS,
+            },
+        )
+    _merge_root(result, "receiver", _receiver_status_fields(view))
+    smarthome_linked = _first(view, ("smarthome_status",), _boolean)
+    if smarthome_linked is not None:
+        _merge_root(result, "smarthome", {"linked": smarthome_linked})
     return result
 
 
@@ -306,14 +409,28 @@ def _normalize_internet(raw: Mapping[str, Any]) -> NormalizedData:
                 _public_address,
             ),
             "mtu": (("mtu",), _integer),
-            "privacy_level": (("lan_privacy_policy",), _privacy_level),
+            "privacy_level": (
+                ("lan_privacy_policy", "privacy_policy"),
+                _privacy_level,
+            ),
+            "provisioning_code": (("provis_inet",), _provisioning_code),
+            "bng_configured": (("provis_inet",), _bng_configured),
+            "provider_family": (
+                ("inet_isp", "isp"),
+                _internet_provider_family,
+            ),
+            "error_code": (("inet_errnr",), _bounded_error_code),
         },
     )
     return {"internet": internet} if internet else {}
 
 
 def _normalize_connection_privacy(raw: Mapping[str, Any]) -> NormalizedData:
-    privacy_level = _first(_view(raw), ("lan_privacy_policy",), _privacy_level)
+    privacy_level = _first(
+        _view(raw),
+        ("lan_privacy_policy", "privacy_policy"),
+        _privacy_level,
+    )
     if privacy_level is None:
         return {}
     return {"internet": {"privacy_level": privacy_level}}
@@ -363,6 +480,7 @@ def _dsl_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normalized
         "fec_errors": (("dsl_fec_errors", "dsl_fec"), _integer),
         "error_seconds": (("dsl_error_seconds", "dsl_es"), _integer),
         "profile": (("dsl_profile", "dsl_line_profile"), _text),
+        "error_code": (("dsl_errnr",), _bounded_error_code),
     }
     if include_generic:
         aliases = {
@@ -435,7 +553,6 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
                 "lte_connected",
                 "lte_tunnel",
                 "ex5g_status",
-                "lte_status",
             ),
             _boolean_or_state,
         ),
@@ -451,9 +568,7 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
             (
                 "ex5g_rsrp",
                 "ex5g_5g_rsrp",
-                "ex5g_signal_5g",
                 "ex5g_lte_rsrp",
-                "ex5g_signal_lte",
                 "mobile_rsrp",
             ),
             _number_value,
@@ -473,8 +588,6 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
         "band": (
             (
                 "ex5g_band",
-                "ex5g_freq_5g",
-                "ex5g_freq_lte",
                 "lte_band",
                 "mobile_band",
             ),
@@ -483,8 +596,6 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
         "frequency_mhz": (
             (
                 "ex5g_frequency",
-                "ex5g_freq_5g",
-                "ex5g_freq_lte",
                 "lte_frequency",
                 "mobile_frequency",
             ),
@@ -513,11 +624,38 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
             "cell_id": (aliases["cell_id"][0] + ("cell_id",), _text),
         }
     mobile = _fields(view, aliases)
-    if "network_type" not in mobile:
-        if _present(view, "ex5g_signal_5g"):
-            mobile["network_type"] = "5G"
-        elif _present(view, "ex5g_signal_lte"):
-            mobile["network_type"] = "LTE"
+    status_code = _first(view, ("lte_status",), _mobile_status_code)
+    if status_code is not None:
+        mobile["status_code"] = status_code
+        mobile["connected"] = status_code in _MOBILE_CONNECTED_STATUS_CODES
+    nr: NormalizedData = {}
+    nr_signal = _first(view, ("ex5g_signal_5g",), _nonzero_number_value)
+    if nr_signal is not None:
+        nr["signal_dbm"] = nr_signal
+        nr_band = _first(view, ("ex5g_freq_5g",), _nr_band_code)
+        if nr_band is not None:
+            nr["band_code"] = nr_band
+    lte: NormalizedData = {}
+    lte_signal = _first(view, ("ex5g_signal_lte",), _nonzero_number_value)
+    if lte_signal is not None:
+        lte["signal_dbm"] = lte_signal
+        lte_band = _first(view, ("ex5g_freq_lte",), _lte_band_code)
+        if lte_band is not None:
+            lte["band_code"] = lte_band
+    if nr:
+        mobile["nr"] = nr
+    if lte:
+        mobile["lte"] = lte
+    if "signal_dbm" in nr:
+        mobile["rsrp_dbm"] = nr["signal_dbm"]
+        if "band_code" in nr:
+            mobile["band"] = nr["band_code"]
+        mobile.setdefault("network_type", "5G")
+    elif "signal_dbm" in lte:
+        mobile["rsrp_dbm"] = lte["signal_dbm"]
+        if "band_code" in lte:
+            mobile["band"] = lte["band_code"]
+        mobile.setdefault("network_type", "LTE")
     return mobile
 
 
@@ -580,10 +718,11 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 _integer,
             ),
             "client_count": (
-                ("wlan_client_count", "wlan_2_4_client_count"),
+                ("wlan_client_count", "wlan_2_4_client_count", "wlan1_num"),
                 _integer,
             ),
             "visible": (("wlan_visible",), _boolean),
+            "ssid": (("wlan_ssid",), _bounded_collection_text),
             "encryption_mode": (("wlan_enc",), _nonnegative_integer),
         },
     )
@@ -608,10 +747,16 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 _integer,
             ),
             "client_count": (
-                ("wlan_5ghz_client_count", "wlan_5_client_count"),
+                ("wlan_5ghz_client_count", "wlan_5_client_count", "wlan0_num"),
                 _integer,
             ),
             "visible": (("wlan_5ghz_visible",), _boolean),
+            "ssid": (("wlan_5ghz_ssid",), _bounded_collection_text),
+            "encryption_mode": (("wlan_enc",), _nonnegative_integer),
+            "channel_width_mode": (
+                ("wlan_5ghz_speed_act",),
+                _wifi_channel_width_mode,
+            ),
         },
     )
     global_enabled = wifi.get("enabled")
@@ -628,22 +773,69 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
         {
             "enabled": (("wlan_guest_active", "guest_enabled"), _boolean),
             "client_count": (("wlan_guest_client_count",), _integer),
+            "remaining_minutes": (("wlan_guest_timeleft",), _nonnegative_integer),
+            "ssid": (("wlan_guest_ssid",), _bounded_collection_text),
             "encryption_mode": (("wlan_guest_enc",), _nonnegative_integer),
             "wps_enabled": (("wlan_guest_wps",), _boolean),
+            "display_key_enabled": (("wlan_guest_display_key",), _boolean),
         },
     )
     office = _fields(
         view,
         {
             "enabled": (("wlan_office_active", "office_enabled"), _boolean),
+            "client_count": (("wlan_office_client_count",), _integer),
+            "ssid": (("wlan_office_ssid",), _bounded_collection_text),
             "encryption_mode": (("wlan_office_enc",), _nonnegative_integer),
+            "wps_enabled": (("wlan_office_wps",), _boolean),
         },
     )
+    if "client_count" not in guest:
+        guest_count = _collection_count(view, ("addwgdevice",))
+        if guest_count is not None:
+            guest["client_count"] = guest_count
+    guest_2_4_count = _collection_enum_count(
+        view,
+        ("addwgdevice",),
+        ("wgdevice_type",),
+        parser=_integer,
+        expected=1,
+    )
+    if guest_2_4_count is not None:
+        guest["radio_2_4_client_count"] = guest_2_4_count
+        if isinstance(guest.get("client_count"), int):
+            guest["radio_5_client_count"] = max(
+                guest["client_count"] - guest_2_4_count,
+                0,
+            )
+    for generation in (4, 5, 6):
+        generation_count = _collection_enum_count(
+            view,
+            ("addwgdevice",),
+            ("wgdevice_wifi", "wifi"),
+            parser=_integer,
+            expected=generation,
+        )
+        if generation_count is not None:
+            guest[f"wifi_{generation}_client_count"] = generation_count
+    if "client_count" not in office:
+        office_count = _collection_enum_count(
+            view,
+            ("addmpriodevice",),
+            ("mdevice_connected", "connected"),
+            parser=_boolean,
+            expected=True,
+        )
+        if office_count is not None:
+            office["client_count"] = office_count
     schedule = _wifi_schedule_fields(view)
     if schedule:
         wifi["schedule"] = schedule
         if "schedule_enabled" not in wifi and "mode" in schedule:
             wifi["schedule_enabled"] = schedule["mode"] != 0
+    main_encryption = _first(view, ("wlan_enc",), _nonnegative_integer)
+    if main_encryption is not None:
+        wifi["encryption_mode"] = main_encryption
     if radio_2_4:
         wifi["radio_2_4"] = radio_2_4
     if radio_5:
@@ -691,6 +883,18 @@ def _normalize_mesh(raw: Mapping[str, Any]) -> NormalizedData:
         kind="mesh",
     )
     if nodes:
+        clients = _client_records(raw)
+        mesh_links_observed = any("mesh_node" in client for client in clients)
+        if mesh_links_observed:
+            for node in nodes:
+                identifier = node.get("id")
+                if identifier is None:
+                    continue
+                node["client_count"] = sum(
+                    client.get("connected") is True
+                    and str(client.get("mesh_node")) == str(identifier)
+                    for client in clients
+                )
         mesh["nodes"] = nodes
     else:
         count = _first(view, ("mesh_node_count", "node_count"), _integer)
@@ -720,22 +924,33 @@ def _normalize_lan(raw: Mapping[str, Any]) -> NormalizedData:
         result["lan"] = lan
     if dhcp:
         result["dhcp"] = dhcp
+    modem_lan_link = _first(view, ("lan4_link_status",), _boolean)
+    if modem_lan_link is not None:
+        result["dsl"] = {"modem_lan_link": modem_lan_link}
     return result
 
 
 def _lan_fields(view: Mapping[str, Any]) -> NormalizedData:
     linked = 0
     observed = False
+    ports: NormalizedData = {}
     for port in range(1, 5):
         raw_value = view.get(f"lan{port}_device")
         if raw_value is None:
             continue
         observed = True
-        if _port_has_device(raw_value):
+        connected = _port_has_device(raw_value)
+        if connected:
             linked += 1
+        port_data: NormalizedData = {"connected": connected}
+        speed_bps = _lan_link_speed_bps(raw_value)
+        if speed_bps is not None:
+            port_data["speed_bps"] = speed_bps
+        ports[f"port_{port}"] = port_data
     lan: NormalizedData = {}
     if observed:
         lan["linked_port_count"] = linked
+        lan["ports"] = ports
     explicit = _first(view, ("linked_port_count", "lan_linked_ports"), _integer)
     if explicit is not None:
         lan["linked_port_count"] = explicit
@@ -748,6 +963,12 @@ def _lan_fields(view: Mapping[str, Any]) -> NormalizedData:
     ipv6_enabled = _first(view, ("lan_ip_v6_used",), _boolean)
     if ipv6_enabled is not None:
         lan["ipv6_enabled"] = ipv6_enabled
+    ula_address = _first(view, ("lan_ip_v6",), _private_address)
+    if ula_address is not None:
+        lan["ula_address"] = ula_address
+    usable_ipv6_range = _first(view, ("lan_ip_v6_range",), _private_address)
+    if usable_ipv6_range is not None:
+        lan["usable_ipv6_range"] = usable_ipv6_range
     return lan
 
 
@@ -788,19 +1009,30 @@ def _dhcp_fields(raw: Mapping[str, Any], view: Mapping[str, Any]) -> NormalizedD
         dhcp["pool_end_ipv4"] = f"{prefix}.{pool_to}"
     if pool_from is not None and pool_to is not None and pool_to >= pool_from:
         dhcp["pool_size"] = pool_to - pool_from + 1
+    lease_duration_code = _first(
+        view,
+        ("lan_dhcp_validtime",),
+        _nonnegative_integer,
+    )
+    if lease_duration_code is not None:
+        dhcp["lease_duration_code"] = lease_duration_code
     return dhcp
 
 
 def _normalize_clients(raw: Mapping[str, Any]) -> NormalizedData:
     items = _client_records(raw)
+    powerline_nodes = _normalize_powerline_nodes(raw)
     if not items:
+        empty_result: NormalizedData = {}
         if _collection_observed_empty(
             raw,
             _CLIENT_GROUPS,
             prefixes=("mdevice_", "device_"),
         ):
-            return {"clients": {"items": [], "connected_count": 0}}
-        return {}
+            empty_result["clients"] = {"items": [], "connected_count": 0}
+        if powerline_nodes is not None:
+            empty_result["powerline"] = {"nodes": powerline_nodes}
+        return empty_result
     clients: NormalizedData = {"items": items}
     if any("connected" in item for item in items):
         clients["connected_count"] = sum(
@@ -817,6 +1049,8 @@ def _normalize_clients(raw: Mapping[str, Any]) -> NormalizedData:
                 for item in items
             )
         }
+    if powerline_nodes is not None:
+        result["powerline"] = {"nodes": powerline_nodes}
     return result
 
 
@@ -883,11 +1117,7 @@ def _normalize_client_record(
                 ("manufacturer", "vendor", "maker"),
                 _text,
             ),
-            "model": _first(
-                view,
-                ("model", "type", "product_name"),
-                _text,
-            ),
+            "model": _client_model(view),
             "firmware": _first(
                 view,
                 ("firmware", "firmware_version", "sw_version", "version"),
@@ -901,16 +1131,39 @@ def _normalize_client_record(
             "ipv4": _first(view, ("ipv4", "ip", "ip_address"), _private_address),
             "configured_reserved_ipv4": _managed_configured_reserved_ipv4(view),
             "reserved_ipv4": _managed_reserved_ipv4(view),
-            "ipv6": _first(view, ("ipv6", "gua_ipv6", "ula_ipv6"), _private_address),
+            "ipv6": _first(view, ("ipv6",), _private_address),
+            "ipv6_ula": _first(view, ("ula_ipv6",), _private_address),
+            "ipv6_gua": _first(view, ("gua_ipv6",), _private_address),
             "connected": _first(
                 view,
                 ("connected", "online", "active", "present"),
                 _boolean,
             ),
-            "medium": medium
-            or _first(view, ("medium", "interface", "connection_type"), _text),
+            "medium": medium or _client_medium(view),
             # devices.js maps mdevice_wifi 4/5/6 to the matching Wi-Fi icon.
             "wifi_generation": _first(view, ("wifi",), _wifi_generation),
+            "wifi_standard": _first(
+                view,
+                ("standards", "mdevice_standards"),
+                _bounded_collection_text,
+            ),
+            # The firmware value is a local UI port, not a URL. Retain only
+            # whether a UI exists so no endpoint details enter runtime data.
+            "has_web_ui": _first(
+                view,
+                ("hasui", "mdevice_hasui"),
+                _client_has_web_ui,
+            ),
+            "web_ui_port": _first(
+                view,
+                ("hasui", "mdevice_hasui"),
+                _client_web_ui_port,
+            ),
+            "web_ui_scheme": _first(
+                view,
+                ("hasui", "mdevice_hasui"),
+                _client_web_ui_scheme,
+            ),
             "signal_dbm": _first(view, ("rssi", "signal", "signal_dbm"), _number_value),
             "link_speed_bps": _first(
                 view,
@@ -989,6 +1242,65 @@ def _normalize_client_record(
             ),
         }
     )
+
+
+def _normalize_powerline_nodes(raw: Mapping[str, Any]) -> list[NormalizedData] | None:
+    """Normalize the exact read-only powerline inventory from DeviceList."""
+    view = _view(raw)
+    key = "addpwlinedevice"
+    if key not in view:
+        return None
+    nodes: list[NormalizedData] = []
+    for record in _records(view[key])[:_MAX_COLLECTION_ROWS]:
+        row = _view(record)
+        node = _without_missing(
+            {
+                "id": _first(row, ("id",), _bounded_collection_text),
+                "name": _first(
+                    row,
+                    ("pwline_name", "name"),
+                    _bounded_collection_text,
+                ),
+                "parent": _first(
+                    row,
+                    ("pwline_connect_to", "connect_to"),
+                    _powerline_parent,
+                ),
+                "manufacturer": _first(
+                    row,
+                    ("pwline_manufacturer", "manufacturer"),
+                    _bounded_collection_text,
+                ),
+                "mac": _first(
+                    row,
+                    ("pwline_mac", "mac"),
+                    _mac_address,
+                ),
+                "firmware": _first(
+                    row,
+                    ("pwline_firmware", "firmware"),
+                    _bounded_collection_text,
+                ),
+                "mode": _first(
+                    row,
+                    ("pwline_mode", "mode"),
+                    _bounded_collection_text,
+                ),
+                "download_link_speed_bps": _first(
+                    row,
+                    ("pwline_downspeed", "downspeed"),
+                    _powerline_kilobits_to_bps,
+                ),
+                "upload_link_speed_bps": _first(
+                    row,
+                    ("pwline_upspeed", "upspeed"),
+                    _powerline_kilobits_to_bps,
+                ),
+            }
+        )
+        if node:
+            nodes.append(node)
+    return nodes
 
 
 def _managed_reserved_ipv4(view: Mapping[str, Any]) -> str | None:
@@ -1070,12 +1382,12 @@ def _normalize_nat(raw: Mapping[str, Any]) -> NormalizedData:
         value = view.get(group)
         if value is None:
             continue
-        for record in _records(value):
+        for record in _records(value)[:_MAX_COLLECTION_ROWS]:
             record_view = _view(record)
             identifier = _first(
                 record_view,
                 ("id", "rule_id", "portuw_id"),
-                _text,
+                _bounded_collection_text,
             )
             if identifier is None:
                 continue
@@ -1085,12 +1397,27 @@ def _normalize_nat(raw: Mapping[str, Any]) -> NormalizedData:
                     "name": _first(
                         record_view,
                         ("name", "rule_name", "portuw_name"),
-                        _text,
+                        _bounded_collection_text,
                     ),
                     "active": _first(
                         record_view,
                         ("active", "enabled", "portuw_active"),
                         _boolean,
+                    ),
+                    "target": _first(
+                        record_view,
+                        ("portuw_device", "portuw_target"),
+                        _bounded_collection_text,
+                    ),
+                    "tcp_mappings": _port_forward_mapping_summary(
+                        record_view,
+                        group="addtcpportuw",
+                        prefix="tcp",
+                    ),
+                    "udp_mappings": _port_forward_mapping_summary(
+                        record_view,
+                        group="addudpportuw",
+                        prefix="udp",
                     ),
                     "_identity_fingerprint": port_forward_rule_fingerprint(record_view),
                 }
@@ -1106,6 +1433,50 @@ def _normalize_nat(raw: Mapping[str, Any]) -> NormalizedData:
     return {"nat": nat} if nat else {}
 
 
+def _port_forward_mapping_summary(
+    view: Mapping[str, Any], *, group: str, prefix: str
+) -> str | None:
+    """Render exact nested port fields as one bounded administrator summary."""
+    value = view.get(group)
+    if value is None:
+        return None
+
+    mappings: list[str] = []
+    for record in _records(value)[:_MAX_COLLECTION_ROWS]:
+        record_view = _view(record)
+        public_from = _first(
+            record_view,
+            (f"{prefix}_public_from",),
+            _port_number,
+        )
+        private_destination = _first(
+            record_view,
+            (f"{prefix}_private_dest",),
+            _port_number,
+        )
+        if public_from is None or private_destination is None:
+            continue
+        public_to = _first(
+            record_view,
+            (f"{prefix}_public_to",),
+            _port_number,
+        )
+        if public_to is not None and public_to < public_from:
+            continue
+
+        public_range = (
+            str(public_from)
+            if public_to is None or public_to == public_from
+            else f"{public_from}-{public_to}"
+        )
+        item = f"{public_range} -> {private_destination}"
+        candidate = ", ".join((*mappings, item))
+        if len(candidate) > _MAX_COLLECTION_TEXT_LENGTH:
+            break
+        mappings.append(item)
+    return ", ".join(mappings) or None
+
+
 def _normalize_ddns(raw: Mapping[str, Any]) -> NormalizedData:
     view = _view(raw)
     ddns = _fields(
@@ -1114,7 +1485,6 @@ def _normalize_ddns(raw: Mapping[str, Any]) -> NormalizedData:
             "enabled": (
                 (
                     "ddns_enabled",
-                    "dyndns_active",
                     "dyndns_enabled",
                     "use_ddns",
                     "use_dyndns",
@@ -1126,10 +1496,18 @@ def _normalize_ddns(raw: Mapping[str, Any]) -> NormalizedData:
                 _boolean_or_state,
             ),
             "provider": (("dyndns_provider", "ddns_provider", "provider"), _text),
+            "domain": (("dyndns_domain",), _ddns_domain),
+            "update_server": (("dyndns_updsrv",), _ddns_update_server),
+            "update_protocol": (("dyndns_updprot",), _ddns_update_protocol),
+            "update_port": (("dyndns_updport",), _port_number),
             "last_update": (("ddns_last_update", "last_update"), _timestamp),
         },
     )
-    status_code = _first(view, ("dyndns_status",), _ddns_status_code)
+    status_code = _first(
+        view,
+        ("dyndns_status", "dyndns_active"),
+        _ddns_status_code,
+    )
     if status_code is not None:
         ddns["status_code"] = status_code
         ddns["connected"] = status_code == _DDNS_REGISTERED_STATUS
@@ -1141,28 +1519,60 @@ def _normalize_vpn(
 ) -> NormalizedData:
     view = _view(raw)
     vpn = _vpn_fields(view, include_generic=include_generic)
-    peer_values = next(
-        (view[key] for key in ("addpeer", "peers", "wireguard_peers") if key in view),
-        None,
-    )
-    if peer_values is not None:
-        peers = [
-            _without_missing(
+    peers: list[NormalizedData] = []
+    peers_observed = False
+    for key in ("addpeer", "peers", "wireguard_peers"):
+        if key not in view:
+            continue
+        peers_observed = True
+        for record in _records(view[key])[:_MAX_COLLECTION_ROWS]:
+            row = _view(record)
+            peer = _without_missing(
                 {
                     "connected": _first(
-                        _view(record),
+                        row,
                         ("connected", "active", "status"),
                         _boolean_or_state,
                     ),
                     "last_handshake": _first(
-                        _view(record),
+                        row,
                         ("last_handshake", "handshake"),
                         _timestamp,
                     ),
                 }
             )
-            for record in _records(peer_values)
-        ]
+            if peer:
+                peers.append(peer)
+
+    if "addvpn" in view:
+        peers_observed = True
+        for record in _records(view["addvpn"])[:_MAX_COLLECTION_ROWS]:
+            row = _view(record)
+            peer = _without_missing(
+                {
+                    "name": _first(
+                        row,
+                        ("vpn_name", "name"),
+                        _bounded_collection_text,
+                    ),
+                    "enabled": _first(
+                        row,
+                        ("vpn_status",),
+                        _boolean,
+                    ),
+                    # UI treats a non-empty assigned user IP as connected. The
+                    # address itself is intentionally never retained.
+                    "connected": _first(
+                        row,
+                        ("vpn_userip",),
+                        _nonempty_text_boolean,
+                    ),
+                }
+            )
+            if peer:
+                peers.append(peer)
+
+    if peers_observed:
         vpn["peers"] = peers
         vpn["connected_peer_count"] = sum(
             peer.get("connected") is True for peer in peers
@@ -1214,7 +1624,12 @@ def _normalize_parental(raw: Mapping[str, Any]) -> NormalizedData:
         view,
         {
             "enabled": (
-                ("parental_enabled", "parental_control_enabled", "use_parental"),
+                (
+                    "parental_enabled",
+                    "parental_control_enabled",
+                    "use_parental",
+                    "internet_timerule_active",
+                ),
                 _boolean,
             ),
             "blocked_client_count": (
@@ -1249,8 +1664,17 @@ def _normalize_telephony(raw: Mapping[str, Any]) -> NormalizedData:
             "active_call": (("active_call", "call_active"), _boolean),
             "voip_possible": (("vosip_possible",), _boolean),
             "voip_policy": (("phone_vosip_policy",), _nonnegative_integer),
+            "hd_voice_active": (("hdvoice",), _nonzero_boolean),
+            "provisioning_code": (("provis_voip",), _provisioning_code),
+            "manual_configuration_available": (
+                ("provis_voip",),
+                _manual_telephony_configuration,
+            ),
         },
     )
+    provider_family = _telephony_provider_family_from_view(view)
+    if provider_family is not None:
+        telephony["provider_family"] = provider_family
     missed = 0
     observed_missed = False
     timestamps: list[datetime] = []
@@ -1282,12 +1706,14 @@ def _normalize_telephony(raw: Mapping[str, Any]) -> NormalizedData:
         number_groups,
         kind="telephone_line",
     )
+    voip_lines = _normalize_voip_lines(raw)
+    if voip_lines is not None:
+        numbers.extend(voip_lines)
+        numbers = _deduplicate(numbers)
     if numbers:
         telephony["numbers"] = numbers
-    elif _collection_observed_empty(
-        raw,
-        number_groups,
-        prefixes=_device_prefixes("telephone_line"),
+    elif voip_lines is not None or _collection_observed_empty(
+        raw, number_groups, prefixes=_device_prefixes("telephone_line")
     ):
         telephony["numbers"] = []
     if "registered_number_count" not in telephony:
@@ -1300,6 +1726,9 @@ def _normalize_telephony(raw: Mapping[str, Any]) -> NormalizedData:
     )
     if provider_count is not None:
         telephony["provider_count"] = provider_count
+    providers = _normalize_telephony_providers(raw)
+    if providers is not None:
+        telephony["providers"] = providers
     voip_number_groups = ("addipnumber", "ip_phone_numbers")
     configured_number_count = _recursive_collection_count(raw, voip_number_groups)
     if configured_number_count is not None:
@@ -1317,7 +1746,85 @@ def _normalize_telephony(raw: Mapping[str, Any]) -> NormalizedData:
         )
         if count is not None:
             telephony[canonical] = count
+    failed_line_count = _recursive_collection_enum_count(
+        raw,
+        ("addphonenumber",),
+        ("status",),
+        expected="failed",
+    )
+    if failed_line_count is not None:
+        telephony["failed_line_count"] = failed_line_count
     return {"telephony": telephony} if telephony else {}
+
+
+def _normalize_telephony_providers(
+    raw: Mapping[str, Any],
+) -> list[NormalizedData] | None:
+    """Retain only opaque provider identity and observed provider code."""
+    view = _view(raw)
+    key = "addipphoneprovider"
+    if key not in view:
+        return None
+    providers: list[NormalizedData] = []
+    for record in _records(view[key])[:_MAX_COLLECTION_ROWS]:
+        row = _view(record)
+        identifier = _first(row, ("id",), _bounded_collection_text)
+        if identifier is None:
+            continue
+        providers.append(
+            _without_missing(
+                {
+                    "id": identifier,
+                    "provider_code": _first(
+                        row,
+                        ("isp_selection",),
+                        _nonnegative_integer,
+                    ),
+                }
+            )
+        )
+    return _deduplicate(providers)
+
+
+def _normalize_voip_lines(raw: Mapping[str, Any]) -> list[NormalizedData] | None:
+    """Normalize VoIP line state without retaining any telephone number."""
+    view = _view(raw)
+    key = "addipnumber"
+    if key not in view:
+        return None
+    lines: list[NormalizedData] = []
+    for record in _records(view[key])[:_MAX_COLLECTION_ROWS]:
+        row = _view(record)
+        identifier = _first(
+            row,
+            ("id", "ipphonenumber_id"),
+            _non_phone_identifier,
+        )
+        if identifier is None:
+            continue
+        lines.append(
+            _without_missing(
+                {
+                    "id": identifier,
+                    "status": _first(
+                        row,
+                        ("number_status",),
+                        _voip_line_status,
+                    ),
+                    "provider_code": _first(
+                        row,
+                        ("isp_selection",),
+                        _nonnegative_integer,
+                    ),
+                    "error_code": _first(
+                        row,
+                        ("connection_failure_code",),
+                        _bounded_error_code,
+                    ),
+                }
+            )
+        )
+    return _deduplicate(lines)
 
 
 def _normalize_pbx(raw: Mapping[str, Any]) -> NormalizedData:
@@ -1338,6 +1845,9 @@ def _normalize_pbx(raw: Mapping[str, Any]) -> NormalizedData:
     client_count = _collection_count(raw, client_groups)
     if client_count is not None:
         pbx["configured_client_count"] = client_count
+    clients = _normalize_pbx_clients(raw, client_groups)
+    if clients is not None:
+        pbx["clients"] = clients
     for status_code, canonical in (
         (0, "disconnected_client_count"),
         (1, "registered_client_count"),
@@ -1355,6 +1865,54 @@ def _normalize_pbx(raw: Mapping[str, Any]) -> NormalizedData:
     return {"pbx": pbx} if pbx else {}
 
 
+def _normalize_pbx_clients(
+    raw: Mapping[str, Any],
+    groups: Iterable[str],
+) -> list[NormalizedData] | None:
+    """Normalize bounded PBX registration rows, excluding credentials."""
+    view = _view(raw)
+    observed = False
+    clients: list[NormalizedData] = []
+    for group in groups:
+        key = group.casefold()
+        if key not in view:
+            continue
+        observed = True
+        for record in _records(view[key])[:_MAX_COLLECTION_ROWS]:
+            row = _view(record)
+            identifier = _first(row, ("id",), _bounded_collection_text)
+            if identifier is None:
+                continue
+            clients.append(
+                _without_missing(
+                    {
+                        "id": identifier,
+                        "status": _first(
+                            row,
+                            ("ipclient_status", "status"),
+                            _pbx_client_status,
+                        ),
+                        "name": _first(
+                            row,
+                            ("ipclient_mdevice_name",),
+                            _bounded_collection_text,
+                        ),
+                        "ipv4": _first(
+                            row,
+                            ("ipclient_mdevice_ipv4",),
+                            _private_address,
+                        ),
+                        "mac": _first(
+                            row,
+                            ("ipclient_mdevice_mac",),
+                            _mac_address,
+                        ),
+                    }
+                )
+            )
+    return _deduplicate(clients) if observed else None
+
+
 def _pbx_fields(view: Mapping[str, Any]) -> NormalizedData:
     return _fields(
         view,
@@ -1369,7 +1927,7 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
     dect = _dect_fields(view)
     handsets = _normalize_stable_devices(
         raw,
-        ("adddectdevice", "handsets", "dect_devices"),
+        ("adddectdevice", "adddect", "handsets", "dect_devices"),
         kind="dect",
     )
     for handset in handsets:
@@ -1382,7 +1940,10 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
     if handsets:
         dect["handsets"] = handsets
     else:
-        count = _collection_count(raw, ("adddectdevice", "handsets", "dect_devices"))
+        count = _collection_count(
+            raw,
+            ("adddectdevice", "adddect", "handsets", "dect_devices"),
+        )
         if count is not None:
             dect["handsets"] = count
     handset_count = _first(view, ("dect_real_count",), _nonnegative_integer)
@@ -1393,21 +1954,49 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
         )
     if handset_count is not None:
         dect["handset_count"] = handset_count
+    paging_count = _prefixed_boolean_count(view, ("pagingstat",))
+    if paging_count is not None:
+        dect["paging_handset_count"] = paging_count
+        dect["paging_active"] = paging_count > 0
     repeater_count = _collection_count(raw, ("addrepeater", "dect_repeaters"))
     if repeater_count is not None:
         dect["repeater_count"] = repeater_count
+    repeaters = _normalize_dect_repeaters(raw)
+    if repeaters is not None:
+        dect["repeaters"] = repeaters
     phonebooks = _collection_count(raw, ("addphonebook", "phonebooks"))
     if phonebooks is not None:
         dect["phonebooks"] = phonebooks
+    phonebook_entry_count = _first(view, ("num_entries",), _nonnegative_integer)
+    if phonebook_entry_count is not None:
+        dect["phonebook_entry_count"] = phonebook_entry_count
     return {"dect": dect} if dect else {}
 
 
 def _normalize_dect_repeater(raw: Mapping[str, Any]) -> NormalizedData:
-    """Normalize only the aggregate owned by the repeater detail endpoint."""
+    """Normalize exact repeater membership owned by the detail endpoint."""
     repeater_count = _collection_count(raw, ("addrepeater", "dect_repeaters"))
     if repeater_count is None:
         return {}
-    return {"dect": {"repeater_count": repeater_count}}
+    dect: NormalizedData = {"repeater_count": repeater_count}
+    repeaters = _normalize_dect_repeaters(raw)
+    if repeaters is not None:
+        dect["repeaters"] = repeaters
+    return {"dect": dect}
+
+
+def _normalize_dect_repeaters(raw: Mapping[str, Any]) -> list[NormalizedData] | None:
+    """Retain bounded registered-repeater rows without labels or settings."""
+    view = _view(raw)
+    if "addrepeater" not in view:
+        return None
+    repeaters: list[NormalizedData] = []
+    for record in _records(view["addrepeater"])[:_MAX_COLLECTION_ROWS]:
+        identifier = _first(_view(record), ("id",), _bounded_collection_text)
+        if identifier is None:
+            continue
+        repeaters.append({"id": identifier, "registered": True})
+    return _deduplicate(repeaters)
 
 
 def _dect_fields(view: Mapping[str, Any]) -> NormalizedData:
@@ -1426,27 +2015,100 @@ def _normalize_security(raw: Mapping[str, Any]) -> NormalizedData:
     dns_exceptions = _collection_count(raw, ("adddnsexcept", "dns_exceptions"))
     if dns_exceptions is not None:
         security["dns_rebind_exception_count"] = dns_exceptions
+    dns_exception_rows = _dns_rebind_exception_rows(raw)
+    if dns_exception_rows is not None:
+        security["dns_rebind_exceptions"] = dns_exception_rows
 
-    port_block_groups = ("addextra", "extended_rules", "port_block_rules")
-    port_block_rules = _collection_count(raw, port_block_groups)
-    if port_block_rules is not None:
-        security["port_block_rule_count"] = port_block_rules
-    active_port_block_rules = _collection_enum_count(
-        raw,
-        port_block_groups,
-        ("extendedrule_active", "child_extrarule_active", "active"),
-        parser=_boolean,
-        expected=True,
+    view = _view(raw)
+    port_block_families = (
+        ("extended", ("addextendedrule", "extended_rules", "port_block_rules")),
+        ("extra", ("addextra",)),
     )
-    if active_port_block_rules is not None:
-        security["active_port_block_rule_count"] = active_port_block_rules
+    rules: list[NormalizedData] = []
+    port_block_rule_count = 0
+    port_block_rules_observed = False
+    active_port_block_rule_count = 0
+    active_port_block_rules_observed = False
+    active_fields = ("extendedrule_active", "child_extrarule_active", "active")
+    for rule_group, aliases in port_block_families:
+        selected_alias = next((alias for alias in aliases if alias in view), None)
+        if selected_alias is None:
+            continue
+        value = view[selected_alias]
+        port_block_rules_observed = True
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            port_block_rule_count += max(int(value), 0)
+            continue
+        records = _records(value)
+        port_block_rule_count += len(records)
+        for record in records:
+            record_view = _view(record)
+            if any(field in record_view for field in active_fields):
+                active_port_block_rules_observed = True
+                if _first(record_view, active_fields, _boolean) is True:
+                    active_port_block_rule_count += 1
+            rule = _without_missing(
+                {
+                    "rule_group": rule_group,
+                    "id": _first(
+                        record_view,
+                        ("id", "extendedrule_id", "extrarule_id"),
+                        _bounded_collection_text,
+                    ),
+                    "active": _first(
+                        record_view,
+                        ("extendedrule_active", "child_extrarule_active", "active"),
+                        _boolean,
+                    ),
+                    "tcp_ports": _first(
+                        record_view,
+                        ("extrule_tcp",),
+                        _bounded_port_list,
+                    ),
+                    "udp_ports": _first(
+                        record_view,
+                        ("extrule_udp",),
+                        _bounded_port_list,
+                    ),
+                }
+            )
+            if rule and len(rules) < _MAX_COLLECTION_ROWS:
+                rules.append(rule)
+    if port_block_rules_observed:
+        security["port_block_rule_count"] = port_block_rule_count
+        security["port_block_rules"] = rules
+    if active_port_block_rules_observed:
+        security["active_port_block_rule_count"] = active_port_block_rule_count
     return {"security": security} if security else {}
+
+
+def _dns_rebind_exception_rows(
+    raw: Mapping[str, Any],
+) -> list[NormalizedData] | None:
+    """Retain exact, bounded domain rows for the administrator-only view."""
+    value = _view(raw).get("adddnsexcept")
+    if value is None:
+        return None
+    rows: list[NormalizedData] = []
+    for record in _records(value)[:_MAX_COLLECTION_ROWS]:
+        domain = _first(
+            _record_view(record),
+            ("hostname",),
+            _strict_dns_name,
+        )
+        if domain is not None:
+            rows.append({"domain": domain})
+    return rows
 
 
 def _security_fields(
     view: Mapping[str, Any], *, include_generic: bool = False
 ) -> NormalizedData:
-    firewall: tuple[str, ...] = ("firewall_enabled", "use_firewall")
+    firewall: tuple[str, ...] = (
+        "firewall_enabled",
+        "use_firewall",
+        "router_firewall_active",
+    )
     if include_generic:
         firewall += ("enabled", "active")
     return _fields(
@@ -1454,23 +2116,70 @@ def _security_fields(
         {
             "firewall_enabled": (firewall, _boolean),
             "dns_rebind_protection": (
-                ("dns_rebind_protection", "rebind_protection"),
+                (
+                    "dns_rebind_protection",
+                    "rebind_protection",
+                    "dns_rebind_active",
+                ),
                 _boolean,
             ),
-            "port_blocking_enabled": (("child_extrarule_active",), _boolean),
+            "port_blocking_enabled": (
+                ("child_extrarule_active", "internet_extrule_active"),
+                _boolean,
+            ),
             "remote_management": (
                 ("remote_management", "remote_access_enabled"),
                 _boolean,
             ),
+            "router_https_enabled": (("use_https",), _boolean),
         },
     )
 
 
 def _normalize_qos(raw: Mapping[str, Any]) -> NormalizedData:
-    prioritized = _prefixed_boolean_count(_view(raw), ("qos_pc",))
-    if prioritized is None:
-        return {}
-    return {"qos": {"prioritized_client_count": prioritized}}
+    view = _view(raw)
+    qos: NormalizedData = {}
+    prioritized = _prefixed_boolean_count(view, ("qos_pc",))
+    if prioritized is not None:
+        qos["prioritized_client_count"] = prioritized
+    rows = _qos_priority_rows(view)
+    if rows is not None:
+        qos["prioritized_clients"] = rows
+    return {"qos": qos} if qos else {}
+
+
+def _qos_priority_rows(view: Mapping[str, Any]) -> list[NormalizedData] | None:
+    """Model only exact ``qos_pc`` checkbox slots; identity is not inferred."""
+    rows: dict[int, NormalizedData] = {}
+    observed = False
+    for key, value in view.items():
+        match = _QOS_PC_SLOT.fullmatch(key)
+        if match is not None:
+            observed = True
+            slot = int(match.group(1))
+            if slot > _MAX_COLLECTION_ROWS:
+                continue
+            prioritized = _first({"value": value}, ("value",), _boolean)
+            if prioritized is not None:
+                rows[slot] = {"slot": slot, "prioritized": prioritized}
+            continue
+        if key != "qos_pc":
+            continue
+        observed = True
+        for slot, raw_value in enumerate(
+            _scalar_values(value)[:_MAX_COLLECTION_ROWS],
+            start=1,
+        ):
+            prioritized = _boolean(raw_value)
+            if prioritized is not None:
+                rows[slot] = {"slot": slot, "prioritized": prioritized}
+    return [rows[slot] for slot in sorted(rows)] if observed else None
+
+
+def _normalize_wifi_environment(raw: Mapping[str, Any]) -> NormalizedData:
+    """Fail closed until exact WLANEnviron row fields are observed and reviewed."""
+    del raw
+    return {}
 
 
 def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
@@ -1513,6 +2222,9 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
     storage_count = _collection_count(raw, storage_groups)
     if storage_count is not None:
         usb["storage_device_count"] = storage_count
+    storage_items = _normalize_nas_storage_items(raw, storage_groups)
+    if storage_items is not None:
+        usb["storage_items"] = storage_items
     total_bytes, used_bytes = _nas_capacity_totals(raw, storage_groups)
     if total_bytes is not None:
         usb["storage_total_bytes"] = total_bytes
@@ -1521,7 +2233,130 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
     if total_bytes is not None and used_bytes is not None:
         usb["storage_free_bytes"] = max(total_bytes - used_bytes, 0)
 
+    media_groups = ("addnasmediareplay", "nas_media_shares")
+    media_share_count = _collection_count(raw, media_groups)
+    if media_share_count is not None:
+        usb["media_share_count"] = media_share_count
+    active_media_share_count = _collection_enum_count(
+        raw,
+        media_groups,
+        ("mediareplay_active", "active"),
+        parser=_boolean,
+        expected=True,
+    )
+    if active_media_share_count is None and media_share_count == 0:
+        active_media_share_count = 0
+    if active_media_share_count is not None:
+        usb["active_media_share_count"] = active_media_share_count
+
+    shares = _normalize_nas_shares(raw)
+    if shares is not None:
+        usb["shares"] = shares
+
     return {"usb": usb} if usb else {}
+
+
+def _normalize_nas_storage_items(
+    raw: Mapping[str, Any],
+    groups: Iterable[str],
+) -> list[NormalizedData] | None:
+    """Normalize bounded storage rows while keeping names panel-admin-only."""
+    view = _view(raw)
+    observed = False
+    items: list[NormalizedData] = []
+    for group in groups:
+        key = group.casefold()
+        if key not in view:
+            continue
+        observed = True
+        for record in _records(view[key])[:_MAX_COLLECTION_ROWS]:
+            row = _view(record)
+            total_bytes = _first(
+                row,
+                ("nas_device_total", "total_kib"),
+                _nas_capacity_bytes,
+            )
+            used_bytes = _first(
+                row,
+                ("nas_device_used", "used_kib"),
+                _nas_capacity_bytes,
+            )
+            item = _without_missing(
+                {
+                    "name": _first(
+                        row,
+                        ("nas_device_name", "name"),
+                        _bounded_collection_text,
+                    ),
+                    "storage_type": _first(
+                        row,
+                        ("nas_device_type", "type"),
+                        _bounded_collection_text,
+                    ),
+                    "connection": _first(
+                        row,
+                        ("nas_device_connection", "connection"),
+                        _bounded_collection_text,
+                    ),
+                    "total_bytes": total_bytes,
+                    "used_bytes": used_bytes,
+                    "free_bytes": (
+                        max(total_bytes - used_bytes, 0)
+                        if total_bytes is not None and used_bytes is not None
+                        else None
+                    ),
+                }
+            )
+            if item:
+                items.append(item)
+    return items if observed else None
+
+
+def _normalize_nas_shares(raw: Mapping[str, Any]) -> list[NormalizedData] | None:
+    """Normalize NAS share flags and path, excluding all credentials."""
+    view = _view(raw)
+    group_keys = ("addnasfolder", "nas_folders", "nasfolder")
+    records: list[Mapping[str, Any]] = []
+    observed = False
+    for group in group_keys:
+        if group not in view:
+            continue
+        observed = True
+        records.extend(_records(view[group])[:_MAX_COLLECTION_ROWS])
+
+    flat_fields = {
+        "nas_active",
+        "nas_folder_nur_lesen",
+        "nas_secure",
+        "nas_share_name",
+        "nas_folder_name",
+    }
+    if not observed and flat_fields.intersection(view):
+        observed = True
+        records = [view]
+
+    shares: list[NormalizedData] = []
+    for record in records[:_MAX_COLLECTION_ROWS]:
+        row = _view(record)
+        share = _without_missing(
+            {
+                "name": _first(
+                    row,
+                    ("nas_folder_name", "nas_share_name", "share_name"),
+                    _bounded_collection_text,
+                ),
+                "enabled": _first(row, ("nas_active", "active"), _boolean),
+                "read_only": _first(
+                    row,
+                    ("nas_folder_nur_lesen", "read_only"),
+                    _boolean,
+                ),
+                "secure": _first(row, ("nas_secure", "secure"), _boolean),
+            }
+        )
+        if share:
+            shares.append(share)
+    return shares if observed else None
 
 
 def _normalize_receiver(raw: Mapping[str, Any]) -> NormalizedData:
@@ -1564,6 +2399,7 @@ def _receiver_status_fields(view: Mapping[str, Any]) -> NormalizedData:
         view,
         {
             "external_modem_enabled": (("auto_external_modem",), _boolean),
+            "external_wan_link": (("extwan_status",), _boolean),
             "mode": (("extwan_typ",), _receiver_mode),
             "lte_enabled": (("use_lte",), _boolean),
             "led_mode": (("ex5g_led_mode",), _led_mode),
@@ -1573,6 +2409,8 @@ def _receiver_status_fields(view: Mapping[str, Any]) -> NormalizedData:
             "latest_firmware": (("ex5g_fwupd_version",), _firmware_version),
             "firmware_update_planned": (("ex5g_fwupd_planned",), _boolean),
             "firmware_update_time": (("ex5g_fwupd_time",), _timestamp),
+            "model": (("ex5g_model_name",), _bounded_label),
+            "esim_supported": (("ex5g_eid",), _esim_supported),
         },
     )
 
@@ -1606,6 +2444,10 @@ def _system_fields(
         "firmware_release_url": (("firmware_release_url",), _safe_url),
         "firmware_update_progress": (("firmware_update_progress",), _percentage),
         "remote_support_active": (("br_active",), _boolean),
+        "operating_mode": (("router_state",), _router_operating_mode),
+        "settings_write_blocked": (("save_fails",), _boolean),
+        "device_password_changed": (("pwd_changed",), _nonzero_boolean),
+        "initial_setup_completed": (("wlanfinished",), _nonzero_boolean),
     }
     if include_generic:
         aliases["uptime_seconds"] = (
@@ -1764,6 +2606,7 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
                 **traffic,
                 **radio,
                 "parent": (("connect_to",), _text),
+                "medium": (("mesh_type", "type"), _network_medium_code),
                 "device_type": (("device_type",), _mesh_device_type),
                 "ipv4": (("ipv4",), _private_address),
                 # devices.js treats mesh_use_wlan=2 as disabled.
@@ -1789,6 +2632,8 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
                     ("uptime_seconds", "uptime", "online_time"),
                     _seconds,
                 ),
+                "lan_port_1_speed_bps": (("lan1",), _lan_link_speed_bps),
+                "lan_port_2_speed_bps": (("lan2",), _lan_link_speed_bps),
             },
         )
         linked_lan_ports = _linked_lan_port_count(view, ("lan1", "lan2"))
@@ -1812,6 +2657,7 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
                     ("call_state", "call_status", "line_status", "status"),
                     _text,
                 ),
+                "error_code": (("voip_errnr",), _bounded_error_code),
             },
         )
     if kind == "dect":
@@ -2412,6 +3258,45 @@ def _text(value: Any) -> str | None:
     return text or None
 
 
+def _bounded_collection_text(value: Any) -> str | None:
+    """Return bounded text suitable for an administrator-only collection."""
+    text = _text(value)
+    if (
+        text is None
+        or len(text) > _MAX_COLLECTION_TEXT_LENGTH
+        or not text.isprintable()
+    ):
+        return None
+    return text
+
+
+def _non_phone_identifier(value: Any) -> str | None:
+    """Return a bounded row ID only when it cannot be a dialable number."""
+    identifier = _bounded_collection_text(value)
+    if identifier is None or _phone_like(identifier):
+        return None
+    return identifier
+
+
+def _bounded_port_list(value: Any) -> str | None:
+    """Return one exact, bounded comma-separated port/range list."""
+    text = _bounded_collection_text(value)
+    if text is None:
+        return None
+    for entry in text.split(","):
+        parts = tuple(part.strip() for part in entry.split("-"))
+        if len(parts) not in {1, _PORT_RANGE_LENGTH} or any(
+            not part.isdigit() for part in parts
+        ):
+            return None
+        ports = tuple(int(part) for part in parts)
+        if any(not 0 <= port <= _MAX_TCP_PORT for port in ports):
+            return None
+        if len(ports) == _PORT_RANGE_LENGTH and ports[0] >= ports[1]:
+            return None
+    return text
+
+
 def _state(value: Any) -> str | bool | None:
     boolean = _boolean(value)
     if boolean is not None:
@@ -2461,6 +3346,29 @@ def _boolean(value: Any) -> bool | None:
     return None
 
 
+def _nonzero_boolean(value: Any) -> bool | None:
+    number = _integer(value)
+    return number != 0 if number is not None else None
+
+
+def _nonempty_text_boolean(value: Any) -> bool | None:
+    if value is None or isinstance(value, Mapping):
+        return None
+    return bool(str(value).strip())
+
+
+def _powerline_parent(value: Any) -> str | None:
+    parent = _bounded_collection_text(value)
+    if parent is None or parent.casefold() == "ff:ff:ff:ff:ff:ff":
+        return None
+    return parent
+
+
+def _powerline_kilobits_to_bps(value: Any) -> int | None:
+    number = _nonnegative_integer(value)
+    return number * 1_000 if number is not None else None
+
+
 def _number_value(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -2475,6 +3383,11 @@ def _number_value(value: Any) -> float | None:
         return float(match.group().replace(",", "."))
     except ValueError:
         return None
+
+
+def _nonzero_number_value(value: Any) -> float | None:
+    number = _number_value(value)
+    return number if number not in {None, 0.0} else None
 
 
 def _integer(value: Any) -> int | None:
@@ -2527,9 +3440,75 @@ def _privacy_level(value: Any) -> int | None:
     return number if number in {0, 1, 2} else None
 
 
+def _provisioning_code(value: Any) -> str | None:
+    text = _text(value)
+    if text is None or re.fullmatch(r"[A-Za-z0-9._-]{1,16}", text) is None:
+        return None
+    return text
+
+
+def _bng_configured(value: Any) -> bool | None:
+    code = _provisioning_code(value)
+    return (
+        code[1] == "4"
+        if code is not None and len(code) >= _MIN_BNG_CODE_LENGTH
+        else None
+    )
+
+
+def _manual_telephony_configuration(value: Any) -> bool | None:
+    code = _provisioning_code(value)
+    return code in {"003", "004"} if code is not None else None
+
+
+def _internet_provider_family(value: Any) -> str | None:
+    code = _nonnegative_integer(value)
+    if code is None:
+        return None
+    return "telekom" if code in {0, 99} else "other"
+
+
+def _telephony_provider_family(value: Any) -> str | None:
+    code = _nonnegative_integer(value)
+    if code is None:
+        return None
+    return "telekom" if code in {0, 99} else "other"
+
+
+def _telephony_provider_family_from_view(view: Mapping[str, Any]) -> str | None:
+    value = view.get("isp_selection")
+    if value is None:
+        return None
+    families = {
+        parsed
+        for candidate in _scalar_values(value)
+        if (parsed := _telephony_provider_family(candidate)) is not None
+    }
+    if "other" in families:
+        return "other"
+    return "telekom" if "telekom" in families else None
+
+
 def _wifi_band_mode(value: Any) -> int | None:
     number = _integer(value)
     return number if number in {0, 1, 2} else None
+
+
+def _wifi_channel_width_mode(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-3]", value):
+        number = int(value)
+    else:
+        return None
+    return {
+        0: "single_channel",
+        _WIFI_CHANNEL_WIDTH_40_MHZ: "40_mhz",
+        _WIFI_CHANNEL_WIDTH_80_MHZ: "80_mhz",
+        _WIFI_CHANNEL_WIDTH_160_MHZ: "160_mhz",
+    }.get(number)
 
 
 def _wifi_schedule_mode(value: Any) -> int | None:
@@ -2543,8 +3522,187 @@ def _wifi_generation(value: Any) -> int | None:
 
 
 def _ddns_status_code(value: Any) -> int | None:
+    if isinstance(value, str):
+        named = {"notreg": 0, "err": 1, "reg": 2}.get(value.strip().casefold())
+        if named is not None:
+            return named
     number = _integer(value)
     return number if number in {0, 1, 2} else None
+
+
+def _voip_line_status(value: Any) -> str | None:
+    status = _bounded_collection_text(value)
+    if status is None:
+        return None
+    normalized = status.casefold()
+    return normalized if normalized in {"ok", "inactive", "warning"} else None
+
+
+def _pbx_client_status(value: Any) -> str | None:
+    code = _integer(value)
+    if code is None:
+        return None
+    return {
+        0: "disconnected",
+        1: "registered",
+        2: "locked",
+    }.get(code)
+
+
+def _router_operating_mode(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _ROUTER_OPERATING_MODES.get(value.strip().upper())
+
+
+def _mobile_status_code(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in _MOBILE_STATUS_CODES else None
+
+
+def _client_medium(view: Mapping[str, Any]) -> str | None:
+    exact: str | None = _first(view, ("mdevice_type",), _network_medium_code)
+    if exact is not None:
+        return exact
+    return _first(view, ("medium", "interface", "connection_type"), _text)
+
+
+def _network_medium_code(value: Any) -> str | None:
+    code = _nonnegative_integer(value)
+    return _CLIENT_MEDIUM_CODES.get(code) if code is not None else None
+
+
+def _client_model(view: Mapping[str, Any]) -> str | None:
+    candidates: tuple[str, ...] = ("model", "product_name")
+    if "mdevice_type" not in view:
+        candidates += ("type",)
+    return _first(view, candidates, _text)
+
+
+def _client_web_ui_port(value: Any) -> int | None:
+    return _port_number(value)
+
+
+def _port_number(value: Any) -> int | None:
+    """Return one valid TCP/UDP port number without coercing a range."""
+    port = _strict_port_value(value)
+    if port is None or not 1 <= port <= _MAX_TCP_PORT:
+        return None
+    return port
+
+
+def _client_has_web_ui(value: Any) -> bool | None:
+    port = _strict_port_value(value)
+    if port is None:
+        return None
+    if port == 0:
+        return False
+    return 1 <= port <= _MAX_TCP_PORT or None
+
+
+def _strict_port_value(value: Any) -> int | None:
+    """Parse only an integer or an exact ASCII-decimal port field."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,5}", value):
+        return None
+    return int(value)
+
+
+def _ddns_domain(value: Any) -> str | None:
+    """Return a bounded DNS hostname, never credentials or arbitrary prose."""
+    hostname = _strict_dns_name(value)
+    return hostname if hostname is not None and "." in hostname else None
+
+
+def _ddns_update_server(value: Any) -> str | None:
+    """Return a host or host-only HTTP(S) URL without embedded credentials."""
+    text = _bounded_collection_text(value)
+    if text is None:
+        return None
+    if "://" not in text:
+        return _strict_dns_name(text)
+
+    parsed = urlsplit(text)
+    if (
+        parsed.scheme.casefold() not in {"http", "https"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or _strict_dns_name(parsed.hostname) is None
+    ):
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is not None and _port_number(port) is None:
+        return None
+    return text
+
+
+def _ddns_update_protocol(value: Any) -> str | None:
+    """Return only the two reviewed Dynamic DNS transport schemes."""
+    text = _text(value)
+    if text is None:
+        return None
+    protocol = text.casefold()
+    return protocol if protocol in {"http", "https"} else None
+
+
+def _strict_dns_name(value: Any) -> str | None:
+    """Return a conservative ASCII DNS name without userinfo or paths."""
+    text = _bounded_collection_text(value)
+    if text is None or len(text) > _MAX_DNS_NAME_LENGTH or not text.isascii():
+        return None
+    hostname = text.removesuffix(".")
+    if not hostname or any(
+        _DNS_LABEL.fullmatch(label) is None for label in hostname.split(".")
+    ):
+        return None
+    return hostname
+
+
+def _client_web_ui_scheme(value: Any) -> str | None:
+    port = _client_web_ui_port(value)
+    if port is None:
+        return None
+    return "https" if port % 2 else "http"
+
+
+def _nr_band_code(value: Any) -> str | None:
+    text = _text(value)
+    return text if text in _NR_BAND_CODES else None
+
+
+def _lte_band_code(value: Any) -> str | None:
+    text = _text(value)
+    return text if text in _LTE_BAND_CODES else None
+
+
+def _bounded_label(value: Any) -> str | None:
+    text = _text(value)
+    if text is None or len(text) > _MAX_FIRMWARE_VERSION_LENGTH:
+        return None
+    return text if all(character.isprintable() for character in text) else None
+
+
+def _bounded_error_code(value: Any) -> str | None:
+    text = _text(value)
+    if text is None or re.fullmatch(r"[A-Za-z0-9._-]{1,16}", text) is None:
+        return None
+    return text
+
+
+def _esim_supported(value: Any) -> bool | None:
+    text = _text(value)
+    if text is None:
+        return None
+    return text.casefold() != "not supported"
 
 
 def _wps_state_code(value: Any) -> int | None:
@@ -2715,13 +3873,21 @@ def _mac_address(value: Any) -> str | None:
 def _private_address(value: Any) -> str | None:
     # Client addresses are useful entity attributes but are stripped from
     # diagnostics by the diagnostics layer. Never use them as identity.
-    return _text(value)
+    return _bounded_address_text(value)
 
 
 def _public_address(value: Any) -> str | None:
     # Public addresses are legitimate entity values but are never copied into
     # device identity or child records.
-    return _text(value)
+    return _bounded_address_text(value)
+
+
+def _bounded_address_text(value: Any) -> str | None:
+    """Return bounded printable router address/range text."""
+    text = _text(value)
+    if text is None or len(text) > _MAX_ADDRESS_TEXT_LENGTH or not text.isprintable():
+        return None
+    return text
 
 
 def _safe_url(value: Any) -> str | None:
@@ -2732,11 +3898,23 @@ def _safe_url(value: Any) -> str | None:
 
 
 def _port_has_device(value: Any) -> bool:
+    link_speed = _lan_link_speed_bps(value)
+    if link_speed is not None:
+        return link_speed > 0
     boolean = _boolean(value)
     if boolean is not None:
         return boolean
     text = _text(value)
     return text is not None and text.casefold() not in {"none", "unknown", "-"}
+
+
+def _lan_link_speed_bps(value: Any) -> int | None:
+    """Map the exact link-rate representation used by calcLANSpeed()."""
+    text = _text(value)
+    if text is None or re.fullmatch(r"[0-9]{1,10}", text) is None:
+        return None
+    speed = int(text)
+    return speed if speed in _LAN_LINK_SPEEDS_BPS else None
 
 
 def _linked_lan_port_count(view: Mapping[str, Any], keys: Iterable[str]) -> int | None:

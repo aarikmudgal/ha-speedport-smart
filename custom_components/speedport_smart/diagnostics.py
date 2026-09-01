@@ -31,7 +31,9 @@ _IPV6_PATTERN = re.compile(
 _SECRET_KEY_PARTS = frozenset(
     {
         "credential",
+        "dect_pin",
         "password",
+        "pin_code",
         "private_key",
         "public_key",
         "preshared",
@@ -69,6 +71,8 @@ _CHILD_LABEL_KEYS = frozenset(
         "name",
         "parent",
         "parental_profile",
+        "ssid",
+        "target",
         "title",
     }
 )
@@ -89,6 +93,9 @@ _ADDRESS_KEYS = frozenset(
     {
         "address",
         "dns",
+        "ddns_domain",
+        "ddns_update_server",
+        "domain",
         "external_ip",
         "gateway",
         "host",
@@ -101,8 +108,10 @@ _ADDRESS_KEYS = frozenset(
         "ipv4_prefix",
         "ipv6",
         "ipv6_address",
+        "ipv6_gua",
         "ipv6_network",
         "ipv6_prefix",
+        "ipv6_ula",
         "network",
         "network_address",
         "owner_ip_address",
@@ -112,20 +121,39 @@ _ADDRESS_KEYS = frozenset(
         "public_ipv6",
         "subnet",
         "subnet_mask",
+        "ula_address",
+        "update_server",
+        "usable_ipv6_range",
         "wan_ip",
     }
 )
 _PHONE_KEY_PARTS = frozenset(
     {
+        "assigned_number",
         "called_number",
         "caller",
         "calling_number",
+        "contact_address",
+        "contact_name",
+        "contact_number",
+        "incoming_number",
+        "number_assignment",
+        "outgoing_number",
         "phone_number",
         "telephone_number",
     }
 )
 _PHONE_KEYS = frozenset({"callee", "destination", "number", "phone", "telephone"})
 _RAW_LOG_KEYS = frozenset({"event_log", "logs", "security_log", "system_log"})
+_UNTRUSTED_TEXT_KEYS = frozenset(
+    {
+        "error_reason",
+        "failure_reason",
+        "message",
+        "reason",
+        "status_message",
+    }
+)
 
 
 async def async_get_config_entry_diagnostics(
@@ -150,7 +178,7 @@ async def async_get_config_entry_diagnostics(
 def _redact(value: Any, *, key: str = "") -> Any:
     """Recursively redact credentials and subscriber-identifying information."""
     normalized_key = key.casefold()
-    if normalized_key in _RAW_LOG_KEYS:
+    if normalized_key in _RAW_LOG_KEYS or normalized_key in _UNTRUSTED_TEXT_KEYS:
         return REDACTED
     if any(part in normalized_key for part in _SECRET_KEY_PARTS):
         return REDACTED

@@ -366,6 +366,19 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     assert retry.available
 
     hub._set_management_access("available")  # noqa: SLF001
+    hub._protected_retry_at = 0.0  # noqa: SLF001 - isolate firmware gate
+    hub._merge_data(  # noqa: SLF001 - firmware-state safety fixture
+        {"system": {"settings_write_blocked": True}}
+    )
+
+    assert not switch.available
+    assert not button.available
+    assert not text.available
+    assert retry.available
+
+    hub._merge_data(  # noqa: SLF001 - isolate protected retry gate
+        {"system": {"settings_write_blocked": False}}
+    )
     hub._protected_retry_at = hub._monotonic_time() + 60  # noqa: SLF001
 
     assert not switch.available
