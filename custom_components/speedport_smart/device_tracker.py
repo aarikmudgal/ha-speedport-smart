@@ -166,6 +166,7 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
         if item is None:
             return {}
         allowed = (
+            "configured_reserved_ipv4",
             "reserved_ipv4",
             "ipv6",
             "medium",

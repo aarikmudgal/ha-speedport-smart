@@ -63,6 +63,7 @@ def test_nested_client_relationship_metadata_is_redacted() -> None:
                     "access_point": "Living Room",
                     "mesh_node": "Repeater Upstairs",
                     "parental_profile": "Children",
+                    "configured_reserved_ipv4": "192.168.2.55",
                     "connected": True,
                     "transport": "wifi",
                 }
@@ -74,6 +75,7 @@ def test_nested_client_relationship_metadata_is_redacted() -> None:
     assert client["access_point"] == REDACTED
     assert client["mesh_node"] == REDACTED
     assert client["parental_profile"] == REDACTED
+    assert client["configured_reserved_ipv4"] == REDACTED
     assert client["connected"] is True
     assert client["transport"] == "wifi"
 

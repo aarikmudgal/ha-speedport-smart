@@ -945,6 +945,74 @@ async def test_p1_safe_read_fields_have_native_entity_coverage(
     }
 
 
+def test_detail_entities_follow_their_source_poll_group() -> None:
+    """Detail-only values listen to the group that actually fetches them."""
+    assert _description(SENSOR_DESCRIPTIONS, "mesh_clients").coordinator_group is (
+        PollGroup.SLOW
+    )
+    assert (
+        _description(
+            SENSOR_DESCRIPTIONS,
+            "parental_blocked_clients",
+        ).coordinator_group
+        is PollGroup.SLOW
+    )
+    for key in (
+        "wifi_schedule_mode",
+        "wifi_schedule_daily_from",
+        "wifi_schedule_daily_to",
+        "wifi_schedule_weekly",
+    ):
+        assert (
+            _description(SENSOR_DESCRIPTIONS, key).coordinator_group is PollGroup.SLOW
+        )
+    assert (
+        _description(
+            BINARY_SENSOR_DESCRIPTIONS,
+            "wifi_schedule_enabled",
+        ).coordinator_group
+        is PollGroup.NORMAL
+    )
+
+
+async def test_wifi_schedule_enabled_updates_from_normal_wifi_source(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The base Wi-Fi response keeps schedule enabled available without detail data."""
+    capability = EndpointCapability(
+        "wifi",
+        "data/WLANBasic.json",
+        authenticated=True,
+        referer="html/content/network/wlan_basic.html",
+    )
+    report = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints={"wifi": capability},
+    )
+    mock_speedport_client.setup.return_value = report
+    mock_speedport_client.capabilities = report
+    mock_speedport_client.get_json.return_value = {"wlan_time_active": "1"}
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    _attach_coordinators(hass, hub)
+
+    entity = SpeedportBinarySensor(
+        hub,
+        _description(BINARY_SENSOR_DESCRIPTIONS, "wifi_schedule_enabled"),
+    )
+
+    assert entity.coordinator is hub.coordinator(PollGroup.NORMAL)
+    assert entity.is_on is True
+    mock_speedport_client.get_json.assert_awaited_once_with(
+        "data/WLANBasic.json",
+        authenticated=True,
+        referer="html/content/network/wlan_basic.html",
+    )
+
+
 async def test_mesh_devicelist_endpoint_reaches_directional_link_speed_entities(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -970,6 +1038,8 @@ async def test_mesh_devicelist_endpoint_reaches_directional_link_speed_entities(
                 "mesh_name": "Mesh repeater",
                 "mesh_downspeed": "1200000000",
                 "mesh_upspeed": "600000000",
+                "mesh_lan1": "1000",
+                "mesh_lan2": "0",
             }
         ]
     }
@@ -997,7 +1067,11 @@ async def test_mesh_devicelist_endpoint_reaches_directional_link_speed_entities(
     assert mesh_count.coordinator is hub.coordinator(PollGroup.NORMAL)
     assert mesh_entities["download_link_speed"].native_value == 1_200.0
     assert mesh_entities["upload_link_speed"].native_value == 600.0
+    assert mesh_entities["mesh_linked_lan_ports"].native_value == 1
     assert mesh_entities["download_link_speed"].coordinator is hub.coordinator(
+        PollGroup.NORMAL
+    )
+    assert mesh_entities["mesh_linked_lan_ports"].coordinator is hub.coordinator(
         PollGroup.NORMAL
     )
     assert (

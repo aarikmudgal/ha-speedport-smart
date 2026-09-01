@@ -552,10 +552,13 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
             "wps_disabled_by_firmware": (("disabled_wps",), _boolean),
             "mac_filter_enabled": (("wlan_mac_active",), _boolean),
             "schedule_enabled": (("wlan_time_active",), _boolean),
-            "allow_all_devices": (("wlan_allow_all",), _boolean),
             "band_mode": (("wlan_band",), _wifi_band_mode),
         },
     )
+    # wlan_access.js presents the inverse of this firmware form flag.
+    wlan_allow_all = _first(view, ("wlan_allow_all",), _boolean)
+    if wlan_allow_all is not None:
+        wifi["allow_all_devices"] = not wlan_allow_all
     radio_2_4 = _fields(
         view,
         {
@@ -896,6 +899,7 @@ def _normalize_client_record(
                 _text,
             ),
             "ipv4": _first(view, ("ipv4", "ip", "ip_address"), _private_address),
+            "configured_reserved_ipv4": _managed_configured_reserved_ipv4(view),
             "reserved_ipv4": _managed_reserved_ipv4(view),
             "ipv6": _first(view, ("ipv6", "gua_ipv6", "ula_ipv6"), _private_address),
             "connected": _first(
@@ -905,6 +909,7 @@ def _normalize_client_record(
             ),
             "medium": medium
             or _first(view, ("medium", "interface", "connection_type"), _text),
+            # devices.js maps mdevice_wifi 4/5/6 to the matching Wi-Fi icon.
             "wifi_generation": _first(view, ("wifi",), _wifi_generation),
             "signal_dbm": _first(view, ("rssi", "signal", "signal_dbm"), _number_value),
             "link_speed_bps": _first(
@@ -934,6 +939,8 @@ def _normalize_client_record(
             ),
             "download_link_speed_bps": _first(
                 view,
+                # devices.js renders mdevice_downspeed through calcSpeed(), whose
+                # base unit is bit/s.
                 ("download_link_speed_bps", "downlink_speed_bps", "downspeed"),
                 _bps,
             ),
@@ -985,7 +992,15 @@ def _normalize_client_record(
 
 
 def _managed_reserved_ipv4(view: Mapping[str, Any]) -> str | None:
-    """Reconstruct the firmware's fixed-DHCP address from its final octet."""
+    """Return the configured address only while fixed DHCP is active."""
+    fixed_dhcp = _first(view, ("fix_dhcp", "fixed_dhcp"), _boolean)
+    if fixed_dhcp is not True:
+        return None
+    return _managed_configured_reserved_ipv4(view)
+
+
+def _managed_configured_reserved_ipv4(view: Mapping[str, Any]) -> str | None:
+    """Reconstruct the firmware's configured reservation from its final octet."""
     current = _first(view, ("ipv4",), _private_address)
     reserved = _first(view, ("reservedip",), _ipv4_octet)
     if current is None or reserved is None:
@@ -1751,6 +1766,7 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
                 "parent": (("connect_to",), _text),
                 "device_type": (("device_type",), _mesh_device_type),
                 "ipv4": (("ipv4",), _private_address),
+                # devices.js treats mesh_use_wlan=2 as disabled.
                 "wifi_enabled": (("use_wlan",), _mesh_wifi_enabled),
                 "download_link_speed_bps": (
                     ("download_link_speed_bps", "downlink_speed_bps", "downspeed"),

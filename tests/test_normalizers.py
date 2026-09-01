@@ -252,7 +252,7 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
     wifi = normalized["wifi"]
 
     assert wifi["band_mode"] == 1
-    assert wifi["allow_all_devices"] is False
+    assert wifi["allow_all_devices"] is True
     assert wifi["wps_enabled"] is True
     assert wifi["wps_disabled_by_firmware"] is False
     assert wifi["wps_state_code"] == 1
@@ -276,6 +276,23 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
         "12345670",
     ):
         assert private_value not in rendered
+
+
+@pytest.mark.parametrize(
+    ("firmware_value", "expected_allowed"),
+    [("0", True), ("1", False)],
+)
+def test_wlan_allow_all_uses_firmware_ui_inversion(
+    firmware_value: str,
+    expected_allowed: bool,  # noqa: FBT001
+) -> None:
+    """The UI's wlan_allow_all flag is inverse to its allow-all presentation."""
+    wifi = normalize_feature_payload(
+        "wlan_configuration",
+        {"wlan_allow_all": firmware_value},
+    )["wifi"]
+
+    assert wifi["allow_all_devices"] is expected_allowed
 
 
 def test_mobile_and_receiver_management_fields_are_constrained() -> None:
@@ -357,8 +374,8 @@ def test_receiver_child_keeps_link_speed_under_receiver_root() -> None:
     }
 
 
-def test_managed_client_safe_network_metadata_uses_exact_varids() -> None:
-    """Managed rows separate directional link speeds from Wi-Fi generation."""
+def test_managed_client_proven_transport_fields_are_retained() -> None:
+    """Managed row values retain semantics proven by the firmware UI."""
     normalized = normalize_feature_payload(
         "clients",
         {
@@ -368,6 +385,7 @@ def test_managed_client_safe_network_metadata_uses_exact_varids() -> None:
                     "mdevice_mac": "AA:BB:CC:DD:EE:FF",
                     "mdevice_ipv4": "192.168.2.40",
                     "mdevice_reservedip": "55",
+                    "mdevice_fix_dhcp": "1",
                     "mdevice_downspeed": "1000000000",
                     "mdevice_upspeed": "500000000",
                     "mdevice_wifi": "6",
@@ -376,6 +394,7 @@ def test_managed_client_safe_network_metadata_uses_exact_varids() -> None:
         },
     )["clients"]["items"][0]
 
+    assert normalized["configured_reserved_ipv4"] == "192.168.2.55"
     assert normalized["reserved_ipv4"] == "192.168.2.55"
     assert normalized["download_link_speed_bps"] == 1_000_000_000
     assert normalized["upload_link_speed_bps"] == 500_000_000
@@ -385,8 +404,28 @@ def test_managed_client_safe_network_metadata_uses_exact_varids() -> None:
     assert "medium" not in normalized
 
 
+@pytest.mark.parametrize("fixed_dhcp", [None, "0"])
+def test_reserved_ipv4_requires_explicit_fixed_dhcp(fixed_dhcp: str | None) -> None:
+    """A reserved-address label requires affirmative fixed-DHCP readback."""
+    record = {
+        "id": "row-1",
+        "mdevice_ipv4": "192.168.2.40",
+        "mdevice_reservedip": "55",
+    }
+    if fixed_dhcp is not None:
+        record["mdevice_fix_dhcp"] = fixed_dhcp
+
+    normalized = normalize_feature_payload(
+        "clients",
+        {"addmdevice": [record]},
+    )["clients"]["items"][0]
+
+    assert normalized["configured_reserved_ipv4"] == "192.168.2.55"
+    assert "reserved_ipv4" not in normalized
+
+
 def test_wifi_generation_never_implies_radio_band() -> None:
-    """Wi-Fi generation 5 is not counted as a proven 5 GHz connection."""
+    """Wi-Fi generation is proven, but only the endpoint group proves a band."""
     ambiguous = normalize_feature_payload(
         "clients",
         {
@@ -421,8 +460,8 @@ def test_wifi_generation_never_implies_radio_band() -> None:
     assert proven_band["wifi"]["radio_5"]["client_count"] == 1
 
 
-def test_explicit_client_throughput_remains_distinct_from_link_speed() -> None:
-    """Explicit traffic-rate fields coexist with firmware directional speeds."""
+def test_explicit_client_bps_fields_remain_distinct() -> None:
+    """Explicitly unit-labeled rates and link speeds remain available."""
     client = normalize_feature_payload(
         "clients",
         {
@@ -431,8 +470,8 @@ def test_explicit_client_throughput_remains_distinct_from_link_speed() -> None:
                     "id": "row-1",
                     "download_rate_bps": "80000000",
                     "upload_rate_bps": "12000000",
-                    "downspeed": "1000000000",
-                    "upspeed": "500000000",
+                    "download_link_speed_bps": "1000000000",
+                    "upload_link_speed_bps": "500000000",
                 }
             ]
         },
@@ -445,7 +484,7 @@ def test_explicit_client_throughput_remains_distinct_from_link_speed() -> None:
 
 
 def test_mesh_exact_topology_fields_are_bounded() -> None:
-    """Mesh topology retains exact safe status and direct UI speed units."""
+    """Mesh topology retains status and speed semantics proven by the UI."""
     mesh = normalize_feature_payload(
         "mesh",
         {
@@ -475,6 +514,30 @@ def test_mesh_exact_topology_fields_are_bounded() -> None:
         "upload_link_speed_bps": 600_000_000,
         "linked_lan_port_count": 1,
     }
+
+
+@pytest.mark.parametrize(
+    ("firmware_value", "expected_enabled"),
+    [("0", True), ("1", True), ("2", False)],
+)
+def test_mesh_wifi_state_uses_firmware_ui_semantics(
+    firmware_value: str,
+    expected_enabled: bool,  # noqa: FBT001
+) -> None:
+    """The firmware UI treats only mesh_use_wlan=2 as disabled."""
+    node = normalize_feature_payload(
+        "mesh",
+        {
+            "addmeshdevice": [
+                {
+                    "id": "mesh-1",
+                    "mesh_use_wlan": firmware_value,
+                }
+            ]
+        },
+    )["mesh"]["nodes"][0]
+
+    assert node["wifi_enabled"] is expected_enabled
 
 
 def test_usb_tethering_and_nas_are_aggregate_only() -> None:
