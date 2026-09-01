@@ -102,6 +102,7 @@ _FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "lte": ("mobile", "lte"),
         "mobile": ("mobile",),
         "mesh_topology": ("mesh", "nodes"),
+        "media_server": ("usb", "media_server"),
         "nas": ("usb", "nas"),
         "parental_controls": ("parental", "configuration"),
         "pbx": ("pbx",),

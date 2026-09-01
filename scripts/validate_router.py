@@ -182,12 +182,17 @@ async def async_validate_router(
                         authenticated=capability.authenticated,
                         referer=capability.referer,
                     )
+                payload = endpoint_cache[cache_key]
+                client.observe_feature_data(family, payload)
                 normalized = normalize_feature_payload(
                     family,
-                    endpoint_cache[cache_key],
+                    payload,
                 )
                 feature_paths[family] = _leaf_paths(normalized)
             result["normalized_feature_paths"] = feature_paths
+            result["observed_feature_schema"] = _serialize_observed_feature_schema(
+                client.observed_feature_schema
+            )
 
             hub = SpeedportHub(
                 cast("HomeAssistant", _ValidationHass()),
@@ -241,6 +246,19 @@ def _leaf_paths(value: Any, prefix: str = "") -> list[str]:
             paths.extend(_leaf_paths(item, child))
         return sorted(set(paths))
     return [prefix] if prefix else []
+
+
+def _serialize_observed_feature_schema(
+    schema: Mapping[str, Sequence[Mapping[str, str]]],
+) -> dict[str, list[dict[str, str]]]:
+    """Detach the immutable, value-free schema snapshot for JSON output."""
+    return {
+        family: [
+            {"path": descriptor["path"], "shape": descriptor["shape"]}
+            for descriptor in descriptors
+        ]
+        for family, descriptors in schema.items()
+    }
 
 
 def main() -> None:

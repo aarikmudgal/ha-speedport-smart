@@ -106,6 +106,12 @@
       "usb_storage_free": {
         "default": "mdi:database-outline"
       },
+      "media_server_folders": {
+        "default": "mdi:folder-multiple"
+      },
+      "media_server_active_folders": {
+        "default": "mdi:folder-check"
+      },
       "dns_rebind_exceptions": {
         "default": "mdi:dns-outline"
       },

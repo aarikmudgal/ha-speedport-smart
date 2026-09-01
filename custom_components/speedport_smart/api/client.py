@@ -1122,6 +1122,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("media", "nas", "usb", "storage"),
                 ),
             ),
+            "media_server": (
+                _endpoint(
+                    "media_server",
+                    "data/NASMediacenter.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_mediacenter.html",
+                    evidence_keys=(
+                        "addnasmediareplay",
+                        "nas_media_shares",
+                        "media_server_enabled",
+                        "use_media_server",
+                    ),
+                ),
+            ),
             "usb_tethering": (
                 _endpoint(
                     "usb_tethering",

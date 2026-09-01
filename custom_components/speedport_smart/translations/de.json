@@ -317,6 +317,8 @@
       "usb_storage_total": { "name": "USB storage capacity" },
       "usb_storage_used": { "name": "USB storage used" },
       "usb_storage_free": { "name": "USB storage free" },
+      "media_server_folders": { "name": "Medienordner" },
+      "media_server_active_folders": { "name": "Aktive Medienordner" },
       "system_uptime": { "name": "System-Betriebszeit" },
       "system_operating_mode": {
         "name": "Router-Betriebsmodus",

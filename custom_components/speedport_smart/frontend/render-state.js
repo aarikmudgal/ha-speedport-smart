@@ -4,6 +4,7 @@ const FOCUS_DATA_KEYS = [
   "moreInfo",
   "router",
   "refresh",
+  "view",
 ];
 
 function detailsElements(root) {
@@ -77,6 +78,7 @@ function dataCandidates(root, key) {
     moreInfo: "[data-more-info]",
     router: "[data-router]",
     refresh: "[data-refresh]",
+    view: "[data-view]",
   };
   const selector = selectors[key];
   return selector ? [...(root?.querySelectorAll?.(selector) || [])] : [];

@@ -1338,6 +1338,7 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
             "nat": {"port_forward_rules": []},
         }
     )
+    assert tracker.available
     assert not tracker.is_connected
     assert tracker.state == STATE_NOT_HOME
     assert tracker.hostname is None
@@ -1346,6 +1347,9 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
     assert tracker.extra_state_attributes == {}
     assert not rule.is_on
     assert not client_switch.is_on
+
+    hub._merge_data({"clients": {"items": None}})  # noqa: SLF001
+    assert not tracker.available
 
 
 async def test_tracker_setup_requires_capability_and_stable_id(

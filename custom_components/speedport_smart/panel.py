@@ -37,7 +37,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 8
+PANEL_SCHEMA_VERSION: Final = 9
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -239,6 +239,8 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "usb_storage_total": "system_nas",
     "usb_storage_used": "system_nas",
     "usb_storage_free": "system_nas",
+    "media_server_folders": "system_usb",
+    "media_server_active_folders": "system_usb",
     "nas_enabled": "system_nas",
     "nas_secure": "system_nas",
     "nas_read_only": "system_nas",
@@ -253,7 +255,7 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "qos_prioritized_clients": "system_security_qos",
     # DECT, PBX, and VoIP summaries.
     "dect_repeaters": "telephony_dect",
-    "phonebook_entries": "telephony_dect",
+    "phonebook_entries": "telephony_phonebooks",
     "dect_scan_active": "telephony_dect",
     "dect_smart_home_enabled": "telephony_dect",
     "pbx_configured_clients": "telephony_pbx",

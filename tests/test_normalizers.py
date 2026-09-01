@@ -1635,6 +1635,32 @@ def test_nas_admin_inventory_excludes_credentials() -> None:
     assert "PRIVATE-NAS-PASSWORD" not in rendered
 
 
+def test_media_server_normalizer_is_scoped_to_safe_summary_counts() -> None:
+    """Media detail contributes safe counts without claiming NAS-device fields."""
+    normalized = normalize_feature_payload(
+        "media_server",
+        {
+            "use_media_server": "1",
+            "addnasmediareplay": [
+                {"mediareplay_active": "1", "path": "/private/media"},
+                {"mediareplay_active": "0", "path": "/private/archive"},
+            ],
+            "use_usb": "0",
+            "nas_active": "1",
+            "addnasdevice": [{"nas_device_name": "Must not leak"}],
+            "nas_user_pwd": "PRIVATE-NAS-PASSWORD",
+        },
+    )
+
+    assert normalized == {
+        "usb": {
+            "media_server_enabled": True,
+            "media_share_count": 2,
+            "active_media_share_count": 1,
+        }
+    }
+
+
 def test_vpn_rows_derive_connection_without_retaining_address_or_secrets() -> None:
     """VPN rows expose name/state only; assigned addresses and keys stay absent."""
     vpn = normalize_feature_payload(

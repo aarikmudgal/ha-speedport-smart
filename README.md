@@ -143,8 +143,8 @@ The panel:
 
 - follows the active Home Assistant light or dark theme
 - adapts to desktop and mobile layouts
-- separates reporting into **Dashboard** and reviewed controls into
-  **Administration**, without duplicating entities between the two views
+- keeps comprehensive reporting in **Dashboard** and presents reviewed controls
+  in **Administration** alongside related reporting context
 - groups data hierarchically by connection, bandwidth, DSL, mobile, Wi-Fi,
   clients, telephony, router services, and management capability
 - groups child-device entities into individual device cards

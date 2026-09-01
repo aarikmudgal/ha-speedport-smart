@@ -237,6 +237,18 @@ async def test_detail_families_use_independent_exact_get_routes(
                     authenticated=True,
                     referer="html/content/phone/phone_dect_repeater.html",
                 ),
+                "usb": EndpointCapability(
+                    "usb",
+                    "data/NASDevice.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_overview.html",
+                ),
+                "media_server": EndpointCapability(
+                    "media_server",
+                    "data/NASMediacenter.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_mediacenter.html",
+                ),
             }
         ),
     )
@@ -255,6 +267,16 @@ async def test_detail_families_use_independent_exact_get_routes(
             },
             "data/DECTRepeater.json": {
                 "addrepeater": [{"id": "1"}, {"id": "2"}],
+            },
+            "data/NASDevice.json": {
+                "addnasdevice": [{"nas_device_name": "USB storage"}],
+            },
+            "data/NASMediacenter.json": {
+                "use_media_server": "1",
+                "addnasmediareplay": [
+                    {"mediareplay_active": "1"},
+                    {"mediareplay_active": "0"},
+                ],
             },
         }[endpoint]
 
@@ -281,16 +303,35 @@ async def test_detail_families_use_independent_exact_get_routes(
                 authenticated=True,
                 referer="html/content/phone/phone_dect_repeater.html",
             ),
+            call(
+                "data/NASDevice.json",
+                authenticated=True,
+                referer="html/content/network/nas_overview.html",
+            ),
+            call(
+                "data/NASMediacenter.json",
+                authenticated=True,
+                referer="html/content/network/nas_mediacenter.html",
+            ),
         ],
         any_order=True,
     )
-    assert mock_speedport_client.get_json.await_count == 3
+    assert mock_speedport_client.get_json.await_count == 5
     mock_speedport_client.logout.assert_awaited_once()
-    assert {"wifi_schedule", "vpn_details", "dect_repeater"} <= hub.capabilities
+    assert {
+        "wifi_schedule",
+        "vpn_details",
+        "dect_repeater",
+        "usb",
+        "media_server",
+    } <= hub.capabilities
     assert {"wifi", "vpn", "dect"} <= hub.capabilities
     assert hub.get("wifi.schedule.daily_from") == "07:30"
     assert hub.get("vpn.connected_peer_count") == 1
     assert hub.get("dect.repeater_count") == 2
+    assert hub.get("usb.storage_device_count") == 1
+    assert hub.get("usb.media_share_count") == 2
+    assert hub.get("usb.active_media_share_count") == 1
 
 
 @pytest.mark.parametrize("detail_result", ["daily", "empty", "unsupported"])

@@ -307,7 +307,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
       section: "telephony",
       translation_key: "phonebook_entries",
     }),
-    { areaId: "telephony", subsectionId: "telephony_dect" },
+    { areaId: "telephony", subsectionId: "telephony_phonebooks" },
   );
   assert.equal(
     adminPlacementFor({
@@ -408,7 +408,7 @@ test("feature status comes only from current entities, collections, and capabili
   );
   assert.equal(
     fixture.panel._adminFeaturePresentation(
-      byId("telephony_dect_base"),
+      byId("telephony_phonebook_management"),
       [phonebookEntries],
       new Map(),
       new Set(),
@@ -559,7 +559,11 @@ test("complete capability catalog remains visible and noninteractive without liv
     assert.match(html, new RegExp(label));
   }
   assert.match(html, /No local router control/);
-  assert.match(html, /Control contract not proven/);
+  assert.match(html, /Read-only until safely verified/);
+  assert.match(
+    html,
+    /safe local write and readback flow has not yet been verified/,
+  );
   assert.match(html, /Recovery-critical candidate/);
   assert.ok(
     featureCards.every(
@@ -1167,6 +1171,8 @@ test("Administration stays full-width, responsive, and theme-native", async () =
     "utf8",
   );
 
+  assert.match(source, /\.shell\s*\{[^}]*width:\s*100%/s);
+  assert.doesNotMatch(source, /1540px/);
   assert.match(source, /\.administration-view\s*\{[^}]*width:\s*100%/s);
   assert.match(
     source,

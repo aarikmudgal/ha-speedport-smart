@@ -115,8 +115,10 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
 
     @property
     def available(self) -> bool:
-        """Remain available only with explicit router presence readback."""
-        return super().available and self._connected is not None
+        """Treat absence from a fresh client list as explicit not-home state."""
+        if not super().available:
+            return False
+        return self._item is None or self._connected is not None
 
     @property
     def is_connected(self) -> bool:

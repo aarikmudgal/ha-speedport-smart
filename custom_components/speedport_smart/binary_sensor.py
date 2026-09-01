@@ -1045,10 +1045,16 @@ class SpeedportChildBinarySensor(SpeedportEntity, BinarySensorEntity):
         device: SpeedportDevice,
     ) -> None:
         """Initialize a boolean field-backed child sensor."""
+        self._missing_child_means_off = (
+            collection_spec.kind == "client" and description.key == "connected"
+        )
         super().__init__(
             hub,
             coordinator(hub, collection_spec.coordinator_group),
             description.key,
+            data_path=(
+                collection_spec.data_paths[0] if self._missing_child_means_off else None
+            ),
             device=device,
         )
         self._collection_spec = collection_spec
@@ -1072,9 +1078,10 @@ class SpeedportChildBinarySensor(SpeedportEntity, BinarySensorEntity):
         if not super().available:
             return False
         item = self._item
+        if item is None:
+            return self._missing_child_means_off
         return (
-            item is not None
-            and self._field_description.field in item
+            self._field_description.field in item
             and item[self._field_description.field] is not None
         )
 
@@ -1083,7 +1090,7 @@ class SpeedportChildBinarySensor(SpeedportEntity, BinarySensorEntity):
         """Return the normalized current boolean field."""
         item = self._item
         if item is None:
-            return None
+            return False if self._missing_child_means_off else None
         raw = item.get(self._field_description.field)
         if raw is None:
             return None

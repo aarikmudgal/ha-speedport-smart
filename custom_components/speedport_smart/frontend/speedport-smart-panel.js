@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=8";
+import { keepDialogFocus } from "./accessibility.js?schema=9";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=8";
+} from "./controls.js?schema=9";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=8";
+} from "./entity-state.js?schema=9";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=8";
+} from "./render-state.js?schema=9";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=8";
+} from "./translations.js?schema=9";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 8;
+const PANEL_SCHEMA_VERSION = 9;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -1580,7 +1580,7 @@ export function capabilityGroupFor(meta) {
     ) {
       return "telephony_calls";
     }
-    if (key === "phonebook_entries") return "telephony_dect";
+    if (key === "phonebook_entries") return "telephony_phonebooks";
     if (key.startsWith("dect_") || key.startsWith("phonebook")) {
       return key.startsWith("phonebook")
         ? "telephony_phonebooks"
@@ -3429,6 +3429,10 @@ export class SpeedportSmartPanel extends HTMLElement {
         );
         const status = this._t(`admin.feature.status.${presentation.key}`);
         const contract = this._t(`admin.contract.${feature.contract}`);
+        const contractHint =
+          feature.contract === "blocked"
+            ? ` title="${escapeHtml(this._t("admin.contract.blocked_hint"))}"`
+            : "";
         const destructive = feature.destructive
           ? `<span class="admin-feature-warning"><ha-icon icon="mdi:alert-octagon-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.feature.destructive"))}</span>`
           : "";
@@ -3439,7 +3443,7 @@ export class SpeedportSmartPanel extends HTMLElement {
               <strong>${escapeHtml(this._t(feature.titleKey))}</strong>
               <div class="admin-feature-badges">
                 <span class="admin-feature-status">${escapeHtml(status)}</span>
-                <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}">${escapeHtml(contract)}</span>
+                <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}"${contractHint}>${escapeHtml(contract)}</span>
                 ${destructive}
               </div>
             </div>
@@ -4004,7 +4008,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         * { box-sizing: border-box; }
         button { font: inherit; }
         .shell {
-          width: min(100%, 1540px);
+          width: 100%;
           margin: 0 auto;
           padding: clamp(16px, 3vw, 42px);
         }

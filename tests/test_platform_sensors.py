@@ -34,6 +34,7 @@ from custom_components.speedport_smart.panel import (
     _PUBLIC_STATUS_KEYS,
     _access_source_for_entity,
 )
+from custom_components.speedport_smart.platform_helpers import speedport_child_device
 from custom_components.speedport_smart.sensor import (
     CHILD_SENSOR_COLLECTIONS,
     SENSOR_DESCRIPTIONS,
@@ -366,6 +367,69 @@ async def test_client_access_allowed_binary_sensor_is_discovered(
         unload_call.args[0]()
 
 
+async def test_disappeared_client_connectivity_is_off_but_signal_is_unavailable(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A fresh client list treats a missing client as offline, not unknown."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = hub.capabilities | {"clients"}  # noqa: SLF001
+    hub._merge_data(  # noqa: SLF001 - platform lifecycle fixture
+        {
+            "clients": {
+                "items": [
+                    {
+                        "id": "AA:BB:CC:DD:EE:FF",
+                        "mac": "AA:BB:CC:DD:EE:FF",
+                        "connected": True,
+                        "signal_dbm": -55.0,
+                    }
+                ]
+            }
+        }
+    )
+    item = hub.get("clients.items")[0]
+    device = speedport_child_device("client", item)
+    assert device is not None
+    binary_collection = next(
+        spec for spec in CHILD_BINARY_SENSOR_COLLECTIONS if spec.kind == "client"
+    )
+    sensor_collection = next(
+        spec for spec in CHILD_SENSOR_COLLECTIONS if spec.kind == "client"
+    )
+    connected = SpeedportChildBinarySensor(
+        hub,
+        binary_collection,
+        _description(binary_collection.fields, "connected"),
+        "aa:bb:cc:dd:ee:ff",
+        device,
+    )
+    signal = SpeedportChildSensor(
+        hub,
+        sensor_collection,
+        _description(sensor_collection.fields, "signal_strength"),
+        "aa:bb:cc:dd:ee:ff",
+        device,
+    )
+    assert connected.available
+    assert connected.is_on
+    assert signal.available
+    assert signal.native_value == -55.0
+
+    hub._merge_data({"clients": {"items": []}})  # noqa: SLF001
+
+    assert connected.available
+    assert connected.is_on is False
+    assert not signal.available
+    assert signal.native_value is None
+
+    hub._merge_data({"clients": {"items": None}})  # noqa: SLF001
+    assert not connected.available
+    assert not signal.available
+
+
 async def test_description_catalog_is_complete_and_entities_default_enabled(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -666,6 +730,8 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
         "usb_storage_total": ("usb.storage_total_bytes", 2_097_152),
         "usb_storage_used": ("usb.storage_used_bytes", 524_288),
         "usb_storage_free": ("usb.storage_free_bytes", 1_572_864),
+        "media_server_folders": ("usb.media_share_count", 2),
+        "media_server_active_folders": ("usb.active_media_share_count", 1),
         "dns_rebind_exceptions": ("security.dns_rebind_exception_count", 2),
         "port_block_rules": ("security.port_block_rule_count", 2),
         "active_port_block_rules": (
@@ -829,6 +895,8 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
                 "storage_total_bytes": 2_097_152,
                 "storage_used_bytes": 524_288,
                 "storage_free_bytes": 1_572_864,
+                "media_share_count": 2,
+                "active_media_share_count": 1,
             },
             "security": {
                 "dns_rebind_exception_count": 2,
@@ -873,6 +941,12 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
     for key, (_data_path, expected) in expected_binary.items():
         description = _description(BINARY_SENSOR_DESCRIPTIONS, key)
         assert SpeedportBinarySensor(hub, description).is_on is expected
+
+    for key in ("media_server_folders", "media_server_active_folders"):
+        assert _description(SENSOR_DESCRIPTIONS, key).capability == (
+            "usb",
+            "media_server",
+        )
 
     enum_contracts = {
         "internet_privacy_level": (

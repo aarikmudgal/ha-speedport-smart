@@ -36,6 +36,7 @@ function root({
   routers = [],
   refresh = [],
   adminRefresh = [],
+  views = [],
 }) {
   const matches = {
     details,
@@ -44,6 +45,7 @@ function root({
     "[data-router]": routers,
     "[data-refresh]": refresh,
     "[data-admin-refresh]": adminRefresh,
+    "[data-view]": views,
   };
   return {
     activeElement,
@@ -144,4 +146,18 @@ test("administrator refresh focus uses its stable data identity", () => {
     true,
   );
   assert.equal(current.focusCount, 1);
+});
+
+test("view switch restores focus to the selected view button", () => {
+  const previous = focusable({ view: "administration" });
+  const state = captureRenderState(root({ activeElement: previous }));
+  const dashboard = focusable({ view: "dashboard" });
+  const administration = focusable({ view: "administration" });
+
+  assert.equal(
+    restoreFocusState(root({ views: [dashboard, administration] }), state),
+    true,
+  );
+  assert.equal(dashboard.focusCount, 0);
+  assert.equal(administration.focusCount, 1);
 });

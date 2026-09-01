@@ -1920,6 +1920,11 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "html/content/network/nas_overview.html",
         ),
         (
+            "media_server",
+            "data/NASMediacenter.json",
+            "html/content/network/nas_mediacenter.html",
+        ),
+        (
             "usb_tethering",
             "data/INetTeth.json",
             "html/content/internet/usb_tethering.html",
@@ -2008,6 +2013,11 @@ def test_detail_endpoint_families_poll_beyond_summary_evidence() -> None:
         DEFAULT_FEATURE_CANDIDATES["dect_repeater"][0].endpoint
         == "data/DECTRepeater.json"
     )
+    assert DEFAULT_FEATURE_CANDIDATES["usb"][0].endpoint == "data/NASDevice.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["media_server"][0].endpoint
+        == "data/NASMediacenter.json"
+    )
 
 
 @pytest.mark.asyncio
@@ -2072,6 +2082,24 @@ async def test_probe_keeps_summary_and_independent_detail_families(
                 evidence_keys=("addrepeater",),
             ),
         ),
+        "usb": (
+            EndpointCapability(
+                "usb",
+                "data/NASDevice.json",
+                authenticated=True,
+                referer="html/content/network/nas_overview.html",
+                evidence_keys=("addnasdevice",),
+            ),
+        ),
+        "media_server": (
+            EndpointCapability(
+                "media_server",
+                "data/NASMediacenter.json",
+                authenticated=True,
+                referer="html/content/network/nas_mediacenter.html",
+                evidence_keys=("addnasmediareplay",),
+            ),
+        ),
     }
     client = SpeedportClient(  # type: ignore[arg-type]
         _FakeSession(),
@@ -2090,6 +2118,7 @@ async def test_probe_keeps_summary_and_independent_detail_families(
                 "vpn_active": "1",
             },
             "data/DECTStation.json": {"use_dect": "1"},
+            "data/NASDevice.json": {"addnasdevice": [{"id": "usb-1"}]},
         }
         if endpoint in base_payloads:
             return base_payloads[endpoint]
@@ -2101,6 +2130,9 @@ async def test_probe_keeps_summary_and_independent_detail_families(
             "data/WLANBasic.json": {"wlan_timerule": "1"},
             "data/VPN.json": {"addpeer": [{"connected": "1"}]},
             "data/DECTRepeater.json": {"addrepeater": [{"id": "1"}]},
+            "data/NASMediacenter.json": {
+                "addnasmediareplay": [{"mediareplay_active": "1"}]
+            },
         }[endpoint]
 
     with (
@@ -2113,8 +2145,13 @@ async def test_probe_keeps_summary_and_independent_detail_families(
     ):
         report = await client.probe_capabilities()
 
-    summary_families = {"status", "wifi", "vpn", "dect"}
-    detail_families = {"wifi_schedule", "vpn_details", "dect_repeater"}
+    summary_families = {"status", "wifi", "vpn", "dect", "usb"}
+    detail_families = {
+        "wifi_schedule",
+        "vpn_details",
+        "dect_repeater",
+        "media_server",
+    }
     assert summary_families <= set(report.feature_endpoints)
     if detail_result == "success":
         assert detail_families <= set(report.feature_endpoints)
@@ -2122,7 +2159,7 @@ async def test_probe_keeps_summary_and_independent_detail_families(
         assert detail_families.isdisjoint(report.feature_endpoints)
         assert detail_families <= set(report.failures)
     assert report.authenticated_json is True
-    assert get.await_count == 5
+    assert get.await_count == 7
 
 
 @pytest.mark.asyncio
@@ -2131,6 +2168,7 @@ async def test_probe_keeps_summary_and_independent_detail_families(
     [
         ("wifi_schedule", {"wlan_time_active": "1"}),
         ("dect_repeater", {"use_dect": "1"}),
+        ("media_server", {"use_usb": "1"}),
     ],
 )
 async def test_probe_rejects_detail_evidence_the_normalizer_does_not_consume(

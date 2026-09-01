@@ -142,6 +142,7 @@ _MANAGEMENT_SCOPED_FAMILIES: Final = frozenset(
         "easy_support",
         "firmware",
         "mesh_topology",
+        "media_server",
         "nas",
         "port_blocking",
         "qos",
@@ -249,6 +250,7 @@ def normalize_feature_payload(
         "qos": _normalize_qos,
         "wifi_environment": _normalize_wifi_environment,
         "usb": _normalize_usb,
+        "media_server": _normalize_media_server,
         "nas": _normalize_usb,
         "usb_tethering": _normalize_usb,
         "system": _normalize_system,
@@ -2195,10 +2197,6 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
             "nas_enabled": (("nas_active",), _boolean),
             "nas_secure": (("nas_secure",), _boolean),
             "nas_read_only": (("nas_folder_nur_lesen",), _boolean),
-            "media_server_enabled": (
-                ("media_server_enabled", "use_media_server"),
-                _boolean,
-            ),
         },
     )
     devices = _normalize_stable_devices(
@@ -2233,6 +2231,32 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
     if total_bytes is not None and used_bytes is not None:
         usb["storage_free_bytes"] = max(total_bytes - used_bytes, 0)
 
+    usb = _deep_merge(usb, _media_server_fields(raw))
+
+    shares = _normalize_nas_shares(raw)
+    if shares is not None:
+        usb["shares"] = shares
+
+    return {"usb": usb} if usb else {}
+
+
+def _normalize_media_server(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize only the safe media-server summary fields into USB state."""
+    usb = _media_server_fields(raw)
+    return {"usb": usb} if usb else {}
+
+
+def _media_server_fields(raw: Mapping[str, Any]) -> NormalizedData:
+    view = _view(raw)
+    usb = _fields(
+        view,
+        {
+            "media_server_enabled": (
+                ("media_server_enabled", "use_media_server"),
+                _boolean,
+            ),
+        },
+    )
     media_groups = ("addnasmediareplay", "nas_media_shares")
     media_share_count = _collection_count(raw, media_groups)
     if media_share_count is not None:
@@ -2249,11 +2273,7 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
     if active_media_share_count is not None:
         usb["active_media_share_count"] = active_media_share_count
 
-    shares = _normalize_nas_shares(raw)
-    if shares is not None:
-        usb["shares"] = shares
-
-    return {"usb": usb} if usb else {}
+    return usb
 
 
 def _normalize_nas_storage_items(
