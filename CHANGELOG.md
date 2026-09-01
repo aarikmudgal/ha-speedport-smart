@@ -8,6 +8,8 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
 ### Added
 
 - Evidence-backed router management controls for capabilities exposed by the
@@ -99,6 +101,7 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Diagnostics redact credentials and sensitive network, telephony, client,
   mobile, and VPN data.
 
-[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aarikmudgal/ha-speedport-smart/releases/tag/v0.1.0

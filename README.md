@@ -228,7 +228,7 @@ are enabled by default so users can access their router's full confirmed
 capability set. They remain idle during setup, polling, discovery, retry,
 reload, and diagnostics.
 
-For the reviewed Speedport Smart 4R Typ A firmware, the current beta also
+For the reviewed Speedport Smart 4R Typ A firmware, version 0.2.0 also
 stages guarded controls for Hybrid bonding, Telekom Internet privacy level,
 and 5G receiver LED behavior. Each reads the exact scalar first, submits only
 one allowlisted field, requires a positive acknowledgement, refreshes the

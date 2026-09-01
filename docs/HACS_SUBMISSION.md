@@ -93,10 +93,10 @@ Reference: **https://developers.home-assistant.io/docs/core/integration/brand_im
 
 ## Version 0.2.0 release
 
-The current stable release is **v0.1.1**. Source files on the development
-branch declare the planned **0.2.0** version while the changes remain under
-**Unreleased** in the changelog. Keep that changelog section unreleased during
-beta validation.
+Version **v0.2.0-beta.20.1** completed the feature-branch validation cycle.
+The stable pull request promotes the identical runtime source to **v0.2.0**;
+its changelog section is dated and both source version files declare
+**0.2.0**.
 
 1. Push the tested <code>feat/*</code> branch only when it is ready to publish
    a beta prerelease.
@@ -108,8 +108,8 @@ beta validation.
 4. Install that beta through HACS and test setup, reload, upgrade, removal,
    light and dark themes, translations, dashboard behavior, and every exposed
    router control.
-5. After beta approval, move the changelog entries from **Unreleased** to a
-   dated **0.2.0** section as part of the stable pull request.
+5. Confirm the stable pull request contains the dated **0.2.0** changelog
+   section and no unvalidated runtime changes after the approved beta.
 6. Merge only after all required checks pass. The successful **main** run must
    publish the full stable release **v0.2.0** with both release assets.
 7. Install the stable asset through HACS and repeat the clean-install smoke
@@ -122,8 +122,8 @@ Do not update the default-catalog request with claims about unreleased code.
 
 Only the repository owner or a major contributor should submit.
 
-The catalog request may remain open while **v0.2.0** is developed. Update it
-only after the stable release and its install smoke test are complete.
+The catalog request may remain open during release promotion. Update it only
+after the stable **v0.2.0** release and its install smoke test are complete.
 
 1. Fork **https://github.com/hacs/default** under a personal account.
 2. Create a fresh branch from its **master** branch.
