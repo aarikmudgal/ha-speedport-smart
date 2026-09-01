@@ -97,3 +97,17 @@ def test_reject_malformed_or_empty_response() -> None:
         parse_get_parameter_values("<broken")
     with pytest.raises(SpeedportProtocolError):
         parse_get_parameter_values(_response())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '<!DOCTYPE x [<!ENTITY value "expanded">]><x>&value;</x>',
+        '<!doctype x [<!entity value "expanded">]><x>&value;</x>',
+        " " * 1_048_577,
+    ],
+)
+def test_reject_unsafe_xml_before_parsing(payload: str) -> None:
+    """DTD/entity declarations and oversized responses fail closed."""
+    with pytest.raises(SpeedportProtocolError, match="unsafe ToTR64 XML"):
+        parse_get_parameter_values(payload)

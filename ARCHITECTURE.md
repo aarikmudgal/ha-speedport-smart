@@ -1,7 +1,8 @@
 # Architecture
 
-Telekom Speedport Smart is an English-first, local-polling Home Assistant
-integration. Its stable domain is **speedport_smart**. The first validated
+Telekom Speedport Smart is a localized, local-polling Home Assistant
+integration with English and German translations. Its stable domain is
+**speedport_smart**. The first validated
 target is the Speedport Smart 4R Typ A, while runtime discovery avoids assuming
 that every model and firmware exposes the same endpoints.
 
@@ -23,7 +24,7 @@ that every model and firmware exposes the same endpoints.
 Home Assistant config entries own normal setup, reload, reauthentication,
 reconfiguration, and unload behavior. Platforms expose sensors, binary sensors,
 device trackers, switches, buttons, and update entities backed by the shared
-runtime.
+runtime. Text entities expose only bounded, firmware-proven editable values.
 
 ## Protocol and session ownership
 
@@ -43,9 +44,9 @@ never blindly replayed.
 
 | Group | Default | Allowed range | Responsibility |
 | --- | ---: | ---: | --- |
-| Fast | 5 seconds | 1–60 seconds | WAN counters, derived rate/utilization, live connection data |
-| Normal | 30 seconds | 15–300 seconds | Operational state, Wi-Fi, clients, telephony |
-| Slow | 5 minutes | 1–60 minutes | Configuration, topology, firmware, slow-changing services |
+| Fast | 5 seconds | 1 to 60 seconds | WAN counters, derived rate/utilization, live connection data |
+| Normal | 30 seconds | 15 to 300 seconds | Operational state, Wi-Fi, clients, telephony |
+| Slow | 5 minutes | 1 to 60 minutes | Configuration, topology, firmware, slow-changing services |
 
 Each endpoint family is isolated. A protocol or management-session failure in
 one family does not automatically invalidate unrelated data. Once support has
@@ -126,11 +127,14 @@ only when all of these conditions hold:
 - a specific semantic command handler exists
 - the source state required to verify the result is available
 
-Every command executes through the shared arbiter, then refreshes its owning
-poll group to verify returned state. The bundled panel adds a confirmation
-dialog, with stronger language for disruptive actions. Other Home Assistant
-callers retain normal entity semantics, so an automation invoking a control is
-itself the deliberate action.
+Stateful commands execute through the shared arbiter, then refresh their owning
+poll group to verify returned state. Reboot and Internet reconnect are explicit
+exceptions: their expected network interruption makes immediate readback
+impossible, so they require a positive router acknowledgement and let normal
+polling prove recovery. The bundled panel adds a confirmation dialog, with
+stronger language for disruptive actions. Other Home Assistant callers retain
+normal entity semantics, so an automation invoking a control is itself the
+deliberate action.
 
 Factory reset, configuration restore, administrator/Wi-Fi/SIP credential
 changes, SIM PIN/PUK operations, VPN secret export, firewall disable, arbitrary

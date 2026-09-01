@@ -56,12 +56,17 @@ def validate_repository(root: Path) -> str:
     """Validate release-critical HACS and Home Assistant metadata."""
     root = root.resolve()
     component_root = root / "custom_components"
+    if component_root.is_symlink():
+        raise ValueError("custom_components must not be a symlink")
+    expected_component = component_root / INTEGRATION_DOMAIN
+    if expected_component.is_symlink():
+        msg = f"custom_components/{INTEGRATION_DOMAIN} must not be a symlink"
+        raise ValueError(msg)
     component_directories = sorted(
         path
         for path in component_root.iterdir()
         if path.is_dir() and path.name != "__pycache__"
     )
-    expected_component = component_root / INTEGRATION_DOMAIN
     if component_directories != [expected_component]:
         found = ", ".join(str(path.relative_to(root)) for path in component_directories)
         msg = f"Expected exactly custom_components/{INTEGRATION_DOMAIN}; found: {found}"
@@ -172,6 +177,55 @@ def resolve_release(
     )
 
 
+def validate_stable_changelog(root: Path, version: str) -> None:
+    """Require a dated release section and link before stable publication."""
+    changelog_path = root.resolve() / "CHANGELOG.md"
+    try:
+        changelog = changelog_path.read_text(encoding="utf-8")
+    except OSError as err:
+        msg = f"Stable release requires a readable {changelog_path}"
+        raise ValueError(msg) from err
+
+    escaped_version = re.escape(version)
+    heading = re.compile(
+        rf"^## \[{escaped_version}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
+        re.MULTILINE,
+    )
+    if heading.search(changelog) is None:
+        msg = (
+            f"Stable release {version} requires a dated CHANGELOG.md section; "
+            "leave changes under [Unreleased] only for beta validation"
+        )
+        raise ValueError(msg)
+
+    release_link = re.compile(rf"^\[{escaped_version}\]: \S+$", re.MULTILINE)
+    if release_link.search(changelog) is None:
+        msg = f"Stable release {version} requires a CHANGELOG.md comparison link"
+        raise ValueError(msg)
+
+
+def resolve_repository_release(
+    root: Path,
+    *,
+    branch: str,
+    channel: str,
+    run_attempt: int | None,
+    run_number: int | None,
+) -> ReleaseMetadata:
+    """Validate repository state and derive one publishable release."""
+    base_version = validate_repository(root)
+    metadata = resolve_release(
+        base_version,
+        branch=branch,
+        channel=channel,
+        run_attempt=run_attempt,
+        run_number=run_number,
+    )
+    if metadata.channel == "stable":
+        validate_stable_changelog(root, base_version)
+    return metadata
+
+
 def _write_github_output(path: Path, metadata: ReleaseMetadata) -> None:
     """Append trusted single-line release values to a GitHub output file."""
     values = {
@@ -220,13 +274,13 @@ def main() -> int:
     if args.channel == "check" and args.github_output is not None:
         parser.error("--github-output requires a release channel")
     try:
-        base_version = validate_repository(args.repository_root)
         if args.channel == "check":
+            base_version = validate_repository(args.repository_root)
             message = f"Repository release metadata is valid ({base_version}).\n"
             sys.stdout.write(message)
             return 0
-        metadata = resolve_release(
-            base_version,
+        metadata = resolve_repository_release(
+            args.repository_root,
             branch=args.branch,
             channel=args.channel,
             run_attempt=args.run_attempt,

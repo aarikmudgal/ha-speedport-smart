@@ -1,5 +1,33 @@
+import { keepDialogFocus } from "./accessibility.js?schema=6";
+import {
+  isSupportedSelectControl,
+  isSupportedTextControl,
+  managementControlAvailable,
+  selectControlOptions,
+  selectControlServiceCall,
+  switchControlServiceCall,
+  textControlConstraints,
+  textControlServiceCall,
+  validateTextControlValue,
+} from "./controls.js?schema=6";
+import {
+  aggregateAvailability,
+  entityDisplayName,
+  entityAvailability,
+} from "./entity-state.js?schema=6";
+import {
+  captureRenderState,
+  restoreDetailsState,
+  restoreFocusState,
+} from "./render-state.js?schema=6";
+import {
+  formatPanelDurationSeconds,
+  panelTranslate,
+  resolvePanelLanguage,
+} from "./translations.js?schema=6";
+
 const API_TYPE = "speedport_smart/panel";
-const PANEL_SCHEMA_VERSION = 2;
+const PANEL_SCHEMA_VERSION = 6;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const SECTION_ORDER = [
   "connection",
@@ -15,58 +43,59 @@ const SECTION_ORDER = [
 ];
 const SECTION_INFO = {
   connection: {
-    title: "Connection",
-    subtitle: "Internet state, capacity, and addressing",
+    titleKey: "section.connection.title",
+    subtitleKey: "section.connection.subtitle",
     icon: "mdi:web",
   },
   bandwidth: {
-    title: "Live bandwidth",
-    subtitle: "Aggregate WAN use and traffic counters",
+    titleKey: "section.bandwidth.title",
+    subtitleKey: "section.bandwidth.subtitle",
     icon: "mdi:speedometer",
   },
   dsl: {
-    title: "DSL line",
-    subtitle: "Synchronization and line quality",
+    titleKey: "section.dsl.title",
+    subtitleKey: "section.dsl.subtitle",
     icon: "mdi:transmission-tower",
   },
   mobile: {
-    title: "Hybrid & mobile",
-    subtitle: "Bonding, LTE, and 5G radio status",
+    titleKey: "section.mobile.title",
+    subtitleKey: "section.mobile.subtitle",
     icon: "mdi:signal-cellular-3",
   },
   wireless: {
-    title: "Wi-Fi & Mesh",
-    subtitle: "Radios, channels, guests, and topology",
+    titleKey: "section.wireless.title",
+    subtitleKey: "section.wireless.subtitle",
     icon: "mdi:wifi",
   },
   clients: {
-    title: "Network & clients",
-    subtitle: "Connected devices, LAN, DHCP, and mappings",
+    titleKey: "section.clients.title",
+    subtitleKey: "section.clients.subtitle",
     icon: "mdi:lan",
   },
   telephony: {
-    title: "Telephony",
-    subtitle: "Calls, numbers, handsets, and registration",
+    titleKey: "section.telephony.title",
+    subtitleKey: "section.telephony.subtitle",
     icon: "mdi:phone",
   },
   system: {
-    title: "Router services",
-    subtitle: "System, security, VPN, USB, and firmware",
+    titleKey: "section.system.title",
+    subtitleKey: "section.system.subtitle",
     icon: "mdi:router-network",
   },
   management: {
-    title: "Management & diagnostics",
-    subtitle: "Session ownership and integration health",
+    titleKey: "section.management.title",
+    subtitleKey: "section.management.subtitle",
     icon: "mdi:shield-check-outline",
   },
   controls: {
-    title: "Controls",
-    subtitle: "Actions run only after your confirmation",
+    titleKey: "section.controls.title",
+    subtitleKey: "section.controls.subtitle",
     icon: "mdi:gesture-tap-button",
   },
 };
 const ACCESS_SOURCE_ORDER = [
   "public_status",
+  "public_json",
   "integration",
   "protected_json",
   "totr64",
@@ -75,50 +104,56 @@ const ACCESS_SOURCE_ORDER = [
 ];
 const ACCESS_SOURCE_INFO = {
   public_status: {
-    title: "Browser-independent",
-    short: "Always-on local status",
-    description: "Remains readable while the Speedport web interface is open.",
+    titleKey: "source.public_status.title",
+    shortKey: "source.public_status.short",
+    descriptionKey: "source.public_status.description",
     icon: "mdi:shield-check-outline",
   },
+  public_json: {
+    titleKey: "source.public_json.title",
+    shortKey: "source.public_json.short",
+    descriptionKey: "source.public_json.description",
+    icon: "mdi:file-document-outline",
+  },
   protected_json: {
-    title: "Protected router session",
-    short: "Protected session",
-    description: "Needs the integration to own management access; log out of the router GUI if unavailable.",
+    titleKey: "source.protected_json.title",
+    shortKey: "source.protected_json.short",
+    descriptionKey: "source.protected_json.description",
     icon: "mdi:account-lock-outline",
   },
   totr64: {
-    title: "TR-064 session data",
-    short: "TR-064 session",
-    description: "Optional line metrics that may pause while another router management session is active.",
+    titleKey: "source.totr64.title",
+    shortKey: "source.totr64.short",
+    descriptionKey: "source.totr64.description",
     icon: "mdi:lan-connect",
   },
   wan_counters: {
-    title: "Live WAN counters",
-    short: "Live WAN session",
-    description: "Real traffic counters and derived rates; a free management session is required.",
+    titleKey: "source.wan_counters.title",
+    shortKey: "source.wan_counters.short",
+    descriptionKey: "source.wan_counters.description",
     icon: "mdi:speedometer",
   },
   integration: {
-    title: "Integration health",
-    short: "Home Assistant",
-    description: "Generated locally by the integration and independent of router GUI ownership.",
+    titleKey: "source.integration.title",
+    shortKey: "source.integration.short",
+    descriptionKey: "source.integration.description",
     icon: "mdi:home-assistant",
   },
   router_control: {
-    title: "Explicit router actions",
-    short: "Confirmation required",
-    description: "Changes router state only after you explicitly confirm the action.",
+    titleKey: "source.router_control.title",
+    shortKey: "source.router_control.short",
+    descriptionKey: "source.router_control.description",
     icon: "mdi:gesture-tap-button",
   },
 };
 const CHILD_KIND_INFO = {
-  client: { label: "Network device", icon: "mdi:devices" },
-  dect_handset: { label: "DECT handset", icon: "mdi:phone-wireless" },
-  ip_phone: { label: "IP phone", icon: "mdi:deskphone" },
-  mesh_node: { label: "Mesh node", icon: "mdi:access-point-network" },
-  receiver: { label: "Mobile receiver", icon: "mdi:access-point-network" },
-  telephone_line: { label: "Telephone line", icon: "mdi:phone-in-talk" },
-  usb_device: { label: "USB device", icon: "mdi:usb" },
+  client: { labelKey: "child.client", icon: "mdi:devices" },
+  dect_handset: { labelKey: "child.dect_handset", icon: "mdi:phone-wireless" },
+  ip_phone: { labelKey: "child.ip_phone", icon: "mdi:deskphone" },
+  mesh_node: { labelKey: "child.mesh_node", icon: "mdi:access-point-network" },
+  receiver: { labelKey: "child.receiver", icon: "mdi:access-point-network" },
+  telephone_line: { labelKey: "child.telephone_line", icon: "mdi:phone-in-talk" },
+  usb_device: { labelKey: "child.usb_device", icon: "mdi:usb" },
 };
 
 const DECIMAL_DATA_FACTORS = {
@@ -129,76 +164,92 @@ const DECIMAL_DATA_FACTORS = {
   TB: 1_000_000_000_000,
 };
 const CAPABILITY_GROUP_INFO = {
-  connection_internet: { title: "Internet status", icon: "mdi:web-check" },
-  connection_addressing: { title: "Public addressing", icon: "mdi:ip-network-outline" },
-  bandwidth_capacity: { title: "Capacity & utilization", icon: "mdi:gauge" },
-  bandwidth_totals: { title: "Data totals", icon: "mdi:database-arrow-up-outline" },
-  bandwidth_packets: { title: "Packets", icon: "mdi:package-variant-closed" },
-  bandwidth_errors: { title: "Errors & discards", icon: "mdi:alert-circle-outline" },
-  bandwidth_interface: { title: "WAN interface", icon: "mdi:ethernet" },
-  bandwidth_live: { title: "Live rate", icon: "mdi:swap-vertical-bold" },
-  dsl_status: { title: "Status & profile", icon: "mdi:connection" },
-  dsl_sync: { title: "Current sync", icon: "mdi:transmission-tower" },
-  dsl_attainable: { title: "Attainable rate", icon: "mdi:speedometer" },
-  dsl_quality: { title: "Line quality", icon: "mdi:sine-wave" },
-  dsl_errors: { title: "Error counters", icon: "mdi:alert-outline" },
-  mobile_connection: { title: "Connectivity", icon: "mdi:signal-cellular-3" },
-  mobile_radio: { title: "Radio", icon: "mdi:radio-tower" },
-  mobile_signal: { title: "Signal quality", icon: "mdi:signal" },
-  mobile_tunnel: { title: "Hybrid tunnel traffic", icon: "mdi:swap-vertical" },
-  mobile_receivers: { title: "Mobile receivers", icon: "mdi:access-point-network" },
-  wireless_2_4: { title: "2.4 GHz Wi-Fi", icon: "mdi:wifi" },
-  wireless_5: { title: "5 GHz Wi-Fi", icon: "mdi:wifi" },
-  wireless_guest: { title: "Guest Wi-Fi", icon: "mdi:wifi-star" },
-  wireless_office: { title: "Office Wi-Fi", icon: "mdi:wifi-cog" },
-  wireless_mesh: { title: "Mesh overview", icon: "mdi:access-point-network" },
-  wireless_mesh_nodes: { title: "Mesh nodes", icon: "mdi:access-point-network" },
-  wireless_general: { title: "General Wi-Fi", icon: "mdi:wifi-cog" },
-  clients_overview: { title: "Network overview", icon: "mdi:devices" },
-  clients_devices: { title: "Network devices", icon: "mdi:laptop" },
-  clients_lan: { title: "LAN ports", icon: "mdi:ethernet" },
-  clients_dhcp: { title: "DHCP", icon: "mdi:ip-network" },
-  clients_forwarding: { title: "Port forwarding", icon: "mdi:router-network" },
-  clients_upnp: { title: "UPnP", icon: "mdi:lan-connect" },
-  telephony_registration: { title: "Registration", icon: "mdi:phone-check" },
-  telephony_calls: { title: "Calls", icon: "mdi:phone-in-talk" },
-  telephony_lines: { title: "Telephone lines", icon: "mdi:phone-classic" },
-  telephony_dect: { title: "DECT", icon: "mdi:phone-wireless" },
-  telephony_ip: { title: "IP phones", icon: "mdi:deskphone" },
-  telephony_phonebooks: { title: "Phonebooks", icon: "mdi:book-open-page-variant" },
-  system_health: { title: "System health", icon: "mdi:chip" },
-  system_firmware: { title: "Firmware", icon: "mdi:update" },
-  system_security: { title: "Security", icon: "mdi:shield-lock-outline" },
-  system_ddns: { title: "Dynamic DNS", icon: "mdi:dns-outline" },
-  system_vpn: { title: "VPN", icon: "mdi:vpn" },
-  system_parental: { title: "Parental controls", icon: "mdi:account-child-outline" },
-  system_usb: { title: "USB & storage", icon: "mdi:usb" },
-  system_services: { title: "Router services", icon: "mdi:cog-outline" },
-  management_session: { title: "Router session", icon: "mdi:account-lock-outline" },
-  management_health: { title: "Integration health", icon: "mdi:home-assistant" },
-  controls_wireless: { title: "Wi-Fi", icon: "mdi:wifi-cog" },
-  controls_internet: { title: "Internet & DSL", icon: "mdi:web-sync" },
-  controls_mesh: { title: "Mesh", icon: "mdi:access-point-network" },
-  controls_clients: { title: "Client access", icon: "mdi:account-lock-outline" },
-  controls_forwarding: { title: "Port forwarding & UPnP", icon: "mdi:router-network" },
-  controls_ddns: { title: "Dynamic DNS", icon: "mdi:dns-outline" },
-  controls_vpn: { title: "VPN", icon: "mdi:vpn" },
-  controls_parental: { title: "Parental controls", icon: "mdi:account-child-outline" },
-  controls_media: { title: "Media server", icon: "mdi:multimedia" },
-  controls_system: { title: "Router & firmware", icon: "mdi:power-cycle" },
-  controls_session: { title: "Session recovery", icon: "mdi:account-sync-outline" },
+  connection_internet: { titleKey: "group.connection_internet", icon: "mdi:web-check" },
+  connection_addressing: { titleKey: "group.connection_addressing", icon: "mdi:ip-network-outline" },
+  connection_privacy: { titleKey: "group.connection_privacy", icon: "mdi:shield-account-outline" },
+  bandwidth_capacity: { titleKey: "group.bandwidth_capacity", icon: "mdi:gauge" },
+  bandwidth_totals: { titleKey: "group.bandwidth_totals", icon: "mdi:database-arrow-up-outline" },
+  bandwidth_packets: { titleKey: "group.bandwidth_packets", icon: "mdi:package-variant-closed" },
+  bandwidth_errors: { titleKey: "group.bandwidth_errors", icon: "mdi:alert-circle-outline" },
+  bandwidth_interface: { titleKey: "group.bandwidth_interface", icon: "mdi:ethernet" },
+  bandwidth_live: { titleKey: "group.bandwidth_live", icon: "mdi:swap-vertical-bold" },
+  dsl_status: { titleKey: "group.dsl_status", icon: "mdi:connection" },
+  dsl_sync: { titleKey: "group.dsl_sync", icon: "mdi:transmission-tower" },
+  dsl_attainable: { titleKey: "group.dsl_attainable", icon: "mdi:speedometer" },
+  dsl_quality: { titleKey: "group.dsl_quality", icon: "mdi:sine-wave" },
+  dsl_errors: { titleKey: "group.dsl_errors", icon: "mdi:alert-outline" },
+  mobile_connection: { titleKey: "group.mobile_connection", icon: "mdi:signal-cellular-3" },
+  mobile_radio: { titleKey: "group.mobile_radio", icon: "mdi:radio-tower" },
+  mobile_signal: { titleKey: "group.mobile_signal", icon: "mdi:signal" },
+  mobile_tunnel: { titleKey: "group.mobile_tunnel", icon: "mdi:swap-vertical" },
+  mobile_receivers: { titleKey: "group.mobile_receivers", icon: "mdi:access-point-network" },
+  mobile_receiver_status: { titleKey: "group.mobile_receiver_status", icon: "mdi:access-point-network" },
+  mobile_receiver_firmware: { titleKey: "group.mobile_receiver_firmware", icon: "mdi:update" },
+  wireless_2_4: { titleKey: "group.wireless_2_4", icon: "mdi:wifi" },
+  wireless_5: { titleKey: "group.wireless_5", icon: "mdi:wifi" },
+  wireless_guest: { titleKey: "group.wireless_guest", icon: "mdi:wifi-star" },
+  wireless_office: { titleKey: "group.wireless_office", icon: "mdi:wifi-cog" },
+  wireless_mesh: { titleKey: "group.wireless_mesh", icon: "mdi:access-point-network" },
+  wireless_mesh_nodes: { titleKey: "group.wireless_mesh_nodes", icon: "mdi:access-point-network" },
+  wireless_radios: { titleKey: "group.wireless_radios", icon: "mdi:radio-tower" },
+  wireless_access: { titleKey: "group.wireless_access", icon: "mdi:account-lock-outline" },
+  wireless_wps: { titleKey: "group.wireless_wps", icon: "mdi:wifi-plus" },
+  wireless_schedule: { titleKey: "group.wireless_schedule", icon: "mdi:calendar-clock" },
+  wireless_general: { titleKey: "group.wireless_general", icon: "mdi:wifi-cog" },
+  clients_overview: { titleKey: "group.clients_overview", icon: "mdi:devices" },
+  clients_devices: { titleKey: "group.clients_devices", icon: "mdi:laptop" },
+  clients_lan: { titleKey: "group.clients_lan", icon: "mdi:ethernet" },
+  clients_dhcp: { titleKey: "group.clients_dhcp", icon: "mdi:ip-network" },
+  clients_forwarding: { titleKey: "group.clients_forwarding", icon: "mdi:router-network" },
+  clients_upnp: { titleKey: "group.clients_upnp", icon: "mdi:lan-connect" },
+  telephony_registration: { titleKey: "group.telephony_registration", icon: "mdi:phone-check" },
+  telephony_calls: { titleKey: "group.telephony_calls", icon: "mdi:phone-in-talk" },
+  telephony_lines: { titleKey: "group.telephony_lines", icon: "mdi:phone-classic" },
+  telephony_dect: { titleKey: "group.telephony_dect", icon: "mdi:phone-wireless" },
+  telephony_pbx: { titleKey: "group.telephony_pbx", icon: "mdi:phone-switch" },
+  telephony_voip: { titleKey: "group.telephony_voip", icon: "mdi:phone-lock" },
+  telephony_ip: { titleKey: "group.telephony_ip", icon: "mdi:deskphone" },
+  telephony_phonebooks: { titleKey: "group.telephony_phonebooks", icon: "mdi:book-open-page-variant" },
+  system_health: { titleKey: "group.system_health", icon: "mdi:chip" },
+  system_firmware: { titleKey: "group.system_firmware", icon: "mdi:update" },
+  system_security: { titleKey: "group.system_security", icon: "mdi:shield-lock-outline" },
+  system_security_dns: { titleKey: "group.system_security_dns", icon: "mdi:dns-outline" },
+  system_security_port_block: { titleKey: "group.system_security_port_block", icon: "mdi:shield-lock-outline" },
+  system_security_qos: { titleKey: "group.system_security_qos", icon: "mdi:priority-high" },
+  system_ddns: { titleKey: "group.system_ddns", icon: "mdi:dns-outline" },
+  system_vpn: { titleKey: "group.system_vpn", icon: "mdi:vpn" },
+  system_parental: { titleKey: "group.system_parental", icon: "mdi:account-child-outline" },
+  system_usb: { titleKey: "group.system_usb", icon: "mdi:usb" },
+  system_usb_tethering: { titleKey: "group.system_usb_tethering", icon: "mdi:usb-port" },
+  system_nas: { titleKey: "group.system_nas", icon: "mdi:nas" },
+  system_support: { titleKey: "group.system_support", icon: "mdi:lifebuoy" },
+  system_services: { titleKey: "group.system_services", icon: "mdi:cog-outline" },
+  management_session: { titleKey: "group.management_session", icon: "mdi:account-lock-outline" },
+  management_health: { titleKey: "group.management_health", icon: "mdi:home-assistant" },
+  controls_wireless: { titleKey: "group.controls_wireless", icon: "mdi:wifi-cog" },
+  controls_internet: { titleKey: "group.controls_internet", icon: "mdi:web-sync" },
+  controls_mobile: { titleKey: "group.controls_mobile", icon: "mdi:signal-5g" },
+  controls_mesh: { titleKey: "group.controls_mesh", icon: "mdi:access-point-network" },
+  controls_clients: { titleKey: "group.controls_clients", icon: "mdi:account-lock-outline" },
+  controls_forwarding: { titleKey: "group.controls_forwarding", icon: "mdi:router-network" },
+  controls_ddns: { titleKey: "group.controls_ddns", icon: "mdi:dns-outline" },
+  controls_vpn: { titleKey: "group.controls_vpn", icon: "mdi:vpn" },
+  controls_parental: { titleKey: "group.controls_parental", icon: "mdi:account-child-outline" },
+  controls_media: { titleKey: "group.controls_media", icon: "mdi:multimedia" },
+  controls_system: { titleKey: "group.controls_system", icon: "mdi:power-cycle" },
+  controls_session: { titleKey: "group.controls_session", icon: "mdi:account-sync-outline" },
 };
 const CAPABILITY_GROUP_ORDER = {
-  connection: ["connection_internet", "connection_addressing"],
+  connection: ["connection_internet", "connection_addressing", "connection_privacy"],
   bandwidth: ["bandwidth_capacity", "bandwidth_totals", "bandwidth_packets", "bandwidth_errors", "bandwidth_interface", "bandwidth_live"],
   dsl: ["dsl_status", "dsl_sync", "dsl_attainable", "dsl_quality", "dsl_errors"],
-  mobile: ["mobile_connection", "mobile_radio", "mobile_signal", "mobile_tunnel", "mobile_receivers"],
-  wireless: ["wireless_2_4", "wireless_5", "wireless_guest", "wireless_office", "wireless_mesh", "wireless_mesh_nodes", "wireless_general"],
+  mobile: ["mobile_connection", "mobile_radio", "mobile_signal", "mobile_tunnel", "mobile_receiver_status", "mobile_receiver_firmware", "mobile_receivers"],
+  wireless: ["wireless_2_4", "wireless_5", "wireless_guest", "wireless_office", "wireless_radios", "wireless_access", "wireless_wps", "wireless_schedule", "wireless_mesh", "wireless_mesh_nodes", "wireless_general"],
   clients: ["clients_overview", "clients_devices", "clients_lan", "clients_dhcp", "clients_forwarding", "clients_upnp"],
-  telephony: ["telephony_registration", "telephony_calls", "telephony_lines", "telephony_dect", "telephony_ip", "telephony_phonebooks"],
-  system: ["system_health", "system_firmware", "system_security", "system_ddns", "system_vpn", "system_parental", "system_usb", "system_services"],
+  telephony: ["telephony_registration", "telephony_calls", "telephony_lines", "telephony_dect", "telephony_pbx", "telephony_voip", "telephony_ip", "telephony_phonebooks"],
+  system: ["system_health", "system_firmware", "system_support", "system_security", "system_security_dns", "system_security_port_block", "system_security_qos", "system_ddns", "system_vpn", "system_parental", "system_usb", "system_usb_tethering", "system_nas", "system_services"],
   management: ["management_session", "management_health"],
-  controls: ["controls_session", "controls_wireless", "controls_internet", "controls_mesh", "controls_clients", "controls_forwarding", "controls_ddns", "controls_vpn", "controls_parental", "controls_media", "controls_system"],
+  controls: ["controls_session", "controls_wireless", "controls_internet", "controls_mobile", "controls_mesh", "controls_clients", "controls_forwarding", "controls_ddns", "controls_vpn", "controls_parental", "controls_media", "controls_system"],
 };
 
 const ESCAPE_MAP = {
@@ -217,29 +268,6 @@ function humanize(value) {
   return String(value ?? "")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function formatDurationSeconds(value, locale) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric < 0) return undefined;
-  let remaining = Math.floor(numeric);
-  if (remaining === 0) return "0 s";
-
-  const formatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
-  const units = [
-    ["d", 86_400],
-    ["h", 3_600],
-    ["min", 60],
-    ["s", 1],
-  ];
-  const parts = [];
-  for (const [label, seconds] of units) {
-    const amount = Math.floor(remaining / seconds);
-    remaining %= seconds;
-    if (amount > 0) parts.push(`${formatter.format(amount)} ${label}`);
-    if (parts.length === 2) break;
-  }
-  return parts.join(" ");
 }
 
 function formatTransferredData(state, locale) {
@@ -267,7 +295,7 @@ function formatTransferredData(state, locale) {
   return `${formatter.format(displayValue)} ${unit}`;
 }
 
-function capabilityGroupFor(meta) {
+export function capabilityGroupFor(meta) {
   const section = SECTION_INFO[meta.section] ? meta.section : "system";
   const key = String(meta.translation_key || "").toLowerCase();
   const childKind = meta.child_device?.kind;
@@ -281,9 +309,14 @@ function capabilityGroupFor(meta) {
   if (childKind === "ip_phone") return "telephony_ip";
   if (childKind === "usb_device") return "system_usb";
   if (childKind) return `${section}_other_devices`;
+  if (meta.capability_group && CAPABILITY_GROUP_INFO[meta.capability_group]) {
+    return meta.capability_group;
+  }
 
   if (section === "connection") {
-    if (key.startsWith("public_ipv")) return "connection_addressing";
+    if (key.startsWith("public_ipv") || key === "internet_ip_stack") {
+      return "connection_addressing";
+    }
     return "connection_internet";
   }
   if (section === "bandwidth") {
@@ -294,7 +327,7 @@ function capabilityGroupFor(meta) {
     if (key.startsWith("wan_errors") || key.startsWith("wan_discarded")) {
       return "bandwidth_errors";
     }
-    if (key === "wan_interface" || key === "wan_mtu") {
+    if (key.startsWith("wan_interface") || key === "wan_mtu") {
       return "bandwidth_interface";
     }
     if (key === "wan_download_rate" || key === "wan_upload_rate") {
@@ -318,7 +351,12 @@ function capabilityGroupFor(meta) {
     return "dsl_status";
   }
   if (section === "mobile") {
-    if (key.startsWith("lte_tunnel")) return "mobile_tunnel";
+    if (
+      key.startsWith("lte_tunnel") ||
+      (key.startsWith("hybrid_") && key.endsWith("_tunnel"))
+    ) {
+      return "mobile_tunnel";
+    }
     if (
       key.startsWith("mobile_rsrp") ||
       key.startsWith("mobile_rsrq") ||
@@ -343,6 +381,9 @@ function capabilityGroupFor(meta) {
       return "wireless_guest";
     }
     if (key.startsWith("office_wifi")) return "wireless_office";
+    if (key.startsWith("wifi_wps")) return "wireless_wps";
+    if (key === "wifi_mac_filter_enabled") return "wireless_access";
+    if (key.startsWith("wifi_schedule")) return "wireless_schedule";
     if (key.startsWith("mesh_")) return "wireless_mesh";
     return "wireless_general";
   }
@@ -370,6 +411,7 @@ function capabilityGroupFor(meta) {
         : "telephony_dect";
     }
     if (key.startsWith("ip_phone")) return "telephony_ip";
+    if (key.startsWith("pbx_")) return "telephony_pbx";
     return "telephony_registration";
   }
   if (section === "system") {
@@ -385,7 +427,9 @@ function capabilityGroupFor(meta) {
     if (key.startsWith("ddns")) return "system_ddns";
     if (key.startsWith("vpn")) return "system_vpn";
     if (key.startsWith("parental")) return "system_parental";
-    if (key.startsWith("usb") || key === "media_server") return "system_usb";
+    if (key.startsWith("usb") || key.startsWith("media_server")) {
+      return "system_usb";
+    }
     return "system_services";
   }
   if (section === "management") {
@@ -395,14 +439,28 @@ function capabilityGroupFor(meta) {
   }
   if (section === "controls") {
     if (key === "retry_protected_data") return "controls_session";
+    if (
+      [
+        "hybrid_bonding",
+        "internet_privacy_level_control",
+        "reconnect_internet",
+        "restart_dsl",
+      ].includes(key)
+    ) {
+      return "controls_internet";
+    }
+    if (key === "receiver_led_mode_control") return "controls_mobile";
     if (["wifi", "guest_wifi", "office_wifi", "wps"].includes(key)) {
       return "controls_wireless";
     }
-    if (["reconnect_internet", "restart_dsl"].includes(key)) {
-      return "controls_internet";
-    }
     if (key === "optimize_mesh") return "controls_mesh";
-    if (key === "client_internet_access") return "controls_clients";
+    if (
+      ["client_fixed_dhcp", "client_internet_access", "client_name"].includes(
+        key,
+      )
+    ) {
+      return "controls_clients";
+    }
     if (key === "port_forward_rule" || key === "upnp") {
       return "controls_forwarding";
     }
@@ -419,7 +477,9 @@ function capabilityGroupFor(meta) {
 
 function capabilityGroupInfo(groupId, sectionId) {
   return CAPABILITY_GROUP_INFO[groupId] || {
-    title: groupId.endsWith("_devices") ? "Other devices" : "Other",
+    titleKey: groupId.endsWith("_devices")
+      ? "group.other_devices"
+      : "group.other",
     icon: SECTION_INFO[sectionId]?.icon || "mdi:dots-horizontal-circle-outline",
   };
 }
@@ -433,11 +493,28 @@ function capabilityGroupRank(sectionId, groupId) {
 function iconFor(meta, state) {
   if (state?.attributes?.icon) return state.attributes.icon;
   if (meta.domain === "switch") return "mdi:toggle-switch";
+  if (meta.domain === "select") return "mdi:form-dropdown";
   if (meta.domain === "button") return "mdi:gesture-tap-button";
   if (meta.domain === "binary_sensor") return "mdi:checkbox-marked-circle-outline";
   if (meta.domain === "device_tracker") return "mdi:devices";
   if (meta.domain === "update") return "mdi:update";
+  if (meta.domain === "text" && meta.translation_key === "client_name") {
+    return "mdi:rename-box";
+  }
   return SECTION_INFO[meta.section]?.icon || "mdi:gauge";
+}
+
+export function internetConnectionPresentation(state) {
+  if (!state || ["unavailable", "unknown"].includes(state.state)) {
+    return {
+      className: "unavailable",
+      labelKey: "hero.connection_unavailable",
+    };
+  }
+  if (state.state === "on") {
+    return { className: "online", labelKey: "hero.connected" };
+  }
+  return { className: "offline", labelKey: "hero.disconnected" };
 }
 
 class SpeedportSmartPanel extends HTMLElement {
@@ -454,9 +531,12 @@ class SpeedportSmartPanel extends HTMLElement {
     this._pendingAction = undefined;
     this._actionBusy = false;
     this._notice = "";
+    this._noticeKind = "status";
+    this._focusAfterRenderEntityId = undefined;
     this._refreshTimer = undefined;
     this._renderFrame = undefined;
     this.shadowRoot.addEventListener("click", (event) => this._handleClick(event));
+    this.shadowRoot.addEventListener("input", (event) => this._handleInput(event));
     this.shadowRoot.addEventListener("keydown", (event) => this._handleKeyDown(event));
   }
 
@@ -498,7 +578,15 @@ class SpeedportSmartPanel extends HTMLElement {
   }
 
   _shouldRenderForHass(previous, next) {
-    if (!previous || !this._metadata || previous.locale !== next.locale) return true;
+    if (this._pendingAction) return false;
+    if (
+      !previous ||
+      !this._metadata ||
+      previous.language !== next.language ||
+      previous.locale !== next.locale
+    ) {
+      return true;
+    }
     return this._metadata.routers.some((router) =>
       router.entities.some(
         (entity) =>
@@ -535,11 +623,10 @@ class SpeedportSmartPanel extends HTMLElement {
         this._selectedEntry = metadata.routers[0]?.entry_id;
       }
     } catch (_error) {
-      this._loadError =
-        "Dashboard metadata is unavailable. Reload Home Assistant after updating the integration.";
+      this._loadError = "error.metadata_unavailable";
     } finally {
       this._loading = false;
-      this._render();
+      if (!this._pendingAction) this._render();
     }
   }
 
@@ -566,33 +653,100 @@ class SpeedportSmartPanel extends HTMLElement {
   }
 
   _isControlUnavailable(meta, state) {
+    const router = this._currentRouter();
+    const managementMeta = router?.entities?.find(
+      (entity) => entity.translation_key === "management_access",
+    );
+    const managementState = this._state(managementMeta);
+    const controlsAvailable =
+      managementState?.attributes?.controls_available ??
+      router?.management?.controls_available;
+    const managementStateValue =
+      managementState?.state || router?.management?.state;
     return (
       this._isUnavailable(state) ||
+      !managementControlAvailable(
+        meta,
+        managementStateValue,
+        controlsAvailable,
+      ) ||
+      (meta?.domain === "text" && state?.state === "unknown") ||
+      (meta?.domain === "select" && !isSupportedSelectControl(meta, state)) ||
+      (meta?.domain === "switch" && !["on", "off"].includes(state?.state)) ||
       (meta?.domain === "update" && state?.state !== "on")
     );
   }
 
   _friendlyName(meta, state) {
-    return (
-      state?.attributes?.friendly_name ||
-      humanize(meta.translation_key || meta.entity_id)
+    return entityDisplayName(
+      meta,
+      state,
+      this._translatedEntityName(meta),
+      humanize(meta?.translation_key || meta?.entity_id),
     );
   }
 
+  _translatedEntityName(meta) {
+    const key = `component.speedport_smart.entity.${meta.domain}.${meta.translation_key}.name`;
+    return this._hass?.localize?.(key) || undefined;
+  }
+
+  _translatedSelectOption(meta, option) {
+    if (!meta?.translation_key) return humanize(option);
+    const key = `component.speedport_smart.entity.select.${meta.translation_key}.state.${option}`;
+    return this._hass?.localize?.(key) || humanize(option);
+  }
+
   _locale() {
-    return this._hass?.locale?.language || navigator.language || "en";
+    return (
+      this._hass?.locale?.language ||
+      this._hass?.language ||
+      globalThis.navigator?.language ||
+      "en"
+    );
+  }
+
+  _language() {
+    return resolvePanelLanguage(this._hass, globalThis.navigator?.language);
+  }
+
+  _t(key, replacements = {}) {
+    return panelTranslate(this._language(), key, replacements);
+  }
+
+  _managementStateLabel(state) {
+    const key = `management.state.${state}`;
+    const translated = this._t(key);
+    return translated === key ? humanize(state) : translated;
+  }
+
+  _entryStateLabel(state) {
+    const key = `entry_state.${state}`;
+    const translated = this._t(key);
+    return translated === key ? humanize(state) : translated;
+  }
+
+  _capabilityName(name) {
+    const key = `capability.${name}`;
+    const translated = this._t(key);
+    return translated === key ? humanize(name) : translated;
   }
 
   _formatState(state) {
-    if (!state) return "Unavailable";
-    if (state.state === "unavailable") return "Unavailable";
-    if (state.state === "unknown") return "Unknown";
+    if (!state || state.state === "unavailable") {
+      return this._t("status.unavailable");
+    }
+    if (state.state === "unknown") return this._t("status.unknown");
     const attributes = state.attributes || {};
     if (
       attributes.device_class === "duration" &&
       attributes.unit_of_measurement === "s"
     ) {
-      const duration = formatDurationSeconds(state.state, this._locale());
+      const duration = formatPanelDurationSeconds(
+        state.state,
+        this._locale(),
+        this._language(),
+      );
       if (duration !== undefined) return duration;
     }
     const transferredData = formatTransferredData(state, this._locale());
@@ -618,6 +772,7 @@ class SpeedportSmartPanel extends HTMLElement {
       this._selectedEntry = target.dataset.router;
       this._pendingAction = undefined;
       this._notice = "";
+      this._noticeKind = "status";
       this._render();
       return;
     }
@@ -640,8 +795,7 @@ class SpeedportSmartPanel extends HTMLElement {
       return;
     }
     if (target.dataset.cancelAction !== undefined) {
-      this._pendingAction = undefined;
-      this._render();
+      this._closeConfirmation();
       return;
     }
     if (target.dataset.confirmAction !== undefined) {
@@ -650,58 +804,106 @@ class SpeedportSmartPanel extends HTMLElement {
   }
 
   _handleKeyDown(event) {
-    if (!this._pendingAction || this._actionBusy) return;
-    if (event.key === "Escape") {
+    if (!this._pendingAction) return;
+    if (event.key === "Escape" && !this._actionBusy) {
       event.preventDefault();
-      this._pendingAction = undefined;
-      this._render();
+      this._closeConfirmation();
+      return;
+    }
+    if (
+      event.key === "Enter" &&
+      event.target?.dataset?.textDraft !== undefined &&
+      !this._actionBusy
+    ) {
+      event.preventDefault();
+      this._runPendingAction();
       return;
     }
     if (event.key !== "Tab") return;
     const dialog = this.shadowRoot.querySelector(".confirm-dialog");
-    const focusable = [...(dialog?.querySelectorAll("button:not([disabled])") || [])];
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && this.shadowRoot.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && this.shadowRoot.activeElement === last) {
-      event.preventDefault();
-      first.focus();
+    keepDialogFocus(event, dialog, this.shadowRoot.activeElement);
+  }
+
+  _handleInput(event) {
+    const pending = this._pendingAction;
+    const target = event.target;
+    if (!pending || !target?.dataset) {
+      return;
     }
+    if (pending.kind === "select" && target.dataset.selectDraft !== undefined) {
+      if (pending.options?.includes(target.value)) pending.value = target.value;
+      return;
+    }
+    if (pending.kind === "text" && target.dataset.textDraft !== undefined) {
+      pending.value = target.value;
+      pending.errorKey = undefined;
+      target.removeAttribute("aria-invalid");
+      const error = this.shadowRoot.querySelector("[data-text-error]");
+      if (error) error.textContent = "";
+    }
+  }
+
+  _closeConfirmation() {
+    this._focusAfterRenderEntityId = this._pendingAction?.entityId;
+    this._pendingAction = undefined;
+    this._render();
   }
 
   _prepareAction(entityId) {
     const meta = this._entityMetadata(entityId);
     const state = this._state(meta);
-    if (!meta || this._isControlUnavailable(meta, state)) {
+    if (!meta?.control || this._isControlUnavailable(meta, state)) {
       this._notice =
         meta?.domain === "update" && state?.state !== "on"
-          ? "The router firmware is already up to date."
-          : "This control is currently unavailable.";
+          ? this._t("notice.firmware_current")
+          : this._t("notice.control_unavailable");
+      this._noticeKind = "status";
       this._render();
       return;
     }
 
     const label = this._friendlyName(meta, state);
-    let actionLabel = "Run action";
-    let message =
-      "This action changes router state. It will run once only after confirmation.";
-    if (meta.translation_key === "retry_protected_data") {
-      actionLabel = "Retry protected data";
-      message =
-        "First use Logout in the Speedport web interface. Closing the browser tab may retain its session. This retry reads capabilities and does not change router settings.";
+    let actionLabel = this._t("action.run_action");
+    let message = this._t("confirm.default");
+    let kind = "action";
+    let value;
+    let constraints;
+    let options;
+    let observedState;
+    if (isSupportedTextControl(meta)) {
+      kind = "text";
+      value = typeof state.state === "string" ? state.state : "";
+      observedState = state.state;
+      constraints = textControlConstraints(state);
+      actionLabel = this._t("action.save_name");
+      message = this._t("confirm.text");
+    } else if (isSupportedSelectControl(meta, state)) {
+      kind = "select";
+      value = state.state;
+      observedState = state.state;
+      options = [...selectControlOptions(meta, state)];
+      actionLabel = this._t("action.apply_setting");
+      message = this._t(
+        meta.disruptive ? "confirm.disruptive_select" : "confirm.select",
+        { label },
+      );
+    } else if (meta.translation_key === "retry_protected_data") {
+      actionLabel = this._t("action.retry_protected");
+      message = this._t("confirm.retry");
     } else if (meta.domain === "switch") {
-      actionLabel = state.state === "on" ? "Turn off" : "Turn on";
-      message = `Confirm changing ${label}. Nothing is changed automatically.`;
+      observedState = state.state;
+      actionLabel = this._t(
+        state.state === "on" ? "action.turn_off" : "action.turn_on",
+      );
+      message = this._t(
+        meta.disruptive ? "confirm.disruptive_switch" : "confirm.switch",
+        { label },
+      );
     } else if (meta.domain === "update") {
-      actionLabel = "Install update";
-      message =
-        "Installing firmware can interrupt network access and restart the router. Continue only when you are ready.";
+      actionLabel = this._t("action.install_update");
+      message = this._t("confirm.update");
     } else if (meta.disruptive) {
-      message =
-        "This action can interrupt network service. It will run once only after confirmation.";
+      message = this._t("confirm.disruptive");
     }
 
     this._pendingAction = {
@@ -710,8 +912,19 @@ class SpeedportSmartPanel extends HTMLElement {
       actionLabel,
       message,
       disruptive: Boolean(meta.disruptive || meta.domain === "update"),
+      kind,
+      value,
+      constraints,
+      options,
+      observedState,
+      errorKey: undefined,
     };
+    if (["select", "text"].includes(kind) && this._renderFrame) {
+      window.cancelAnimationFrame(this._renderFrame);
+      this._renderFrame = undefined;
+    }
     this._notice = "";
+    this._noticeKind = "status";
     this._render();
   }
 
@@ -720,37 +933,101 @@ class SpeedportSmartPanel extends HTMLElement {
     const pending = this._pendingAction;
     const meta = this._entityMetadata(pending.entityId);
     const state = this._state(meta);
-    if (!meta || this._isControlUnavailable(meta, state)) {
+    if (!meta?.control || this._isControlUnavailable(meta, state)) {
       this._pendingAction = undefined;
-      this._notice = "The control became unavailable before it could run.";
+      this._focusAfterRenderEntityId = pending.entityId;
+      this._notice = this._t("notice.control_changed");
+      this._noticeKind = "status";
       this._render();
       return;
+    }
+
+    let serviceCall;
+    if (pending.kind === "text") {
+      const constraints = textControlConstraints(state);
+      const errorKey = validateTextControlValue(pending.value, constraints);
+      if (errorKey) {
+        pending.constraints = constraints;
+        pending.errorKey = errorKey;
+        this._render();
+        return;
+      }
+      serviceCall = textControlServiceCall(
+        meta,
+        pending.value,
+        pending.observedState,
+        state.state,
+      );
+      if (!serviceCall) {
+        this._pendingAction = undefined;
+        this._focusAfterRenderEntityId = pending.entityId;
+        this._notice = this._t("notice.control_changed");
+        this._noticeKind = "status";
+        this._render();
+        return;
+      }
+    } else if (pending.kind === "select") {
+      serviceCall = selectControlServiceCall(
+        meta,
+        pending.value,
+        pending.observedState,
+        state,
+      );
+      if (!serviceCall) {
+        this._pendingAction = undefined;
+        this._focusAfterRenderEntityId = pending.entityId;
+        this._notice = this._t("notice.control_changed");
+        this._noticeKind = "status";
+        this._render();
+        return;
+      }
+    } else if (meta.domain === "switch") {
+      serviceCall = switchControlServiceCall(
+        meta,
+        pending.observedState,
+        state.state,
+      );
+      if (!serviceCall) {
+        this._pendingAction = undefined;
+        this._focusAfterRenderEntityId = pending.entityId;
+        this._notice = this._t("notice.control_changed");
+        this._noticeKind = "status";
+        this._render();
+        return;
+      }
     }
 
     this._actionBusy = true;
     this._render();
     try {
-      if (meta.domain === "button") {
+      if (serviceCall) {
+        await this._hass.callService(
+          serviceCall.domain,
+          serviceCall.service,
+          serviceCall.data,
+        );
+      } else if (meta.domain === "button") {
         await this._hass.callService("button", "press", {
           entity_id: meta.entity_id,
         });
-      } else if (meta.domain === "switch") {
-        await this._hass.callService(
-          "switch",
-          state.state === "on" ? "turn_off" : "turn_on",
-          { entity_id: meta.entity_id },
-        );
       } else if (meta.domain === "update") {
         await this._hass.callService("update", "install", {
           entity_id: meta.entity_id,
         });
       } else {
-        throw new Error("Unsupported control domain");
+        throw new Error(this._t("error.unsupported_control"));
       }
-      this._notice = `${pending.actionLabel} requested successfully.`;
+      this._notice = this._t("notice.action_success", {
+        action: pending.actionLabel,
+      });
+      this._noticeKind = "status";
       this._pendingAction = undefined;
+      this._focusAfterRenderEntityId = pending.entityId;
     } catch (_error) {
-      this._notice = "Action failed. Check Home Assistant logs for details.";
+      this._notice = this._t("error.action_failed");
+      this._noticeKind = "alert";
+      this._pendingAction = undefined;
+      this._focusAfterRenderEntityId = pending.entityId;
     } finally {
       this._actionBusy = false;
       this._render();
@@ -765,14 +1042,16 @@ class SpeedportSmartPanel extends HTMLElement {
         ? "available"
         : "unavailable";
     const statusLabel = unsupported
-      ? "Not detected"
+      ? this._t("status.not_detected")
       : source.available
-        ? "Ready now"
-        : "Temporarily unavailable";
+        ? this._t("status.ready_now")
+        : this._t("status.temporarily_unavailable");
+    const sourceInfo =
+      ACCESS_SOURCE_INFO[source.id] || ACCESS_SOURCE_INFO.protected_json;
     return `
       <div class="source ${status}">
-        <span class="source-dot"></span>
-        <span>${escapeHtml(source.label)}</span>
+        <span class="source-dot" aria-hidden="true"></span>
+        <span>${escapeHtml(this._t(sourceInfo.titleKey))}</span>
         <strong>${escapeHtml(statusLabel)}</strong>
       </div>
     `;
@@ -783,6 +1062,7 @@ class SpeedportSmartPanel extends HTMLElement {
       (entity) => entity.translation_key === "management_access",
     );
     const managementState = this._state(managementMeta);
+    if (!managementMeta && !router.management) return "";
     const state =
       managementState?.state || router.management?.state || "unavailable";
     const attributes = managementState?.attributes || {};
@@ -791,18 +1071,17 @@ class SpeedportSmartPanel extends HTMLElement {
       router.management?.browser_logout_required ??
       false;
     const owner = attributes.owner_ip_address;
-    const stateLabel = humanize(state);
+    const stateLabel = this._managementStateLabel(state);
 
     if (logoutRequired || ["blocked", "other_session"].includes(state)) {
       return `
         <aside class="management-alert warning">
-          <ha-icon icon="mdi:account-lock"></ha-icon>
+          <ha-icon icon="mdi:account-lock" aria-hidden="true"></ha-icon>
           <div>
-            <strong>Browser session owns management access</strong>
+            <strong>${escapeHtml(this._t("management.browser.title"))}</strong>
             <p>
-              In the Speedport web interface, use <b>Logout</b> before retrying.
-              Closing the tab or window may leave the session active.
-              ${owner ? `Current owner: ${escapeHtml(owner)}.` : ""}
+              ${escapeHtml(this._t("management.browser.body"))}
+              ${owner ? escapeHtml(this._t("management.browser.owner", { owner })) : ""}
             </p>
           </div>
           <span class="state-pill">${escapeHtml(stateLabel)}</span>
@@ -815,17 +1094,24 @@ class SpeedportSmartPanel extends HTMLElement {
         router.management?.retry_after_seconds;
       return `
         <aside class="management-alert caution">
-          <ha-icon icon="mdi:timer-lock-outline"></ha-icon>
+          <ha-icon icon="mdi:timer-lock-outline" aria-hidden="true"></ha-icon>
           <div>
-            <strong>Router login is temporarily locked</strong>
+            <strong>${escapeHtml(this._t("management.locked.title"))}</strong>
             <p>
-              Wait for the router cooldown before retrying protected data.
+              ${escapeHtml(this._t("management.locked.body"))}
               ${
                 retryAfter != null
-                  ? `About ${escapeHtml(
-                      formatDurationSeconds(retryAfter, this._locale()) ||
-                        `${retryAfter} s`,
-                    )} remain.`
+                  ? escapeHtml(
+                      this._t("management.locked.remaining", {
+                        duration:
+                          formatPanelDurationSeconds(
+                            retryAfter,
+                            this._locale(),
+                            this._language(),
+                          ) ||
+                          `${retryAfter} ${this._t("duration.second")}`,
+                      }),
+                    )
                   : ""
               }
             </p>
@@ -834,12 +1120,13 @@ class SpeedportSmartPanel extends HTMLElement {
         </aside>
       `;
     }
+    const healthy = state === "available";
     return `
-      <aside class="management-alert good">
-        <ha-icon icon="mdi:shield-check-outline"></ha-icon>
+      <aside class="management-alert ${healthy ? "good" : "caution"}">
+        <ha-icon icon="${healthy ? "mdi:shield-check-outline" : "mdi:shield-alert-outline"}" aria-hidden="true"></ha-icon>
         <div>
-          <strong>Management access ${escapeHtml(stateLabel.toLowerCase())}</strong>
-          <p>Public and protected data are grouped below by proven capability.</p>
+          <strong>${escapeHtml(this._t("management.access.title", { state: stateLabel }))}</strong>
+          <p>${escapeHtml(this._t("management.access.body"))}</p>
         </div>
         <span class="state-pill">${escapeHtml(stateLabel)}</span>
       </aside>
@@ -847,12 +1134,12 @@ class SpeedportSmartPanel extends HTMLElement {
   }
 
   _childEntityName(meta, state) {
-    if (meta.domain === "device_tracker") return "Presence";
+    if (meta.domain === "device_tracker") return this._t("label.presence");
     const friendlyName = this._friendlyName(meta, state);
     const deviceName = meta.child_device?.name;
     if (!deviceName) return friendlyName;
     if (friendlyName === deviceName) {
-      return humanize(meta.translation_key || meta.domain);
+      return this._translatedEntityName(meta);
     }
     const prefix = `${deviceName} `;
     return friendlyName.startsWith(prefix)
@@ -870,21 +1157,27 @@ class SpeedportSmartPanel extends HTMLElement {
       }
     }
 
-    const groupTitle = capabilityGroupInfo(groupId, meta.section).title;
-    if (label.toLowerCase() === groupTitle.toLowerCase()) return "Status";
+    const groupTitle = this._t(
+      capabilityGroupInfo(groupId, meta.section).titleKey,
+    );
+    if (label.toLowerCase() === groupTitle.toLowerCase()) {
+      return this._t("label.status");
+    }
     if (label.toLowerCase().startsWith(`${groupTitle.toLowerCase()} `)) {
       return label.slice(groupTitle.length + 1);
     }
 
     const semanticPrefixes = {
-      connection: ["Internet"],
+      connection: [this._capabilityName("internet")],
       bandwidth: ["WAN"],
       dsl: ["DSL"],
-      mobile: ["Mobile"],
-      system: ["System"],
+      mobile: [this._capabilityName("mobile")],
+      system: [this._capabilityName("system")],
     };
     for (const prefix of semanticPrefixes[meta.section] || []) {
-      if (label.toLowerCase() === prefix.toLowerCase()) return "Status";
+      if (label.toLowerCase() === prefix.toLowerCase()) {
+        return this._t("label.status");
+      }
       if (label.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) {
         return label.slice(prefix.length + 1);
       }
@@ -894,7 +1187,8 @@ class SpeedportSmartPanel extends HTMLElement {
 
   _renderEntity(meta, { capabilityGroup = undefined, child = false, hero = false } = {}) {
     const state = this._state(meta);
-    const unavailable = this._isUnavailable(state);
+    const stateClass = entityAvailability(meta, state);
+    const unavailable = stateClass !== "available";
     const controlUnavailable = meta.control
       ? this._isControlUnavailable(meta, state)
       : false;
@@ -905,41 +1199,45 @@ class SpeedportSmartPanel extends HTMLElement {
         : this._friendlyName(meta, state);
     const displayState =
       meta.domain === "button" && state?.state === "unknown"
-        ? "Ready"
+        ? this._t("status.ready")
         : this._formatState(state);
     const icon = iconFor(meta, state);
-    const stateClass = unavailable ? "unavailable" : "available";
     const sourceInfo =
       ACCESS_SOURCE_INFO[meta.access_source] || ACCESS_SOURCE_INFO.protected_json;
 
     if (hero) {
       return `
-        <article class="hero-metric ${stateClass}" data-more-info="${escapeHtml(meta.entity_id)}">
-          <div class="hero-icon"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></div>
+        <button class="hero-metric ${stateClass}" data-more-info="${escapeHtml(meta.entity_id)}">
+          <div class="hero-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></div>
           <div>
             <span>${escapeHtml(label)}</span>
             <strong>${escapeHtml(displayState)}</strong>
-            <small>${escapeHtml(sourceInfo.short)} · ${unavailable ? "waiting for a fresh sample" : "recent aggregate WAN rate"}</small>
+            <small>${escapeHtml(this._t(sourceInfo.shortKey))} · ${escapeHtml(this._t(unavailable ? "status.waiting_sample" : "status.recent_rate"))}</small>
           </div>
-        </article>
+        </button>
       `;
     }
 
     const actionLabel =
       meta.translation_key === "retry_protected_data"
-        ? "Retry"
+        ? this._t("action.retry")
+        : isSupportedTextControl(meta)
+          ? this._t("action.edit")
+        : meta.domain === "select"
+          ? this._t("action.change_setting")
         : meta.domain === "switch"
           ? state?.state === "on"
-            ? "Turn off"
-            : "Turn on"
+            ? this._t("action.turn_off")
+            : this._t("action.turn_on")
           : meta.domain === "update"
-            ? "Install"
-            : "Run";
+            ? this._t("action.install")
+            : this._t("action.run");
     const control = meta.control
       ? `
         <button
           class="entity-action ${meta.disruptive ? "disruptive" : ""}"
           data-control="${escapeHtml(meta.entity_id)}"
+          aria-label="${escapeHtml(this._t("action.for_entity", { action: actionLabel, entity: label }))}"
           ${controlUnavailable ? "disabled" : ""}
         >
           ${escapeHtml(actionLabel)}
@@ -950,15 +1248,15 @@ class SpeedportSmartPanel extends HTMLElement {
     return `
       <article class="entity-card ${child ? "child-entity-card" : ""} ${stateClass} ${meta.control ? "control-card" : ""}">
         <button class="entity-main" data-more-info="${escapeHtml(meta.entity_id)}">
-          <span class="entity-icon"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></span>
+          <span class="entity-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(icon)}"></ha-icon></span>
           <span class="entity-copy">
             <span class="entity-name">${escapeHtml(label)}</span>
             <strong class="entity-state">${escapeHtml(displayState)}</strong>
-            <span class="source-badge" title="${escapeHtml(sourceInfo.description)}">
-              ${escapeHtml(sourceInfo.short)}
+            <span class="source-badge" title="${escapeHtml(this._t(sourceInfo.descriptionKey))}">
+              ${escapeHtml(this._t(sourceInfo.shortKey))}
             </span>
           </span>
-          <span class="availability-dot" title="${unavailable ? "Unavailable" : "Available"}"></span>
+          <span class="availability-dot" aria-hidden="true" title="${escapeHtml(this._t(stateClass === "available" ? "status.available" : stateClass === "unknown" ? "status.unknown" : "status.unavailable"))}"></span>
         </button>
         ${control}
       </article>
@@ -969,24 +1267,27 @@ class SpeedportSmartPanel extends HTMLElement {
     const child = entities[0]?.child_device;
     if (!child) return "";
     const kindInfo = CHILD_KIND_INFO[child.kind] || {
-      label: humanize(child.kind),
+      labelKey: undefined,
       icon: "mdi:devices",
     };
+    const kindLabel = kindInfo.labelKey
+      ? this._t(kindInfo.labelKey)
+      : humanize(child.kind);
     const details = child.model
-      ? `${kindInfo.label} · ${child.model}`
-      : kindInfo.label;
-    const unavailable = entities.every((entity) =>
-      this._isUnavailable(this._state(entity)),
+      ? `${kindLabel} · ${child.model}`
+      : kindLabel;
+    const stateClass = aggregateAvailability(
+      entities.map((entity) => entityAvailability(entity, this._state(entity))),
     );
     return `
-      <section class="child-device-card ${unavailable ? "unavailable" : "available"}" data-child-device="${escapeHtml(child.device_id)}">
+      <section class="child-device-card ${stateClass}" data-child-device="${escapeHtml(child.device_id)}">
         <header class="child-device-heading">
-          <span class="child-device-icon"><ha-icon icon="${escapeHtml(kindInfo.icon)}"></ha-icon></span>
+          <span class="child-device-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(kindInfo.icon)}"></ha-icon></span>
           <span class="child-device-copy">
             <strong>${escapeHtml(child.name)}</strong>
             <small>${escapeHtml(details)}</small>
           </span>
-          <span class="child-device-count" title="${entities.length} entities">${entities.length}</span>
+          <span class="child-device-count" title="${escapeHtml(this._t(entities.length === 1 ? "count.entity" : "count.entities", { count: entities.length }))}">${entities.length}</span>
         </header>
         <div class="child-device-entities">
           ${entities.map((entity) => this._renderEntity(entity, { child: true })).join("")}
@@ -1021,12 +1322,15 @@ class SpeedportSmartPanel extends HTMLElement {
       /[^a-z0-9_-]/gi,
       "-",
     );
-    const countLabel = `${entities.length} ${entities.length === 1 ? "entity" : "entities"}`;
+    const countLabel = this._t(
+      entities.length === 1 ? "count.entity" : "count.entities",
+      { count: entities.length },
+    );
     return `
       <section class="entity-capability-block ${childGroups.size ? "device-capability-block" : ""}" aria-labelledby="${escapeHtml(headingId)}">
         <header class="entity-capability-heading">
           <span class="entity-capability-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(info.icon)}"></ha-icon></span>
-          <h3 id="${escapeHtml(headingId)}">${escapeHtml(info.title)}</h3>
+          <h3 id="${escapeHtml(headingId)}">${escapeHtml(this._t(info.titleKey))}</h3>
           <span class="entity-capability-count" aria-label="${escapeHtml(countLabel)}">${entities.length}</span>
         </header>
         ${rootGrid}
@@ -1068,13 +1372,13 @@ class SpeedportSmartPanel extends HTMLElement {
           : "local";
         const statusText = sourceState
           ? sourceState.supported === false
-            ? "Not detected"
+            ? this._t("status.not_detected")
             : sourceState.available
-              ? "Available now"
-              : "Temporarily unavailable"
+              ? this._t("status.available_now")
+              : this._t("status.temporarily_unavailable")
           : sourceId === "router_control"
-            ? "Runs only on confirmation"
-            : "Available locally";
+            ? this._t("status.confirmation_only")
+            : this._t("status.available_locally");
         const capabilityGroups = new Map();
         for (const entity of sourceEntities) {
           const groupId = capabilityGroupFor(entity);
@@ -1088,8 +1392,11 @@ class SpeedportSmartPanel extends HTMLElement {
             ([left], [right]) =>
               capabilityGroupRank(sectionId, left) -
                 capabilityGroupRank(sectionId, right) ||
-              capabilityGroupInfo(left, sectionId).title.localeCompare(
-                capabilityGroupInfo(right, sectionId).title,
+              this._t(
+                capabilityGroupInfo(left, sectionId).titleKey,
+              ).localeCompare(
+                this._t(capabilityGroupInfo(right, sectionId).titleKey),
+                this._locale(),
               ),
           )
           .map(([groupId, groupEntities]) =>
@@ -1107,12 +1414,12 @@ class SpeedportSmartPanel extends HTMLElement {
         return `
           <div class="entity-source-group">
             <header class="entity-source-heading ${statusClass}">
-              <span class="entity-source-icon"><ha-icon icon="${escapeHtml(sourceInfo.icon)}"></ha-icon></span>
+              <span class="entity-source-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(sourceInfo.icon)}"></ha-icon></span>
               <div>
-                <strong>${escapeHtml(sourceInfo.title)}</strong>
-                <p>${escapeHtml(sourceInfo.description)}</p>
+                <strong>${escapeHtml(this._t(sourceInfo.titleKey))}</strong>
+                <p>${escapeHtml(this._t(sourceInfo.descriptionKey))}</p>
               </div>
-              <span class="entity-source-status"><i></i>${escapeHtml(statusText)}</span>
+              <span class="entity-source-status"><i aria-hidden="true"></i>${escapeHtml(statusText)}</span>
             </header>
             ${capabilityGrid}
           </div>
@@ -1122,10 +1429,10 @@ class SpeedportSmartPanel extends HTMLElement {
     return `
       <section class="dashboard-section section-${escapeHtml(sectionId)}">
         <header class="section-heading">
-          <span class="section-icon"><ha-icon icon="${info.icon}"></ha-icon></span>
+          <span class="section-icon" aria-hidden="true"><ha-icon icon="${info.icon}"></ha-icon></span>
           <div>
-            <h2>${escapeHtml(info.title)}</h2>
-            <p>${escapeHtml(info.subtitle)}</p>
+            <h2>${escapeHtml(this._t(info.titleKey))}</h2>
+            <p>${escapeHtml(this._t(info.subtitleKey))}</p>
           </div>
           <span class="section-count">${entities.length}</span>
         </header>
@@ -1141,18 +1448,18 @@ class SpeedportSmartPanel extends HTMLElement {
       bySource[family.source].push(family.name);
     }
     const sourceNames = {
-      public_status: "Public status",
-      public_json: "Public router data",
-      protected_json: "Protected router data",
+      public_status: "capabilities.public_status",
+      public_json: "capabilities.public_json",
+      protected_json: "capabilities.protected_json",
     };
     const groups = Object.entries(bySource)
       .map(
         ([source, names]) => `
           <div class="capability-group">
-            <strong>${escapeHtml(sourceNames[source] || humanize(source))}</strong>
+            <strong>${escapeHtml(sourceNames[source] ? this._t(sourceNames[source]) : humanize(source))}</strong>
             <div class="capability-chips">
               ${names
-                .map((name) => `<span>${escapeHtml(humanize(name))}</span>`)
+                .map((name) => `<span>${escapeHtml(this._capabilityName(name))}</span>`)
                 .join("")}
             </div>
           </div>
@@ -1162,11 +1469,11 @@ class SpeedportSmartPanel extends HTMLElement {
     return `
       <details class="capability-details">
         <summary>
-          <span>Discovered capabilities</span>
-          <small>${router.capabilities?.length || 0} active signals</small>
+          <span>${escapeHtml(this._t("capabilities.title"))}</span>
+          <small>${escapeHtml(this._t("capabilities.active_signals", { count: router.capabilities?.length || 0 }))}</small>
         </summary>
         <div class="capability-content">
-          ${groups || "<p>No capability metadata is available yet.</p>"}
+          ${groups || `<p>${escapeHtml(this._t("capabilities.empty"))}</p>`}
         </div>
       </details>
     `;
@@ -1175,6 +1482,59 @@ class SpeedportSmartPanel extends HTMLElement {
   _renderConfirmation() {
     const pending = this._pendingAction;
     if (!pending) return "";
+    const textEditor = pending.kind === "text";
+    const selectEditor = pending.kind === "select";
+    const constraints = pending.constraints || {};
+    const textError = pending.errorKey ? this._t(pending.errorKey) : "";
+    const describedBy = textEditor
+      ? "speedport-confirm-description speedport-text-error"
+      : "speedport-confirm-description";
+    let editor = "";
+    if (textEditor) {
+      editor = `
+          <label class="confirm-field" for="speedport-text-value">
+            <span>${escapeHtml(this._t("label.new_device_name"))}</span>
+            <input
+              id="speedport-text-value"
+              data-text-draft
+              type="text"
+              value="${escapeHtml(pending.value)}"
+              ${constraints.min !== undefined ? `minlength="${constraints.min}"` : ""}
+              ${constraints.max !== undefined ? `maxlength="${constraints.max}"` : ""}
+              ${pending.errorKey ? 'aria-invalid="true"' : ""}
+              aria-describedby="speedport-text-error"
+              autocomplete="off"
+              spellcheck="false"
+              ${this._actionBusy ? "disabled" : ""}
+            >
+          </label>
+          <p id="speedport-text-error" class="confirm-error" data-text-error role="alert">${escapeHtml(textError)}</p>
+        `;
+    } else if (selectEditor) {
+      const meta = this._entityMetadata(pending.entityId);
+      const selectOptions = (pending.options || [])
+        .map(
+          (option) => `
+            <option value="${escapeHtml(option)}" ${option === pending.value ? "selected" : ""}>
+              ${escapeHtml(this._translatedSelectOption(meta, option))}
+            </option>
+          `,
+        )
+        .join("");
+      editor = `
+        <label class="confirm-field" for="speedport-select-value">
+          <span>${escapeHtml(this._t("label.setting_value"))}</span>
+          <select
+            id="speedport-select-value"
+            data-select-draft
+            aria-describedby="speedport-confirm-description"
+            ${this._actionBusy ? "disabled" : ""}
+          >
+            ${selectOptions}
+          </select>
+        </label>
+      `;
+    }
     return `
       <div class="modal-backdrop" role="presentation">
         <section
@@ -1182,18 +1542,22 @@ class SpeedportSmartPanel extends HTMLElement {
           role="alertdialog"
           aria-modal="true"
           aria-labelledby="speedport-confirm-title"
+          aria-describedby="${describedBy}"
+          aria-busy="${this._actionBusy ? "true" : "false"}"
+          tabindex="-1"
         >
-          <span class="confirm-icon">
+          <span class="confirm-icon" aria-hidden="true">
             <ha-icon icon="${pending.disruptive ? "mdi:alert-outline" : "mdi:shield-check-outline"}"></ha-icon>
           </span>
           <h2 id="speedport-confirm-title">${escapeHtml(pending.label)}</h2>
-          <p>${escapeHtml(pending.message)}</p>
+          <p id="speedport-confirm-description">${escapeHtml(pending.message)}</p>
+          ${editor}
           <div class="confirm-actions">
             <button class="secondary" data-cancel-action ${this._actionBusy ? "disabled" : ""}>
-              Cancel
+              ${escapeHtml(this._t("action.cancel"))}
             </button>
             <button class="primary" data-confirm-action ${this._actionBusy ? "disabled" : ""}>
-              ${this._actionBusy ? "Working…" : escapeHtml(pending.actionLabel)}
+              ${this._actionBusy ? escapeHtml(this._t("action.working")) : escapeHtml(pending.actionLabel)}
             </button>
           </div>
         </section>
@@ -1205,13 +1569,10 @@ class SpeedportSmartPanel extends HTMLElement {
     return `
       <main class="shell empty-shell">
         <section class="empty-card">
-          <div class="brand-mark"><span></span><span></span><span></span></div>
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
           <h1>Telekom Speedport Smart</h1>
-          <p>
-            No readable Speedport entries are loaded for this Home Assistant user.
-            Add the integration or check entity permissions, then refresh.
-          </p>
-          <button class="primary" data-refresh>Refresh dashboard</button>
+          <p>${escapeHtml(this._t("empty.description"))}</p>
+          <button class="primary" data-refresh>${escapeHtml(this._t("action.refresh"))}</button>
         </section>
       </main>
     `;
@@ -1219,24 +1580,25 @@ class SpeedportSmartPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
+    const renderState = captureRenderState(this.shadowRoot);
     const routers = this._metadata?.routers || [];
     const router = this._currentRouter();
     if (!this._hass || this._loading && !this._metadata) {
       this.shadowRoot.innerHTML = `${this._styles()}
-        <main class="shell loading-shell">
-          <div class="loading-mark"><span></span><span></span><span></span></div>
-          <p>Building your Speedport dashboard…</p>
+        <main class="shell loading-shell" role="status" aria-live="polite">
+          <div class="loading-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <p>${escapeHtml(this._t("loading.dashboard"))}</p>
         </main>`;
       return;
     }
     if (this._loadError && !this._metadata) {
       this.shadowRoot.innerHTML = `${this._styles()}
         <main class="shell empty-shell">
-          <section class="empty-card error-card">
-            <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
-            <h1>Dashboard unavailable</h1>
-            <p>${escapeHtml(this._loadError)}</p>
-            <button class="primary" data-refresh>Try again</button>
+          <section class="empty-card error-card" role="alert">
+            <ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon>
+            <h1>${escapeHtml(this._t("error.dashboard_unavailable"))}</h1>
+            <p>${escapeHtml(this._t(this._loadError))}</p>
+            <button class="primary" data-refresh>${escapeHtml(this._t("action.try_again"))}</button>
           </section>
         </main>`;
       return;
@@ -1260,23 +1622,20 @@ class SpeedportSmartPanel extends HTMLElement {
       (entity) => entity.translation_key === "internet_connected",
     );
     const internetState = this._state(internetMeta);
-    const online = internetState?.state === "on";
-    const connectionLabel = this._isUnavailable(internetState)
-      ? "Connection state unavailable"
-      : online
-        ? "Internet connected"
-        : "Internet disconnected";
+    const connectionPresentation = internetConnectionPresentation(internetState);
+    const connectionLabel = this._t(connectionPresentation.labelKey);
 
     const routerTabs =
       routers.length > 1
         ? `
-          <nav class="router-tabs" aria-label="Speedport routers">
+          <nav class="router-tabs" aria-label="${escapeHtml(this._t("router_tabs.label"))}">
             ${routers
               .map(
                 (item) => `
                   <button
                     data-router="${escapeHtml(item.entry_id)}"
                     class="${item.entry_id === router.entry_id ? "active" : ""}"
+                    ${item.entry_id === router.entry_id ? 'aria-current="page"' : ""}
                   >
                     ${escapeHtml(item.title)}
                   </button>
@@ -1291,25 +1650,25 @@ class SpeedportSmartPanel extends HTMLElement {
       this._renderSection(section, sectionEntities[section] || [], router),
     ).join("");
     const notice = this._notice
-      ? `<div class="notice"><ha-icon icon="mdi:information-outline"></ha-icon>${escapeHtml(this._notice)}</div>`
+      ? `<div class="notice" role="${this._noticeKind}" aria-live="${this._noticeKind === "alert" ? "assertive" : "polite"}"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._notice)}</div>`
       : "";
 
     this.shadowRoot.innerHTML = `
       ${this._styles()}
-      <main class="shell">
+      <main class="shell" ${this._pendingAction ? 'inert aria-hidden="true"' : ""}>
         <header class="hero">
           <div class="hero-copy">
             <div class="eyebrow">
-              <span class="telekom-dots"><i></i><i></i><i></i></span>
-              Telekom home network
+              <span class="telekom-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              ${escapeHtml(this._t("hero.eyebrow"))}
             </div>
             <h1>${escapeHtml(router.title)}</h1>
-            <p>${escapeHtml(router.model || "Telekom Speedport Smart")}</p>
+            ${router.model ? `<p>${escapeHtml(router.model)}</p>` : ""}
             <div class="hero-status">
-              <span class="online-dot ${online ? "online" : ""}"></span>
+              <span class="online-dot ${connectionPresentation.className}" aria-hidden="true"></span>
               ${escapeHtml(connectionLabel)}
-              <span class="divider"></span>
-              <span class="integration-status">Integration ${escapeHtml(humanize(router.entry_state))}</span>
+              <span class="divider" aria-hidden="true"></span>
+              <span class="integration-status">${escapeHtml(this._t("hero.integration", { state: this._entryStateLabel(router.entry_state) }))}</span>
             </div>
           </div>
           <div class="router-visual" aria-hidden="true">
@@ -1329,11 +1688,11 @@ class SpeedportSmartPanel extends HTMLElement {
         <section class="access-overview">
           <header>
             <div>
-              <span class="kicker">Access behavior</span>
-              <h2>What remains available during a router GUI session</h2>
+              <span class="kicker">${escapeHtml(this._t("access.kicker"))}</span>
+              <h2>${escapeHtml(this._t("access.title"))}</h2>
             </div>
-            <button class="icon-button" data-refresh title="Refresh dashboard metadata">
-              <ha-icon icon="mdi:refresh"></ha-icon>
+            <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">
+              <ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon>
             </button>
           </header>
           <div class="source-grid">
@@ -1356,14 +1715,34 @@ class SpeedportSmartPanel extends HTMLElement {
 
         <footer>
           <span>Telekom Speedport Smart</span>
-          <span>Local polling · No Telekom cloud account</span>
+          <span>${escapeHtml(this._t("footer.local"))}</span>
         </footer>
       </main>
       ${this._renderConfirmation()}
     `;
+    restoreDetailsState(this.shadowRoot, renderState);
     if (this._pendingAction) {
       window.requestAnimationFrame(() => {
-        this.shadowRoot.querySelector("[data-cancel-action]")?.focus();
+        const dialog = this.shadowRoot.querySelector(".confirm-dialog");
+        const editor = this.shadowRoot.querySelector(
+          "[data-text-draft]:not([disabled]), [data-select-draft]:not([disabled])",
+        );
+        const cancel = this.shadowRoot.querySelector(
+          "[data-cancel-action]:not([disabled])",
+        );
+        (editor || cancel || dialog)?.focus();
+      });
+    } else if (this._focusAfterRenderEntityId) {
+      const entityId = this._focusAfterRenderEntityId;
+      this._focusAfterRenderEntityId = undefined;
+      window.requestAnimationFrame(() => {
+        restoreFocusState(this.shadowRoot, {
+          focus: { kind: "data", key: "control", value: entityId },
+        });
+      });
+    } else if (renderState.focus) {
+      window.requestAnimationFrame(() => {
+        restoreFocusState(this.shadowRoot, renderState);
       });
     }
   }
@@ -1470,6 +1849,7 @@ class SpeedportSmartPanel extends HTMLElement {
           box-shadow: 0 0 0 4px rgba(255,255,255,.14);
         }
         .online-dot.online { background: #75f0ad; }
+        .online-dot.unavailable { background: var(--sp-muted); }
         .divider { width: 1px; height: 16px; background: rgba(255,255,255,.35); }
         .router-visual {
           position: relative;
@@ -1548,6 +1928,7 @@ class SpeedportSmartPanel extends HTMLElement {
         }
         .router-tabs button {
           flex: none;
+          min-height: 44px;
           padding: 10px 16px;
           color: var(--sp-muted);
           border: 1px solid var(--sp-border);
@@ -1628,8 +2009,8 @@ class SpeedportSmartPanel extends HTMLElement {
         .icon-button {
           display: grid;
           place-items: center;
-          width: 42px;
-          height: 42px;
+          width: 44px;
+          height: 44px;
           color: var(--sp-magenta);
           border: 1px solid var(--sp-border);
           border-radius: 12px;
@@ -1664,7 +2045,9 @@ class SpeedportSmartPanel extends HTMLElement {
         .capability-details summary {
           display: flex;
           justify-content: space-between;
+          align-items: center;
           gap: 12px;
+          min-height: 44px;
           padding: 16px 2px 2px;
           cursor: pointer;
           font-weight: 700;
@@ -1695,6 +2078,7 @@ class SpeedportSmartPanel extends HTMLElement {
           align-items: center;
           gap: 18px;
           min-width: 0;
+          width: 100%;
           padding: clamp(20px, 3vw, 30px);
           overflow: hidden;
           border: 1px solid var(--sp-border);
@@ -1703,6 +2087,8 @@ class SpeedportSmartPanel extends HTMLElement {
             linear-gradient(135deg, color-mix(in srgb, var(--sp-magenta) 11%, transparent), transparent 58%),
             var(--sp-surface);
           box-shadow: 0 12px 34px rgba(0,0,0,.055);
+          color: inherit;
+          text-align: left;
           cursor: pointer;
         }
         .hero-icon {
@@ -1878,6 +2264,7 @@ class SpeedportSmartPanel extends HTMLElement {
           background: color-mix(in srgb, var(--sp-magenta) 3%, var(--sp-surface-soft));
         }
         .child-device-card.unavailable { opacity: .68; }
+        .child-device-card.unknown { opacity: .82; }
         .child-device-heading {
           display: grid;
           grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1930,6 +2317,7 @@ class SpeedportSmartPanel extends HTMLElement {
           background: var(--sp-surface-soft);
         }
         .entity-card.unavailable { opacity: .62; }
+        .entity-card.unknown { opacity: .78; }
         .child-entity-card {
           border-radius: 11px;
           background: var(--sp-surface);
@@ -1995,9 +2383,15 @@ class SpeedportSmartPanel extends HTMLElement {
           font-size: 10px;
         }
         .availability-dot { width: 7px; height: 7px; box-shadow: none; }
-        .available .availability-dot { background: var(--sp-success); }
+        .entity-card.available > .entity-main .availability-dot {
+          background: var(--sp-success);
+        }
+        .entity-card.unknown > .entity-main .availability-dot {
+          background: var(--sp-muted);
+        }
         .entity-action {
           width: calc(100% - 24px);
+          min-height: 44px;
           margin: 0 12px 12px;
           padding: 9px 12px;
           color: var(--sp-magenta);
@@ -2010,7 +2404,7 @@ class SpeedportSmartPanel extends HTMLElement {
         }
         .entity-action.disruptive { color: var(--sp-error); border-color: color-mix(in srgb, var(--sp-error) 35%, var(--sp-border)); }
         button:disabled { cursor: not-allowed; opacity: .48; }
-        button:focus-visible, summary:focus-visible {
+        button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible {
           outline: 2px solid var(--sp-magenta);
           outline-offset: 2px;
         }
@@ -2059,6 +2453,7 @@ class SpeedportSmartPanel extends HTMLElement {
         .empty-card h1 { margin: 20px 0 8px; }
         .empty-card p { color: var(--sp-muted); line-height: 1.55; }
         .primary, .secondary {
+          min-height: 44px;
           padding: 11px 17px;
           border-radius: 11px;
           font-weight: 700;
@@ -2097,6 +2492,35 @@ class SpeedportSmartPanel extends HTMLElement {
         .confirm-dialog.danger .confirm-icon { color: var(--sp-error); background: color-mix(in srgb, var(--sp-error) 10%, var(--sp-surface)); }
         .confirm-dialog h2 { margin: 18px 0 8px; }
         .confirm-dialog p { color: var(--sp-muted); line-height: 1.55; }
+        .confirm-field {
+          display: grid;
+          gap: 7px;
+          margin-top: 18px;
+          color: var(--sp-muted);
+          font-size: 12px;
+          font-weight: 700;
+        }
+        .confirm-field input,
+        .confirm-field select {
+          width: 100%;
+          min-height: 46px;
+          padding: 10px 12px;
+          color: var(--sp-text);
+          border: 1px solid var(--sp-border);
+          border-radius: 11px;
+          background: var(--sp-surface-soft);
+          font: inherit;
+        }
+        .confirm-field select { appearance: auto; }
+        .confirm-field input[aria-invalid="true"] {
+          border-color: var(--sp-error);
+        }
+        .confirm-error {
+          min-height: 20px;
+          margin: 6px 0 0;
+          color: var(--sp-error) !important;
+          font-size: 12px;
+        }
         .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
         :host([narrow]) .sections { grid-template-columns: 1fr; }
         :host([narrow]) .dashboard-section { grid-column: auto; }

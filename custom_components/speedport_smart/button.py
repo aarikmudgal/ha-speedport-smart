@@ -7,10 +7,17 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.const import EntityCategory
+from homeassistant.exceptions import HomeAssistantError
 
+from .const import DOMAIN
 from .coordinator import PollGroup
 from .entity import SpeedportEntity
-from .platform_helpers import coordinator, supported
+from .platform_helpers import (
+    coordinator,
+    supported,
+    wps_in_progress,
+    wps_started_or_completed,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -28,6 +35,7 @@ class SpeedportButtonEntityDescription(ButtonEntityDescription):
     capability: str
     coordinator_group: PollGroup
     command: str
+    verify_after_command: bool = True
 
 
 BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
@@ -38,7 +46,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="wifi",
         coordinator_group=PollGroup.NORMAL,
         command="wps",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
@@ -48,7 +55,7 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="internet",
         coordinator_group=PollGroup.NORMAL,
         command="reconnect",
-        entity_registry_enabled_default=False,
+        verify_after_command=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
@@ -58,7 +65,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="dsl",
         coordinator_group=PollGroup.NORMAL,
         command="dsl_restart",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
@@ -68,7 +74,7 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="system",
         coordinator_group=PollGroup.SLOW,
         command="reboot",
-        entity_registry_enabled_default=False,
+        verify_after_command=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
@@ -78,7 +84,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="ddns",
         coordinator_group=PollGroup.SLOW,
         command="ddns_update",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
@@ -88,7 +93,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="vpn",
         coordinator_group=PollGroup.SLOW,
         command="wireguard_restart",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
@@ -98,7 +102,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         capability="mesh",
         coordinator_group=PollGroup.SLOW,
         command="mesh_optimize",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.CONFIG,
     ),
 )
@@ -144,13 +147,29 @@ class SpeedportCommandButton(SpeedportEntity, ButtonEntity):
         )
         self.entity_description = description
 
+    @property
+    def available(self) -> bool:
+        """Remain unavailable while protected management access is backed off."""
+        return super().available and self.hub.management_controls_available
+
     async def async_press(self) -> None:
-        """Execute action and verify through its owning poll group."""
+        """Execute action through its declared hub verification policy."""
+        if self.entity_description.key == "wps" and wps_in_progress(
+            self.hub.get(self.entity_description.data_path)
+        ):
+            return
         await self.hub.async_execute(
             self.entity_description.command,
-            verify_group=self.entity_description.coordinator_group,
+            verify_group=(
+                self.entity_description.coordinator_group
+                if self.entity_description.verify_after_command
+                else None
+            ),
         )
-        await self.coordinator.async_request_refresh()
+        if self.entity_description.key == "wps" and not wps_started_or_completed(
+            self.hub.get(self.entity_description.data_path)
+        ):
+            raise _verification_error()
 
 
 class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):
@@ -171,3 +190,12 @@ class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Perform read-only rediscovery and schedule a clean entry reload."""
         await self.hub.async_retry_protected_data()
+
+
+def _verification_error() -> HomeAssistantError:
+    """Return the shared translated readback failure."""
+    return HomeAssistantError(
+        "The router action was sent, but its resulting state could not be verified.",
+        translation_domain=DOMAIN,
+        translation_key="command_verification_failed",
+    )

@@ -34,6 +34,7 @@ class SpeedportEntity(CoordinatorEntity[SpeedportDataUpdateCoordinator]):
     """Base for entities backed by one Speedport polling group."""
 
     _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = True
 
     def __init__(
         self,

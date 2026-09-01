@@ -8,9 +8,47 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ## [Unreleased]
 
+### Added
+
+- Evidence-backed router management controls for capabilities exposed by the
+  installed Speedport firmware.
+- Guarded Hybrid bonding, Internet privacy-level, and 5G receiver LED controls
+  for the exact reviewed Smart 4R Typ A firmware, staged for user roundtrip
+  validation.
+- German integration and dashboard translations.
+- Expanded management safety, dashboard, and protocol regression coverage.
+
 ### Changed
 
-- Nothing yet.
+- Management controls are capability-gated, serialized, verified by state
+  readback, and grouped by function in the native dashboard.
+- Enumerated controls use native Home Assistant select entities with fixed
+  semantic options; the dashboard never receives router endpoint or payload
+  details.
+- Protected-session failures invalidate cached authenticated-family values
+  while preserving current public status, preventing stale protected data.
+- Managed-client and port-forward writes now fail closed unless fresh rows
+  match strict stable identity, complete-form, and rule-fingerprint checks.
+- Per-band Wi-Fi state now follows the firmware `wlan_band` contract: `0` for
+  both bands, `1` for 2.4 GHz only, and `2` for 5 GHz only.
+- DDNS `use_dyndns` is interpreted as enablement, while VPN `vpn_status`
+  represents profile enablement rather than tunnel connectivity.
+- Client `access_possible` is exposed only as read-only Internet-access
+  allowance and is not inverted into an unproven pause control.
+- Write controls now require both a current capability and the exact reviewed
+  Smart 4R Typ A firmware contract; unknown firmware remains read-only.
+- Known session contention immediately clears cumulative WAN and optional DSL
+  telemetry, while indeterminate command timeouts back off before another
+  action can be sent.
+- Dynamic child entities use localized names, distinct port-forwarding rules
+  retain their router-provided labels, and invalid legacy client names remain
+  safely read-only.
+
+### Security
+
+- Router discovery and automated validation remain read-only. Commands run
+  only after an explicit Home Assistant user action; unsafe credential,
+  factory-reset, restore, and destructive-delete operations remain excluded.
 
 ## [0.1.1] - 2026-08-31
 

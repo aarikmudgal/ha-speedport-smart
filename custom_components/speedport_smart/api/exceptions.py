@@ -7,6 +7,10 @@ class SpeedportError(Exception):
     """Base Speedport protocol error."""
 
 
+class SpeedportCommandRejectedError(SpeedportError):
+    """Router did not acknowledge a state-changing command as successful."""
+
+
 class SpeedportConnectionError(SpeedportError):
     """Router could not be reached or returned transport failure."""
 

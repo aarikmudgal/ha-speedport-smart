@@ -23,6 +23,7 @@ from .codec import (
 )
 from .exceptions import (
     SpeedportAuthenticationError,
+    SpeedportCommandRejectedError,
     SpeedportConnectionError,
     SpeedportDecodeError,
     SpeedportError,
@@ -51,6 +52,7 @@ __all__ = [
     "RouterStatus",
     "SpeedportAuthenticationError",
     "SpeedportClient",
+    "SpeedportCommandRejectedError",
     "SpeedportConnectionError",
     "SpeedportDecodeError",
     "SpeedportError",

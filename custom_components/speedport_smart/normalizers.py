@@ -13,6 +13,9 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
+from .const import MANAGED_DEVICE_FORM_FIELDS, MANAGED_DEVICE_SOURCE_KINDS
+from .identity import port_forward_rule_fingerprint
+
 if TYPE_CHECKING:
     from .models import RouterStatus
 
@@ -24,6 +27,20 @@ _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 _MAC = re.compile(r"^(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$")
 _MIN_PHONE_LABEL_DIGITS: Final = 5
 _SECONDS_PER_MINUTE: Final = 60
+_NAS_VALUE_BYTES: Final = 1_024
+_TETHERING_CONNECTED_STATUS: Final = 2
+_MAX_CLOCK_HOUR: Final = 23
+_MAX_CLOCK_MINUTE: Final = 59
+_MAX_FIRMWARE_VERSION_LENGTH: Final = 64
+_WIFI_SCHEDULE_DAYS: Final = (
+    ("mo", "monday"),
+    ("di", "tuesday"),
+    ("mi", "wednesday"),
+    ("do", "thursday"),
+    ("fr", "friday"),
+    ("sa", "saturday"),
+    ("so", "sunday"),
+)
 
 # Values with these names must never enter normalized runtime data. The list is
 # intentionally broad; platforms do not need any of them.
@@ -47,6 +64,7 @@ _SECRET_TOKENS: Final = (
 
 _CLIENT_GROUPS: Final = {
     "addmdevice": None,
+    "addmpriodevice": None,
     "addmwlandevice": "wifi_2_4",
     "addmwlan5device": "wifi_5",
     "addmlandevice": "lan",
@@ -59,6 +77,22 @@ _CALL_GROUPS: Final = {
     "addmissedcalls": "missed",
     "addtakencalls": "incoming",
 }
+
+_MANAGEMENT_SCOPED_FAMILIES: Final = frozenset(
+    {
+        "connection_privacy",
+        "dns_rebind",
+        "easy_support",
+        "firmware",
+        "nas",
+        "port_blocking",
+        "qos",
+        "usb_tethering",
+        "wifi_access",
+        "wifi_configuration",
+        "wps",
+    }
+)
 
 
 def normalize_status_payload(
@@ -114,15 +148,22 @@ def normalize_feature_payload(
 ) -> NormalizedData:
     """Normalize one decoded feature payload into canonical root mappings."""
     safe_raw = _safe_mapping(raw)
-    normalized = _normalize_known_flat(safe_raw)
     canonical = _canonical_family(family)
+    normalized = (
+        {}
+        if canonical in _MANAGEMENT_SCOPED_FAMILIES
+        else _normalize_known_flat(safe_raw)
+    )
 
     handlers: dict[str, Callable[[Mapping[str, Any]], NormalizedData]] = {
         "internet": _normalize_internet,
+        "connection_privacy": _normalize_connection_privacy,
         "dsl": _normalize_dsl,
         "hybrid": _normalize_hybrid,
         "mobile": _normalize_mobile,
         "wifi": _normalize_wifi,
+        "wifi_access": _normalize_wifi,
+        "wifi_configuration": _normalize_wifi,
         "wps": _normalize_wifi,
         "mesh": _normalize_mesh,
         "lan": _normalize_lan,
@@ -137,8 +178,15 @@ def normalize_feature_payload(
         "dect": _normalize_dect,
         "receiver": _normalize_receiver,
         "security": _normalize_security,
+        "dns_rebind": _normalize_security,
+        "port_blocking": _normalize_security,
+        "qos": _normalize_qos,
         "usb": _normalize_usb,
+        "nas": _normalize_usb,
+        "usb_tethering": _normalize_usb,
         "system": _normalize_system,
+        "easy_support": _normalize_system,
+        "firmware": _normalize_system,
         "diagnostics": _normalize_diagnostics,
     }
     handler = handlers.get(canonical)
@@ -153,15 +201,19 @@ def _canonical_family(family: str) -> str:
         "5g": "mobile",
         "active_calls": "telephony",
         "calls": "telephony",
+        "internet_privacy": "connection_privacy",
         "firewall": "security",
-        "firmware": "system",
         "ip": "internet",
         "ip_phones": "pbx",
         "lte": "mobile",
+        "nas_storage": "nas",
         "phonebook": "dect",
+        "portblocking": "port_blocking",
         "port_forwarding": "nat",
         "upnp": "nat",
-        "wifi_configuration": "wifi",
+        "wifi_access_control": "wifi_access",
+        "wlan_access": "wifi_access",
+        "wlan_configuration": "wifi_configuration",
         "wireguard": "vpn",
     }
     return aliases.get(normalized, normalized)
@@ -241,9 +293,17 @@ def _normalize_internet(raw: Mapping[str, Any]) -> NormalizedData:
                 _public_address,
             ),
             "mtu": (("mtu",), _integer),
+            "privacy_level": (("lan_privacy_policy",), _privacy_level),
         },
     )
     return {"internet": internet} if internet else {}
+
+
+def _normalize_connection_privacy(raw: Mapping[str, Any]) -> NormalizedData:
+    privacy_level = _first(_view(raw), ("lan_privacy_policy",), _privacy_level)
+    if privacy_level is None:
+        return {}
+    return {"internet": {"privacy_level": privacy_level}}
 
 
 def _normalize_dsl(raw: Mapping[str, Any]) -> NormalizedData:
@@ -411,6 +471,16 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
             _number_value,
         ),
         "cell_id": (("ex5g_cell_id", "lte_cell_id", "mobile_cell_id"), _text),
+        "external_modem_enabled": (("auto_external_modem",), _boolean),
+        "receiver_mode": (("extwan_typ",), _receiver_mode),
+        "lte_enabled": (("use_lte",), _boolean),
+        "led_mode": (("ex5g_led_mode",), _led_mode),
+        "firmware_auto_update": (("auto_update",), _boolean),
+        "firmware_update_available": (("ex5g_fwupd_avail",), _boolean),
+        "firmware_version": (("ex5g_fw_version",), _firmware_version),
+        "latest_firmware": (("ex5g_fwupd_version",), _firmware_version),
+        "firmware_update_planned": (("ex5g_fwupd_planned",), _boolean),
+        "firmware_update_time": (("ex5g_fwupd_time",), _timestamp),
     }
     if include_generic:
         aliases = {
@@ -455,8 +525,13 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 _boolean,
             ),
             "wps_status": (("wps_status", "use_wps", "wps_active"), _boolean_or_state),
+            "wps_enabled": (("use_wps",), _boolean),
+            "wps_state_code": (("wlan_wps_state",), _wps_state_code),
+            "wps_disabled_by_firmware": (("disabled_wps",), _boolean),
             "mac_filter_enabled": (("wlan_mac_active",), _boolean),
             "schedule_enabled": (("wlan_time_active",), _boolean),
+            "allow_all_devices": (("wlan_allow_all",), _boolean),
+            "band_mode": (("wlan_band",), _wifi_band_mode),
         },
     )
     radio_2_4 = _fields(
@@ -467,7 +542,6 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                     "use_wlan_2ghz",
                     "wlan_2_4_active",
                     "wlan_24_enabled",
-                    "use_wlan",
                 ),
                 _boolean,
             ),
@@ -484,6 +558,8 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 ("wlan_client_count", "wlan_2_4_client_count"),
                 _integer,
             ),
+            "visible": (("wlan_visible",), _boolean),
+            "encryption_mode": (("wlan_enc",), _nonnegative_integer),
         },
     )
     radio_5 = _fields(
@@ -494,7 +570,6 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                     "use_wlan_5ghz",
                     "wlan_5_active",
                     "wlan_5_enabled",
-                    "use_wlan",
                 ),
                 _boolean,
             ),
@@ -511,21 +586,39 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 ("wlan_5ghz_client_count", "wlan_5_client_count"),
                 _integer,
             ),
+            "visible": (("wlan_5ghz_visible",), _boolean),
         },
     )
+    global_enabled = wifi.get("enabled")
+    band_mode = _first(view, ("wlan_band",), _integer)
+    if isinstance(global_enabled, bool):
+        band_2_4_disabled = 2
+        band_5_disabled = 1
+        radio_2_4.setdefault(
+            "enabled", global_enabled and band_mode != band_2_4_disabled
+        )
+        radio_5.setdefault("enabled", global_enabled and band_mode != band_5_disabled)
     guest = _fields(
         view,
         {
             "enabled": (("wlan_guest_active", "guest_enabled"), _boolean),
             "client_count": (("wlan_guest_client_count",), _integer),
+            "encryption_mode": (("wlan_guest_enc",), _nonnegative_integer),
+            "wps_enabled": (("wlan_guest_wps",), _boolean),
         },
     )
     office = _fields(
         view,
         {
             "enabled": (("wlan_office_active", "office_enabled"), _boolean),
+            "encryption_mode": (("wlan_office_enc",), _nonnegative_integer),
         },
     )
+    schedule = _wifi_schedule_fields(view)
+    if schedule:
+        wifi["schedule"] = schedule
+        if "schedule_enabled" not in wifi and "mode" in schedule:
+            wifi["schedule_enabled"] = schedule["mode"] != 0
     if radio_2_4:
         wifi["radio_2_4"] = radio_2_4
     if radio_5:
@@ -535,6 +628,32 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
     if office:
         wifi["office"] = office
     return wifi
+
+
+def _wifi_schedule_fields(view: Mapping[str, Any]) -> NormalizedData:
+    """Return only constrained schedule metadata proven by wlan_basic.js."""
+    schedule = _fields(
+        view,
+        {
+            "mode": (("wlan_timerule",), _wifi_schedule_mode),
+            "daily_from": (("wlan_dfrom",), _clock_time),
+            "daily_to": (("wlan_dto",), _clock_time),
+        },
+    )
+    weekly: NormalizedData = {}
+    for firmware_day, canonical_day in _WIFI_SCHEDULE_DAYS:
+        window = _fields(
+            view,
+            {
+                "from": ((f"wlan_time_{firmware_day}_from",), _clock_time),
+                "to": ((f"wlan_time_{firmware_day}_to",), _clock_time),
+            },
+        )
+        if window:
+            weekly[canonical_day] = window
+    if weekly:
+        schedule["weekly"] = weekly
+    return schedule
 
 
 def _normalize_mesh(raw: Mapping[str, Any]) -> NormalizedData:
@@ -643,7 +762,11 @@ def _client_records(raw: Mapping[str, Any]) -> list[NormalizedData]:
         if group_value is None:
             continue
         for candidate in _records(group_value):
-            normalized = _normalize_client_record(candidate, medium)
+            normalized = _normalize_client_record(
+                candidate,
+                medium,
+                source_kind=(group if group in MANAGED_DEVICE_SOURCE_KINDS else None),
+            )
             if normalized:
                 records.append(normalized)
 
@@ -655,14 +778,17 @@ def _client_records(raw: Mapping[str, Any]) -> list[NormalizedData]:
             if key.startswith(prefix)
         }
         for candidate in _records(columns):
-            normalized = _normalize_client_record(candidate, None)
+            normalized = _normalize_client_record(candidate, None, source_kind=None)
             if normalized:
                 records.append(normalized)
-    return _deduplicate(records)
+    return _deduplicate_client_records(records)
 
 
 def _normalize_client_record(
-    record: Mapping[str, Any], medium: str | None
+    record: Mapping[str, Any],
+    medium: str | None,
+    *,
+    source_kind: str | None,
 ) -> NormalizedData:
     view = _record_view(record)
     identifier = _stable_identifier(view)
@@ -671,9 +797,21 @@ def _normalize_client_record(
     return _without_missing(
         {
             "id": identifier,
+            "source_kind": source_kind,
+            "source_row_id": _first(view, ("id",), _text),
+            "managed_form_supported": (
+                True if _managed_form_supported(record, source_kind) else None
+            ),
             "mac": _first(view, ("mac", "mac_address", "device_mac"), _mac_address),
             "hostname": _first(view, ("hostname", "host_name"), _text),
             "name": _first(view, ("name", "device_name"), _text),
+            "fixed_dhcp": _first(
+                view,
+                ("fix_dhcp", "fixed_dhcp"),
+                _boolean,
+            ),
+            "uses_dhcp": _first(view, ("use_dhcp",), _boolean),
+            "uses_rule": _first(view, ("use_rule",), _integer),
             "manufacturer": _first(
                 view,
                 ("manufacturer", "vendor", "maker"),
@@ -752,8 +890,33 @@ def _normalize_client_record(
                 ("internet_paused", "blocked", "paused"),
                 _boolean,
             ),
+            "internet_access_allowed": _first(
+                view,
+                ("access_possible",),
+                _boolean,
+            ),
         }
     )
+
+
+def _managed_form_supported(record: Mapping[str, Any], source_kind: str | None) -> bool:
+    """Confirm that discovery returned one exact, scalar firmware form row."""
+    if source_kind is None:
+        return False
+    expected = MANAGED_DEVICE_FORM_FIELDS.get(source_kind)
+    if expected is None:
+        return False
+    canonical: dict[str, str | int] = {}
+    for raw_key, value in record.items():
+        key = str(raw_key).strip().casefold()
+        if (
+            key in canonical
+            or isinstance(value, bool)
+            or not isinstance(value, str | int)
+        ):
+            return False
+        canonical[key] = value
+    return set(canonical) == expected
 
 
 def _wifi_counts_from_clients(items: Sequence[Mapping[str, Any]]) -> NormalizedData:
@@ -817,6 +980,7 @@ def _normalize_nat(raw: Mapping[str, Any]) -> NormalizedData:
                         ("active", "enabled", "portuw_active"),
                         _boolean,
                     ),
+                    "_identity_fingerprint": port_forward_rule_fingerprint(record_view),
                 }
             )
             rules.append(rule)
@@ -840,6 +1004,7 @@ def _normalize_ddns(raw: Mapping[str, Any]) -> NormalizedData:
                     "dyndns_active",
                     "dyndns_enabled",
                     "use_ddns",
+                    "use_dyndns",
                 ),
                 _boolean,
             ),
@@ -892,11 +1057,11 @@ def _vpn_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normalized
         "wireguard_enabled",
         "use_vpn",
         "vpn_active",
+        "vpn_status",
     )
     connected: tuple[str, ...] = (
         "vpn_connected",
         "wireguard_connected",
-        "vpn_status",
     )
     if include_generic:
         enabled += ("enabled", "active")
@@ -958,6 +1123,8 @@ def _normalize_telephony(raw: Mapping[str, Any]) -> NormalizedData:
                 _integer,
             ),
             "active_call": (("active_call", "call_active"), _boolean),
+            "voip_possible": (("vosip_possible",), _boolean),
+            "voip_policy": (("phone_vosip_policy",), _nonnegative_integer),
         },
     )
     missed = 0
@@ -1003,6 +1170,29 @@ def _normalize_telephony(raw: Mapping[str, Any]) -> NormalizedData:
         number_count = _collection_count(raw, number_groups)
         if number_count is not None:
             telephony["registered_number_count"] = number_count
+    provider_count = _recursive_collection_count(
+        raw,
+        ("addipphoneprovider", "ip_phone_providers"),
+    )
+    if provider_count is not None:
+        telephony["provider_count"] = provider_count
+    voip_number_groups = ("addipnumber", "ip_phone_numbers")
+    configured_number_count = _recursive_collection_count(raw, voip_number_groups)
+    if configured_number_count is not None:
+        telephony["configured_number_count"] = configured_number_count
+    for status, canonical in (
+        ("ok", "registered_voip_number_count"),
+        ("inactive", "inactive_voip_number_count"),
+        ("warning", "warning_voip_number_count"),
+    ):
+        count = _recursive_collection_enum_count(
+            raw,
+            voip_number_groups,
+            ("number_status", "status"),
+            expected=status,
+        )
+        if count is not None:
+            telephony[canonical] = count
     return {"telephony": telephony} if telephony else {}
 
 
@@ -1020,6 +1210,24 @@ def _normalize_pbx(raw: Mapping[str, Any]) -> NormalizedData:
         count = _collection_count(raw, ("addipphone", "ip_phones", "phones"))
         if count is not None:
             pbx["ip_phones"] = count
+    client_groups = ("addipclient", "ip_clients")
+    client_count = _collection_count(raw, client_groups)
+    if client_count is not None:
+        pbx["configured_client_count"] = client_count
+    for status_code, canonical in (
+        (0, "disconnected_client_count"),
+        (1, "registered_client_count"),
+        (2, "locked_client_count"),
+    ):
+        count = _collection_enum_count(
+            raw,
+            client_groups,
+            ("ipclient_status", "status"),
+            parser=_integer,
+            expected=status_code,
+        )
+        if count is not None:
+            pbx[canonical] = count
     return {"pbx": pbx} if pbx else {}
 
 
@@ -1046,6 +1254,14 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
         count = _collection_count(raw, ("adddectdevice", "handsets", "dect_devices"))
         if count is not None:
             dect["handsets"] = count
+    handset_count = _first(view, ("dect_real_count",), _nonnegative_integer)
+    if handset_count is None:
+        handset_count = _collection_count(raw, ("adddect", "handsets", "dect_devices"))
+    if handset_count is not None:
+        dect["handset_count"] = handset_count
+    repeater_count = _collection_count(raw, ("addrepeater", "dect_repeaters"))
+    if repeater_count is not None:
+        dect["repeater_count"] = repeater_count
     phonebooks = _collection_count(raw, ("addphonebook", "phonebooks"))
     if phonebooks is not None:
         dect["phonebooks"] = phonebooks
@@ -1057,12 +1273,31 @@ def _dect_fields(view: Mapping[str, Any]) -> NormalizedData:
         view,
         {
             "enabled": (("use_dect", "dect_enabled", "dect_active"), _boolean),
+            "scan_active": (("dect_detect_status",), _boolean),
+            "smart_home_enabled": (("use_smarthome",), _boolean),
         },
     )
 
 
 def _normalize_security(raw: Mapping[str, Any]) -> NormalizedData:
     security = _security_fields(_view(raw), include_generic=True)
+    dns_exceptions = _collection_count(raw, ("adddnsexcept", "dns_exceptions"))
+    if dns_exceptions is not None:
+        security["dns_rebind_exception_count"] = dns_exceptions
+
+    port_block_groups = ("addextra", "extended_rules", "port_block_rules")
+    port_block_rules = _collection_count(raw, port_block_groups)
+    if port_block_rules is not None:
+        security["port_block_rule_count"] = port_block_rules
+    active_port_block_rules = _collection_enum_count(
+        raw,
+        port_block_groups,
+        ("extendedrule_active", "child_extrarule_active", "active"),
+        parser=_boolean,
+        expected=True,
+    )
+    if active_port_block_rules is not None:
+        security["active_port_block_rule_count"] = active_port_block_rules
     return {"security": security} if security else {}
 
 
@@ -1080,6 +1315,7 @@ def _security_fields(
                 ("dns_rebind_protection", "rebind_protection"),
                 _boolean,
             ),
+            "port_blocking_enabled": (("child_extrarule_active",), _boolean),
             "remote_management": (
                 ("remote_management", "remote_access_enabled"),
                 _boolean,
@@ -1088,12 +1324,26 @@ def _security_fields(
     )
 
 
+def _normalize_qos(raw: Mapping[str, Any]) -> NormalizedData:
+    prioritized = _prefixed_boolean_count(_view(raw), ("qos_pc",))
+    if prioritized is None:
+        return {}
+    return {"qos": {"prioritized_client_count": prioritized}}
+
+
 def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
     view = _view(raw)
     usb = _fields(
         view,
         {
             "connected": (("usb_connected", "usb_present"), _boolean),
+            "port_enabled": (("use_usb",), _boolean),
+            "tethering_enabled": (("use_tethering",), _boolean),
+            "tethering_status_code": (("tethering_status",), _nonnegative_integer),
+            "printer_connected": (("printer_connected",), _boolean),
+            "nas_enabled": (("nas_active",), _boolean),
+            "nas_secure": (("nas_secure",), _boolean),
+            "nas_read_only": (("nas_folder_nur_lesen",), _boolean),
             "media_server_enabled": (
                 ("media_server_enabled", "use_media_server"),
                 _boolean,
@@ -1113,10 +1363,41 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
         if count is not None:
             usb["items"] = count
             usb.setdefault("connected", count > 0)
+    tethering_status = _first(view, ("tethering_status",), _nonnegative_integer)
+    if tethering_status is not None:
+        usb["tethering_connected"] = tethering_status == _TETHERING_CONNECTED_STATUS
+
+    storage_groups = ("addnasdevice", "nas_devices")
+    storage_count = _collection_count(raw, storage_groups)
+    if storage_count is not None:
+        usb["storage_device_count"] = storage_count
+    total_bytes, used_bytes = _nas_capacity_totals(raw, storage_groups)
+    if total_bytes is not None:
+        usb["storage_total_bytes"] = total_bytes
+    if used_bytes is not None:
+        usb["storage_used_bytes"] = used_bytes
+    if total_bytes is not None and used_bytes is not None:
+        usb["storage_free_bytes"] = max(total_bytes - used_bytes, 0)
+
     return {"usb": usb} if usb else {}
 
 
 def _normalize_receiver(raw: Mapping[str, Any]) -> NormalizedData:
+    receiver = _fields(
+        _view(raw),
+        {
+            "external_modem_enabled": (("auto_external_modem",), _boolean),
+            "mode": (("extwan_typ",), _receiver_mode),
+            "lte_enabled": (("use_lte",), _boolean),
+            "led_mode": (("ex5g_led_mode",), _led_mode),
+            "firmware_auto_update": (("auto_update",), _boolean),
+            "firmware_update_available": (("ex5g_fwupd_avail",), _boolean),
+            "firmware_version": (("ex5g_fw_version",), _firmware_version),
+            "latest_firmware": (("ex5g_fwupd_version",), _firmware_version),
+            "firmware_update_planned": (("ex5g_fwupd_planned",), _boolean),
+            "firmware_update_time": (("ex5g_fwupd_time",), _timestamp),
+        },
+    )
     receiver_groups = (
         "addreceiver",
         "receiver_items",
@@ -1138,8 +1419,8 @@ def _normalize_receiver(raw: Mapping[str, Any]) -> NormalizedData:
         receiver_groups,
         prefixes=_device_prefixes("receiver"),
     ):
-        return {"receiver": {"items": receivers}}
-    return {}
+        receiver["items"] = receivers
+    return {"receiver": receiver} if receiver else {}
 
 
 def _normalize_system(raw: Mapping[str, Any]) -> NormalizedData:
@@ -1164,17 +1445,27 @@ def _system_fields(
         "update_available": (("fwupd_avail", "firmware_update_available"), _boolean),
         "latest_firmware": (
             ("fwupd_version", "latest_firmware", "firmware_available_version"),
-            _text,
+            _firmware_version,
         ),
+        "update_planned": (("fwupd_planned",), _boolean),
+        "update_time": (("fwupd_time",), _timestamp),
         "firmware_release_url": (("firmware_release_url",), _safe_url),
         "firmware_update_progress": (("firmware_update_progress",), _percentage),
+        "remote_support_active": (("br_active",), _boolean),
     }
     if include_generic:
         aliases["uptime_seconds"] = (
             aliases["uptime_seconds"][0] + ("uptime",),
             _seconds,
         )
-    return _fields(view, aliases)
+    system = _fields(view, aliases)
+    automatic_updates_disabled = _first(view, ("autofw_deactive",), _boolean)
+    if automatic_updates_disabled is not None:
+        system["automatic_updates_enabled"] = not automatic_updates_disabled
+    easy_support_disabled = _first(view, ("easy_support_deactive",), _boolean)
+    if easy_support_disabled is not None:
+        system["easy_support_enabled"] = not easy_support_disabled
+    return system
 
 
 def _normalize_diagnostics(raw: Mapping[str, Any]) -> NormalizedData:
@@ -1229,7 +1520,10 @@ def _normalize_stable_device_record(
     kind: str,
 ) -> NormalizedData:
     view = _record_view(record)
-    identifier = _stable_identifier(view)
+    identifier = _stable_identifier(
+        view,
+        reject_phone_like=kind == "telephone_line",
+    )
     if identifier is None:
         return {}
 
@@ -1482,16 +1776,23 @@ def _device_prefixes(kind: str) -> tuple[str, ...]:
     }.get(kind, ())
 
 
-def _stable_identifier(view: Mapping[str, Any]) -> str | None:
+def _stable_identifier(
+    view: Mapping[str, Any], *, reject_phone_like: bool = False
+) -> str | None:
     """Use only router ID/UUID, MAC, or serial as stable child identity."""
     for aliases, parser in (
         (("id", "uuid", "uid", "device_id", "router_id"), _text),
         (("mac", "mac_address", "device_mac"), _mac_address),
         (("serial", "serial_number"), _text),
     ):
-        value = _first(view, aliases, parser)
-        if value is not None:
-            return str(value).strip().casefold()
+        for alias in aliases:
+            value = _first(view, (alias,), parser)
+            if value is None:
+                continue
+            normalized = str(value).strip().casefold()
+            if reject_phone_like and _phone_like(normalized):
+                continue
+            return normalized
     return None
 
 
@@ -1544,6 +1845,125 @@ def _collection_count(raw: Mapping[str, Any], groups: Iterable[str]) -> int | No
             return max(int(value), 0)
         return len(_records(value))
     return None
+
+
+def _collection_enum_count(
+    raw: Mapping[str, Any],
+    groups: Iterable[str],
+    fields: Iterable[str],
+    *,
+    parser: Parser,
+    expected: Any,
+) -> int | None:
+    """Count an explicitly observed record state without inventing zero."""
+    view = _view(raw)
+    count = 0
+    observed = False
+    for group in groups:
+        value = view.get(group.casefold())
+        if value is None:
+            continue
+        for record in _records(value):
+            record_view = _record_view(record)
+            if not any(field.casefold() in record_view for field in fields):
+                continue
+            observed = True
+            if _first(record_view, fields, parser) == expected:
+                count += 1
+    return count if observed else None
+
+
+def _recursive_collection_count(
+    raw: Mapping[str, Any], groups: Iterable[str]
+) -> int | None:
+    values = list(
+        _recursive_group_values(raw, frozenset(group.casefold() for group in groups))
+    )
+    if not values:
+        return None
+    return sum(len(_records(value)) for value in values)
+
+
+def _recursive_collection_enum_count(
+    raw: Mapping[str, Any],
+    groups: Iterable[str],
+    fields: Iterable[str],
+    *,
+    expected: Any,
+) -> int | None:
+    count = 0
+    observed = False
+    group_names = frozenset(group.casefold() for group in groups)
+    for value in _recursive_group_values(raw, group_names):
+        for record in _records(value):
+            record_view = _record_view(record)
+            if not any(field.casefold() in record_view for field in fields):
+                continue
+            observed = True
+            if _first(record_view, fields, _text) == expected:
+                count += 1
+    return count if observed else None
+
+
+def _recursive_group_values(raw: Any, groups: frozenset[str]) -> Iterable[Any]:
+    if isinstance(raw, Mapping):
+        for key, value in raw.items():
+            if _secret_key(str(key)):
+                continue
+            if str(key).strip().casefold() in groups:
+                yield value
+            yield from _recursive_group_values(value, groups)
+    elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        for item in raw:
+            yield from _recursive_group_values(item, groups)
+
+
+def _prefixed_boolean_count(
+    view: Mapping[str, Any], prefixes: Iterable[str]
+) -> int | None:
+    parsed: list[bool] = []
+    normalized_prefixes = tuple(prefix.casefold() for prefix in prefixes)
+    for key, value in view.items():
+        if not key.startswith(normalized_prefixes):
+            continue
+        for scalar in _scalar_values(value):
+            boolean = _boolean(scalar)
+            if boolean is not None:
+                parsed.append(boolean)
+    return sum(parsed) if parsed else None
+
+
+def _nas_capacity_totals(
+    raw: Mapping[str, Any], groups: Iterable[str]
+) -> tuple[int | None, int | None]:
+    """Aggregate capacity columns without retaining storage identity or paths."""
+    view = _view(raw)
+    records: list[Mapping[str, Any]] = []
+    for group in groups:
+        value = view.get(group.casefold())
+        if value is not None:
+            records.extend(_records(value))
+    if not records:
+        records = [view]
+
+    def total(aliases: tuple[str, ...]) -> int | None:
+        values: list[int] = []
+        for record in records:
+            record_view = _record_view(record)
+            for alias in aliases:
+                key = alias.casefold()
+                if key not in record_view:
+                    continue
+                for scalar in _scalar_values(record_view[key]):
+                    parsed = _nas_capacity_bytes(scalar)
+                    if parsed is not None:
+                        values.append(parsed)
+        return sum(values) if values else None
+
+    return (
+        total(("nas_device_total", "total_kib")),
+        total(("nas_device_used", "used_kib")),
+    )
 
 
 def _collection_observed_empty(
@@ -1724,6 +2144,38 @@ def _deep_merge(base: Mapping[str, Any], update: Mapping[str, Any]) -> Normalize
     return merged
 
 
+def _deduplicate_client_records(
+    records: Iterable[NormalizedData],
+) -> list[NormalizedData]:
+    """Merge clients while withholding controls for duplicated source rows."""
+    unique: dict[str, NormalizedData] = {}
+    source_counts: dict[str, int] = {}
+    unkeyed: list[NormalizedData] = []
+    for record in records:
+        identifier = record.get("id")
+        if identifier is None:
+            unkeyed.append(record)
+            continue
+        key = str(identifier).casefold()
+        if record.get("source_kind") is not None:
+            source_counts[key] = source_counts.get(key, 0) + 1
+        unique[key] = _deep_merge(unique.get(key, {}), record)
+
+    for key, count in source_counts.items():
+        if count <= 1:
+            continue
+        for field in (
+            "source_kind",
+            "source_row_id",
+            "managed_form_supported",
+            "fixed_dhcp",
+            "uses_dhcp",
+            "uses_rule",
+        ):
+            unique[key].pop(field, None)
+    return [*unique.values(), *unkeyed]
+
+
 def _deduplicate(records: Iterable[NormalizedData]) -> list[NormalizedData]:
     unique: dict[str, NormalizedData] = {}
     unkeyed: list[NormalizedData] = []
@@ -1854,6 +2306,69 @@ def _number_value(value: Any) -> float | None:
 def _integer(value: Any) -> int | None:
     number = _number_value(value)
     return int(number) if number is not None else None
+
+
+def _nonnegative_integer(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number is not None and number >= 0 else None
+
+
+def _privacy_level(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2} else None
+
+
+def _wifi_band_mode(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2} else None
+
+
+def _wifi_schedule_mode(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2} else None
+
+
+def _wps_state_code(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {-2, -1, 0, 1} else None
+
+
+def _receiver_mode(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2, 3} else None
+
+
+def _led_mode(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2} else None
+
+
+def _clock_time(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+    if match is None:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > _MAX_CLOCK_HOUR or minute > _MAX_CLOCK_MINUTE:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _firmware_version(value: Any) -> str | None:
+    text = _text(value)
+    if text is None or len(text) > _MAX_FIRMWARE_VERSION_LENGTH:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*", text) is None:
+        return None
+    return text
+
+
+def _nas_capacity_bytes(value: Any) -> int | None:
+    number = _number_value(value)
+    if number is None or number < 0:
+        return None
+    return int(number * _NAS_VALUE_BYTES)
 
 
 def _percentage(value: Any) -> float | None:

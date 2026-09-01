@@ -30,6 +30,8 @@ _INTEGER_TYPES = {
     "unsignedshort",
 }
 _FLOAT_TYPES = {"decimal", "double", "float"}
+_MAX_XML_CHARACTERS = 1_048_576
+_FORBIDDEN_XML_DECLARATIONS = ("<!DOCTYPE", "<!ENTITY")
 
 
 def build_get_parameter_values(names: Sequence[str]) -> str:
@@ -58,8 +60,16 @@ def build_get_parameter_values(names: Sequence[str]) -> str:
 
 def parse_get_parameter_values(payload: str) -> dict[str, ParameterValue]:
     """Parse ToTR64 response or raise typed SOAP fault."""
+    upper_payload = payload.upper()
+    if len(payload) > _MAX_XML_CHARACTERS or any(
+        declaration in upper_payload for declaration in _FORBIDDEN_XML_DECLARATIONS
+    ):
+        msg = "Router returned unsafe ToTR64 XML"
+        raise SpeedportProtocolError(msg)
     try:
-        root = ET.fromstring(payload)  # noqa: S314 - bounded local-router response
+        # The size and declaration checks above prevent entity expansion and
+        # bound parser work before this local-router response reaches ElementTree.
+        root = ET.fromstring(payload)  # nosec B314  # noqa: S314
     except ET.ParseError as exc:
         msg = "Router returned malformed ToTR64 XML"
         raise SpeedportProtocolError(msg) from exc

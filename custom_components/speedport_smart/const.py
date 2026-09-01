@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
+from types import MappingProxyType
 from typing import Final
 
 DOMAIN: Final = "speedport_smart"
@@ -27,14 +29,59 @@ DEFAULT_FAST_INTERVAL: Final = timedelta(seconds=5)
 DEFAULT_NORMAL_INTERVAL: Final = timedelta(seconds=30)
 DEFAULT_SLOW_INTERVAL: Final = timedelta(minutes=5)
 RATE_WINDOW_SECONDS: Final = 10.0
+DEVICE_NAME_MAX_LENGTH: Final = 28
+DEVICE_NAME_PATTERN: Final = r"^[A-Za-z0-9-]{1,28}$"
 
 PLATFORMS: Final[tuple[str, ...]] = (
     "binary_sensor",
     "button",
     "device_tracker",
+    "select",
     "sensor",
     "switch",
+    "text",
     "update",
+)
+
+MANAGED_DEVICE_SOURCE_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "addmdevice",
+        "addmlandevice",
+        "addmpriodevice",
+        "addmwlandevice",
+        "addmwlan5device",
+    }
+)
+
+_MANAGED_DEVICE_FIELDS: Final = frozenset(
+    {
+        "mdevice_mac",
+        "mdevice_use_dhcp",
+        "mdevice_use_rule",
+        "mdevice_originalip",
+        "mdevice_ipv4",
+        "mdevice_reservedip",
+        "mdevice_type",
+        "mdevice_wifi",
+        "mdevice_connected",
+        "mdevice_slave",
+        "mdevice_downspeed",
+        "mdevice_upspeed",
+        "mdevice_rssi",
+        "mdevice_hasui",
+        "id",
+        "mdevice_name",
+        "mdevice_fix_dhcp",
+    }
+)
+MANAGED_DEVICE_FORM_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        "addmdevice": _MANAGED_DEVICE_FIELDS,
+        "addmlandevice": _MANAGED_DEVICE_FIELDS
+        - frozenset({"mdevice_wifi", "mdevice_upspeed", "mdevice_rssi"}),
+        "addmwlandevice": _MANAGED_DEVICE_FIELDS,
+        "addmwlan5device": _MANAGED_DEVICE_FIELDS,
+    }
 )
 
 TR064_SOAP_ACTION: Final = (

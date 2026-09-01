@@ -20,9 +20,12 @@ beta suffix in either source version; the feature-branch workflow applies that
 suffix only to its staged package.
 
 CI tests both the minimum supported Home Assistant fixture and the newest
-stable fixture pinned in **requirements-test-current.txt**. Update the current
-pin only after confirming which stable Home Assistant release it represents;
-the fixture project also publishes versions for Home Assistant betas.
+stable fixture pinned in
+**requirements/current-home-assistant/requirements.txt**. Dependabot maintains
+the current fixture separately so it cannot change the minimum pin. Confirm
+which stable Home Assistant release a proposed fixture represents before
+merging it because the fixture project also publishes versions for Home
+Assistant betas.
 
 ## Stable release from main
 

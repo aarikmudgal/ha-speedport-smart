@@ -9,7 +9,12 @@ Describe the user-visible change and why it belongs in this integration.
 - [ ] `mypy custom_components/speedport_smart`
 - [ ] `python scripts/check_translations.py`
 - [ ] `python scripts/release_metadata.py`
+- [ ] `node --check custom_components/speedport_smart/frontend/accessibility.js`
+- [ ] `node --check custom_components/speedport_smart/frontend/controls.js`
+- [ ] `node --check custom_components/speedport_smart/frontend/entity-state.js`
 - [ ] `node --check custom_components/speedport_smart/frontend/speedport-smart-panel.js`
+- [ ] `node --check custom_components/speedport_smart/frontend/translations.js`
+- [ ] `node --test tests/frontend/*.test.mjs`
 - [ ] `pytest`
 - [ ] `python scripts/build_release.py`
 

@@ -15,6 +15,7 @@ from scripts.compare_release import compare_archives
 from scripts.release_metadata import (
     ReleaseMetadata,
     resolve_release,
+    resolve_repository_release,
     validate_repository,
 )
 
@@ -63,12 +64,21 @@ def _release_source(root: Path) -> Path:
     source = root / "custom_components" / "speedport_smart"
     payloads = {
         "__init__.py": b'"""Integration."""\n',
+        "brand/dark_icon.png": b"test-dark-icon",
+        "brand/dark_icon@2x.png": b"test-dark-icon-2x",
         "brand/icon.png": b"test-icon",
+        "brand/icon@2x.png": b"test-icon-2x",
+        "frontend/accessibility.js": b"export {};\n",
+        "frontend/controls.js": b"export {};\n",
+        "frontend/entity-state.js": b"export {};\n",
+        "frontend/render-state.js": b"export {};\n",
         "frontend/speedport-smart-panel.js": b"export {};\n",
+        "frontend/translations.js": b"export {};\n",
         "icons.json": b"{}\n",
         "manifest.json": b'{"domain": "speedport_smart", "version": "0.1.0"}\n',
         "strings.json": b"{}\n",
         "translations/en.json": b"{}\n",
+        "translations/de.json": b"{}\n",
     }
     for name, payload in payloads.items():
         path = source / name
@@ -138,6 +148,68 @@ def test_resolve_stable_and_beta_release_metadata() -> None:
     )
 
 
+def test_repository_release_requires_changelog_only_for_stable(
+    tmp_path: Path,
+) -> None:
+    """Beta remains publishable while stable requires its dated changelog entry."""
+    root = _metadata_repository(tmp_path)
+
+    beta = resolve_repository_release(
+        root,
+        branch="feat/router-management",
+        channel="auto",
+        run_attempt=1,
+        run_number=42,
+    )
+    assert beta.version == "0.1.0-beta.42.1"
+
+    with pytest.raises(ValueError, match=r"dated CHANGELOG\.md section|readable"):
+        resolve_repository_release(
+            root,
+            branch="main",
+            channel="auto",
+            run_attempt=None,
+            run_number=None,
+        )
+
+    (root / "CHANGELOG.md").write_text(
+        "# Changelog\n\n"
+        "## [Unreleased]\n\n"
+        "## [0.1.0] - 2026-09-01\n\n"
+        "- Initial release.\n\n"
+        "[Unreleased]: https://example.test/compare/v0.1.0...HEAD\n"
+        "[0.1.0]: https://example.test/releases/tag/v0.1.0\n",
+        encoding="utf-8",
+    )
+    stable = resolve_repository_release(
+        root,
+        branch="main",
+        channel="auto",
+        run_attempt=None,
+        run_number=None,
+    )
+
+    assert stable.version == "0.1.0"
+
+
+def test_stable_changelog_requires_version_link(tmp_path: Path) -> None:
+    """A dated heading alone cannot publish an unlinked stable changelog."""
+    root = _metadata_repository(tmp_path)
+    (root / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [0.1.0] - 2026-09-01\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="comparison link"):
+        resolve_repository_release(
+            root,
+            branch="main",
+            channel="stable",
+            run_attempt=None,
+            run_number=None,
+        )
+
+
 @pytest.mark.parametrize("branch", ["feature/name", "feat/name/nested", "feat/Upper"])
 def test_resolve_beta_rejects_invalid_branch(branch: str) -> None:
     """Only the exact lowercase feat/<name> convention can publish betas."""
@@ -177,6 +249,30 @@ def test_build_archive_rejects_symlink(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="must not contain symlinks"):
         _build_archive(source, tmp_path / "release.zip", "0.1.0")
+
+
+def test_build_archive_rejects_symlinked_component_root(tmp_path: Path) -> None:
+    """A feature branch cannot redirect the complete release source tree."""
+    source = _release_source(tmp_path / "real")
+    linked_source = tmp_path / "linked-component"
+    linked_source.symlink_to(source, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        _build_archive(linked_source, tmp_path / "release.zip", "0.1.0")
+
+
+def test_validate_repository_rejects_symlinked_component_root(
+    tmp_path: Path,
+) -> None:
+    """Metadata validation must not follow a feature-controlled component link."""
+    root = _metadata_repository(tmp_path)
+    component = root / "custom_components" / "speedport_smart"
+    target = root / "component-target"
+    component.rename(target)
+    component.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        validate_repository(root)
 
 
 def test_compare_archives_ignores_zip_representation_metadata(tmp_path: Path) -> None:

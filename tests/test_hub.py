@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.speedport_smart.api import (
+    SpeedportAuthenticationError,
+    SpeedportCommandRejectedError,
     SpeedportConnectionError,
+    SpeedportDecodeError,
     SpeedportError,
     SpeedportInvalidCredentialsError,
+    SpeedportLoginLockedError,
+    SpeedportProtocolError,
+    SpeedportSessionBusyError,
     SpeedportUnsupportedError,
 )
+from custom_components.speedport_smart.const import DOMAIN
 from custom_components.speedport_smart.coordinator import PollGroup
 from custom_components.speedport_smart.hub import SpeedportHub
 from custom_components.speedport_smart.models import (
     CapabilityReport,
+    DslMetrics,
     EndpointCapability,
     RouterInfo,
     RouterStatus,
@@ -56,12 +65,72 @@ async def test_setup_and_grouped_data(
     assert hub.has_capability("wifi")
     assert hub.get("internet.state") is True
     assert hub.get(("wan", "interface", "alias")) == "BONDING"
+    assert hub.get(("wan", "interface", "enabled")) is True
     assert hub.get("wifi.enabled") is True
     assert hub.get("mesh.enabled") is True
     assert fast.generation == 1
     assert normal.generation == 2
     assert slow.generation == 3
     assert hub.get("missing.path", "fallback") == "fallback"
+
+
+def test_management_feature_families_publish_their_normalized_roots(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Discovered endpoint aliases make their canonical read roots available."""
+    feature_families = {
+        "connection_privacy",
+        "dect",
+        "dns_rebind",
+        "easy_support",
+        "firmware",
+        "lte",
+        "mobile",
+        "nas",
+        "pbx",
+        "phonebook",
+        "port_blocking",
+        "qos",
+        "receiver",
+        "telephony",
+        "usb_tethering",
+        "wifi_access",
+        "wifi_configuration",
+        "wps",
+    }
+    report = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                family: EndpointCapability(
+                    family,
+                    f"data/{family}.json",
+                    authenticated=True,
+                )
+                for family in feature_families
+            }
+        ),
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    hub._apply_capability_report(report)  # noqa: SLF001 - capability routing contract
+
+    expected_roots = {
+        "dect",
+        "internet",
+        "mobile",
+        "pbx",
+        "qos",
+        "receiver",
+        "security",
+        "system",
+        "telephony",
+        "usb",
+        "wifi",
+    }
+    assert feature_families <= hub.capabilities
+    assert expected_roots <= hub.capabilities
 
 
 async def test_rate_delta_and_counter_reset(
@@ -100,6 +169,35 @@ async def test_rate_delta_and_counter_reset(
     assert second_data["upload_utilization"] == 60
     assert reset_data["download_rate_bps"] is None
     assert reset_data["upload_rate_bps"] is None
+
+
+async def test_fast_wan_poll_respects_management_session_backoff(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A busy management lease is not hammered by every fast poll."""
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
+        "busy"
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+
+    await hub.async_update_group(PollGroup.FAST)
+    assert hub.get("management.access.state") == "blocked"
+    assert hub.get("wan.download_rate_bps") is None
+    assert mock_speedport_client.get_wan_counters.await_count == 1
+
+    mock_speedport_client.get_wan_counters.side_effect = None
+    mock_speedport_client.get_wan_counters.return_value = WanCounters(
+        WanInterface(index=1, alias="WAN", name="wan", status="Up"),
+        2_000,
+        1_000,
+        datetime.now(UTC),
+    )
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert mock_speedport_client.get_wan_counters.await_count == 1
+    assert hub.get("management.access.state") == "blocked"
 
 
 async def test_transitions_and_fallback_identity(
@@ -157,6 +255,7 @@ async def test_feature_failure_isolation_and_authentication(
     mock_speedport_client.get_json.side_effect = get_feature
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     await hub.async_setup()
+    await hub.async_update_group(PollGroup.FAST)
     await hub.async_update_group(PollGroup.NORMAL)
     assert len(hub.get("clients.items")) == 1
     assert hub.get("wifi") is None
@@ -167,6 +266,527 @@ async def test_feature_failure_isolation_and_authentication(
     )
     with pytest.raises(SpeedportInvalidCredentialsError):
         await hub.async_update_group(PollGroup.NORMAL)
+
+
+async def test_protected_decode_failure_marks_management_unavailable_and_backs_off(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A failed protected session cannot leave management falsely available."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "clients": EndpointCapability("clients", "clients", authenticated=True),
+                "wifi": EndpointCapability("wifi", "wifi", authenticated=True),
+            }
+        ),
+    )
+    fail_protected = False
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if fail_protected:
+            raise SpeedportDecodeError("encrypted response authentication failed")
+        if endpoint == "clients":
+            return {"mdevice_mac": ["AA:BB:CC:DD:EE:FF"]}
+        return {"use_wlan": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert hub.get("management.access.state") == "available"
+    assert hub.get("wifi.enabled") is True
+
+    fail_protected = True
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.get("management.access.state") == "unavailable"
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("clients.items") is None
+    assert hub.diagnostics()["endpoint_errors"] == {
+        "clients": "SpeedportDecodeError",
+        "wifi": "SpeedportDecodeError",
+    }
+
+    request_count = mock_speedport_client.get_json.await_count
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert mock_speedport_client.get_json.await_count == request_count
+    assert hub.get("management.access.state") == "unavailable"
+
+
+async def test_protected_failure_restores_latest_public_status_values(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Protected loss clears only fields without a public Status fallback."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "internet": EndpointCapability(
+                    "internet", "internet", authenticated=True
+                ),
+                "dsl": EndpointCapability("dsl", "dsl", authenticated=True),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "internet":
+            return {
+                "status": "online",
+                "download_capacity_bps": 190_000_000,
+                "upload_capacity_bps": 39_000_000,
+                "public_ip_v4": "192.0.2.1",
+            }
+        return {
+            "dsl_status": "up",
+            "dsl_downstream_bps": 203_000_000,
+            "dsl_upstream_bps": 41_000_000,
+            "dsl_snr_downstream": 11.5,
+        }
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+
+    await hub.async_update_group(PollGroup.FAST)
+    public_values = {
+        "internet_state": hub.get("internet.state"),
+        "download_capacity": hub.get("internet.download_capacity_bps"),
+        "upload_capacity": hub.get("internet.upload_capacity_bps"),
+        "dsl_state": hub.get("dsl.state"),
+        "downstream": hub.get("dsl.downstream_bps"),
+        "upstream": hub.get("dsl.upstream_bps"),
+    }
+    assert all(value is not None for value in public_values.values())
+
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert hub.get("internet.ipv4_address") == "192.0.2.1"
+    assert hub.get("dsl.snr_downstream_db") == 11.5
+
+    mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.get("internet.state") == public_values["internet_state"]
+    assert (
+        hub.get("internet.download_capacity_bps") == public_values["download_capacity"]
+    )
+    assert hub.get("internet.upload_capacity_bps") == public_values["upload_capacity"]
+    assert hub.get("dsl.state") == public_values["dsl_state"]
+    assert hub.get("dsl.downstream_bps") == public_values["downstream"]
+    assert hub.get("dsl.upstream_bps") == public_values["upstream"]
+    assert hub.get("internet.ipv4_address") is None
+    assert hub.get("dsl.snr_downstream_db") is None
+
+    request_count = mock_speedport_client.get_json.await_count
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert mock_speedport_client.get_json.await_count == request_count
+    assert hub.get("internet.state") == public_values["internet_state"]
+    assert hub.get("internet.download_capacity_bps") is not None
+    assert hub.get("internet.upload_capacity_bps") is not None
+    assert hub.get("dsl.state") == public_values["dsl_state"]
+    assert hub.get("dsl.downstream_bps") is not None
+    assert hub.get("dsl.upstream_bps") is not None
+    assert hub.get("internet.ipv4_address") is None
+    assert hub.get("dsl.snr_downstream_db") is None
+
+
+async def test_protected_failure_invalidates_every_poll_group_immediately(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Session loss clears cached protected data outside the current poll group."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi", "data/WLANBasic.json", authenticated=True
+                ),
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/PortForwarding.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "data/WLANBasic.json":
+            return {"use_wlan": True}
+        return {"internet_ports_active": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.FAST)
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("nat.port_forwarding_enabled") is True
+    assert hub.get("internet.state") is True
+
+    slow_coordinator = MagicMock()
+    hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
+    mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
+
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("nat.port_forwarding_enabled") is None
+    assert hub.get("internet.state") is True
+    slow_coordinator.async_set_updated_data.assert_called_once()
+    propagated = slow_coordinator.async_set_updated_data.call_args.args[0]
+    assert propagated.group is PollGroup.SLOW
+    assert propagated.data["nat"]["port_forwarding_enabled"] is None
+
+    slow_coordinator.reset_mock()
+    await hub.async_update_group(PollGroup.NORMAL)
+    slow_coordinator.async_set_updated_data.assert_not_called()
+
+
+async def test_fast_wan_busy_invalidates_protected_poll_groups_immediately(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A busy WAN counter request cannot leave protected family caches usable."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        tr064=True,
+        wan_counters=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi", "data/WLANBasic.json", authenticated=True
+                ),
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/PortForwarding.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "data/WLANBasic.json":
+            return {"use_wlan": True}
+        return {"internet_ports_active": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    mock_speedport_client.get_wan_counters.return_value = WanCounters(
+        WanInterface(index=5, alias="BONDING", name="habond", status="Up"),
+        10_000,
+        5_000,
+        datetime.now(UTC),
+        packets_received=100,
+        packets_sent=50,
+        errors_received=2,
+        errors_sent=1,
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.FAST)
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    assert hub.get("wan.bytes_received") == 10_000
+    assert hub.get("wan.packets_received") == 100
+    normal_coordinator = MagicMock()
+    slow_coordinator = MagicMock()
+    hub.attach_coordinator(PollGroup.NORMAL, normal_coordinator)
+    hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
+    mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
+        "busy"
+    )
+
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert hub.get("management.access.state") == "blocked"
+    for path in (
+        "wan.bytes_received",
+        "wan.bytes_sent",
+        "wan.packets_received",
+        "wan.packets_sent",
+        "wan.errors_received",
+        "wan.errors_sent",
+        "wan.download_rate_bps",
+        "wan.upload_rate_bps",
+    ):
+        assert hub.get(path) is None
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("nat.port_forwarding_enabled") is None
+    assert hub.get("internet.state") is True
+    normal_coordinator.async_set_updated_data.assert_called_once()
+    slow_coordinator.async_set_updated_data.assert_called_once()
+
+    counter_requests = mock_speedport_client.get_wan_counters.await_count
+    await hub.async_update_group(PollGroup.FAST)
+    assert mock_speedport_client.get_wan_counters.await_count == counter_requests
+    assert hub.get("wan.bytes_received") is None
+
+
+async def test_dsl_busy_invalidates_protected_poll_groups_immediately(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A busy DSL request cannot republish fresh-looking protected families."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        tr064=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi", "data/WLANBasic.json", authenticated=True
+                ),
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/PortForwarding.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "data/WLANBasic.json":
+            return {"use_wlan": True}
+        return {"internet_ports_active": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    mock_speedport_client.get_dsl_metrics.return_value = DslMetrics(
+        line_index=1,
+        channel_index=1,
+        status="Up",
+        downstream_current_bps=204_413_000,
+        upstream_current_bps=42_460_000,
+        downstream_max_bps=230_000_000,
+        upstream_max_bps=50_000_000,
+        downstream_noise_margin_db=12.5,
+        upstream_noise_margin_db=8.5,
+        downstream_attenuation_db=4.0,
+        upstream_attenuation_db=2.0,
+        sampled_at=datetime.now(UTC),
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.FAST)
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("nat.port_forwarding_enabled") is True
+    assert hub.get("dsl.snr_downstream_db") == 12.5
+
+    slow_coordinator = MagicMock()
+    hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
+    mock_speedport_client.get_dsl_metrics.side_effect = SpeedportSessionBusyError(
+        "busy"
+    )
+
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.get("management.access.state") == "blocked"
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("nat.port_forwarding_enabled") is None
+    assert hub.get("internet.state") is True
+    assert hub.get("dsl.downstream_bps") == 204_413_000
+    assert hub.get("dsl.snr_downstream_db") is None
+    assert hub.get("dsl.attainable_downstream_bps") is None
+    slow_coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_invalid_credentials_clear_other_poll_groups_before_reauth(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Reauthentication cannot leave another coordinator's protected cache stale."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi", "data/WLANBasic.json", authenticated=True
+                ),
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/PortForwarding.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "data/WLANBasic.json":
+            return {"use_wlan": True}
+        return {"internet_ports_active": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    normal_coordinator = MagicMock()
+    slow_coordinator = MagicMock()
+    hub.attach_coordinator(PollGroup.NORMAL, normal_coordinator)
+    hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
+    mock_speedport_client.get_json.side_effect = SpeedportInvalidCredentialsError(
+        "invalid"
+    )
+
+    with pytest.raises(SpeedportInvalidCredentialsError):
+        await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.get("management.access.state") == "unavailable"
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("nat.port_forwarding_enabled") is None
+    normal_coordinator.async_set_updated_data.assert_not_called()
+    slow_coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_retry_invalid_credentials_starts_reauth_once(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """An explicit protected-data retry starts reauth on definitive rejection."""
+    entry = MagicMock()
+    mock_speedport_client.probe_capabilities.side_effect = (
+        SpeedportInvalidCredentialsError("invalid")
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+    )
+    await hub.async_setup()
+
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_get_entry",
+            return_value=entry,
+        ),
+        pytest.raises(HomeAssistantError),
+    ):
+        await hub.async_retry_protected_data()
+
+    entry.async_start_reauth.assert_called_once_with(hass)
+    mock_speedport_client.probe_capabilities.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_state", "starts_reauth"),
+    [
+        (SpeedportSessionBusyError("busy"), "blocked", False),
+        (SpeedportInvalidCredentialsError("invalid"), "unavailable", True),
+    ],
+    ids=["busy", "invalid-credentials"],
+)
+async def test_retry_failure_invalidates_cached_protected_groups(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    error: SpeedportError,
+    expected_state: str,
+    starts_reauth: bool,  # noqa: FBT001
+) -> None:
+    """A failed explicit retry cannot leave prior protected values current."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi", "data/WLANBasic.json", authenticated=True
+                ),
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/PortForwarding.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "data/WLANBasic.json":
+            return {"use_wlan": True}
+        return {"internet_ports_active": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+    )
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    coordinators = {
+        PollGroup.NORMAL: MagicMock(),
+        PollGroup.SLOW: MagicMock(),
+    }
+    for group, coordinator in coordinators.items():
+        hub.attach_coordinator(group, coordinator)
+    mock_speedport_client.probe_capabilities.side_effect = error
+    entry = MagicMock()
+
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_get_entry",
+            return_value=entry,
+        ),
+        pytest.raises(HomeAssistantError),
+    ):
+        await hub.async_retry_protected_data()
+
+    assert hub.get("management.access.state") == expected_state
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("nat.port_forwarding_enabled") is None
+    for coordinator in coordinators.values():
+        coordinator.async_set_updated_data.assert_called_once()
+    if starts_reauth:
+        entry.async_start_reauth.assert_called_once_with(hass)
+    else:
+        entry.async_start_reauth.assert_not_called()
+
+
+async def test_setup_keeps_public_data_when_protected_session_is_unavailable(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A protected decode failure degrades management without failing setup."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=False,
+        feature_endpoints=MappingProxyType(
+            {"status": EndpointCapability("status", "data/Status.json")}
+        ),
+    )
+    mock_speedport_client.last_management_error = SpeedportAuthenticationError(
+        "protected decode failed"
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+
+    assert hub.get("management.access.state") == "unavailable"
+    assert hub.has_capability("status")
 
 
 async def test_unsupported_counter_removed_and_close_idempotent(
@@ -201,8 +821,10 @@ async def test_command_gate_and_verification(
         fallback_identifier="entry",
     )
     assert not disabled.supports_command("wifi_set_enabled")
-    with pytest.raises(HomeAssistantError, match="disabled"):
+    with pytest.raises(HomeAssistantError, match="disabled") as disabled_error:
         await disabled.async_execute("wifi_set_enabled", enabled=True)
+    assert disabled_error.value.translation_domain == DOMAIN
+    assert disabled_error.value.translation_key == "controls_disabled"
 
     hub = SpeedportHub(
         hass,
@@ -211,12 +833,18 @@ async def test_command_gate_and_verification(
         controls_enabled=True,
     )
     await hub.async_setup()
-    with pytest.raises(HomeAssistantError, match="Unsupported"):
+    with pytest.raises(HomeAssistantError) as unsupported_error:
         await hub.async_execute("factory_reset")
-    with pytest.raises(HomeAssistantError, match="Unsupported"):
+    assert unsupported_error.value.translation_domain == DOMAIN
+    assert unsupported_error.value.translation_key == "command_unsupported"
+    with pytest.raises(HomeAssistantError) as unimplemented_error:
         await hub.async_execute("set_wifi_2_4", enabled=True)
+    assert unimplemented_error.value.translation_key == "command_unsupported"
 
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="ok")
+    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    normal_coordinator = MagicMock()
+    hub.attach_coordinator(PollGroup.NORMAL, normal_coordinator)
     assert hub.supports_command("wifi_set_enabled")
     assert (
         await hub.async_execute(
@@ -227,6 +855,400 @@ async def test_command_gate_and_verification(
     mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
         enabled=True
     )
+    hub._async_update_group_locked.assert_awaited_once_with(  # noqa: SLF001
+        PollGroup.NORMAL
+    )
+    normal_coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_descriptor_scaffolding_never_enables_unproven_commands(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Read capability data cannot expose a command without an exact handler gate."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    hub._capabilities = frozenset(  # noqa: SLF001 - explicit safety contract
+        {
+            "ddns",
+            "dsl",
+            "firmware",
+            "mesh",
+            "nat",
+            "parental",
+            "usb",
+            "vpn",
+        }
+    )
+
+    for command in (
+        "ddns_update",
+        "dsl_restart",
+        "firmware_update",
+        "mesh_optimize",
+        "set_client_internet_paused",
+        "set_ddns",
+        "set_media_server",
+        "set_parental_controls",
+        "set_upnp",
+        "set_vpn",
+        "wireguard_restart",
+    ):
+        assert not hub.supports_command(command), command
+
+
+async def test_write_controls_require_exact_reviewed_model_and_firmware(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A read-compatible router cannot inherit another firmware's write contract."""
+    mock_speedport_client.router_info = RouterInfo(
+        model="Speedport Smart 4R Typ A",
+        firmware="unreviewed",
+        serial_number="SP4R-TEST-001",
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+
+    await hub.async_setup()
+
+    assert hub.has_capability("wifi")
+    assert hub.has_capability("authenticated_json")
+    assert not hub.supports_command("wifi_set_enabled")
+    assert not hub.supports_command("reboot")
+
+
+async def test_disruptive_command_defers_verification(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """An accepted disruptive command relies on natural coordinator recovery."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    mock_speedport_client.reboot = AsyncMock(return_value="accepted")
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=SpeedportConnectionError("router restarting")
+    )
+
+    assert await hub.async_execute("reboot", verify_group=None) == "accepted"
+
+    mock_speedport_client.reboot.assert_awaited_once_with()
+    hub._async_update_group_locked.assert_not_awaited()  # noqa: SLF001
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_command_failures_are_translated_without_retry(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Indeterminate command timeouts back off and cannot repeat immediately."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    mock_speedport_client.execute_wifi_set_enabled = AsyncMock(
+        side_effect=SpeedportConnectionError("response timed out")
+    )
+
+    with pytest.raises(HomeAssistantError) as command_error:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert command_error.value.translation_domain == DOMAIN
+    assert command_error.value.translation_key == "command_failed"
+    assert isinstance(command_error.value.__cause__, SpeedportConnectionError)
+    assert hub.get("management.access.state") == "unavailable"
+    mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
+        enabled=False
+    )
+    with pytest.raises(HomeAssistantError):
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+    mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
+        enabled=False
+    )
+    hub._async_update_group_locked.assert_not_awaited()  # noqa: SLF001
+    mock_speedport_client.logout.assert_awaited_once()
+
+    mock_speedport_client.logout.reset_mock()
+    hub._set_management_access("available")  # noqa: SLF001
+    mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="accepted")
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=SpeedportConnectionError("readback unavailable")
+    )
+
+    with pytest.raises(HomeAssistantError) as verification_error:
+        await hub.async_execute("wifi_set_enabled", enabled=True)
+
+    assert verification_error.value.translation_domain == DOMAIN
+    assert verification_error.value.translation_key == "command_verification_failed"
+    assert isinstance(verification_error.value.__cause__, SpeedportConnectionError)
+    assert hub.get("management.access.state") == "unavailable"
+    mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
+        enabled=True
+    )
+    with pytest.raises(HomeAssistantError):
+        await hub.async_execute("wifi_set_enabled", enabled=True)
+    mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
+        enabled=True
+    )
+    hub._async_update_group_locked.assert_awaited_once_with(  # noqa: SLF001
+        PollGroup.NORMAL
+    )
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_command_rejection_keeps_management_available(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A negative acknowledgement does not defer the next protected poll."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    rejection = SpeedportCommandRejectedError("router rejected request")
+    mock_speedport_client.execute_wifi_set_enabled = AsyncMock(side_effect=rejection)
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_failed"
+    assert failure.value.__cause__ is rejection
+    assert hub.get("management.access.state") == "available"
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+
+    mock_speedport_client.get_json.reset_mock()
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    mock_speedport_client.get_json.assert_awaited_once_with(
+        "data/WLANBasic.json",
+        authenticated=True,
+        referer=None,
+    )
+
+
+@pytest.mark.parametrize("failure_stage", ["command", "verification"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        (SpeedportSessionBusyError("busy"), "blocked", None),
+        (SpeedportLoginLockedError(retry_after=90), "locked", 90),
+        (SpeedportAuthenticationError("session failed"), "unavailable", None),
+        (SpeedportProtocolError("decode failed"), "unavailable", None),
+    ],
+    ids=["busy", "locked", "authentication", "protocol"],
+)
+async def test_command_failures_update_management_backoff(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    failure_stage: str,
+    case: tuple[SpeedportError, str, int | None],
+) -> None:
+    """Authenticated command failures update access state before translation."""
+    error, expected_state, expected_retry_after = case
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="accepted")
+    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    if failure_stage == "command":
+        mock_speedport_client.execute_wifi_set_enabled.side_effect = error
+        expected_translation_key = "command_failed"
+    else:
+        hub._async_update_group_locked.side_effect = error  # noqa: SLF001
+        expected_translation_key = "command_verification_failed"
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == expected_translation_key
+    assert failure.value.__cause__ is error
+    assert hub.get("management.access.state") == expected_state
+    assert hub.get("management.access.retry_after_seconds") == expected_retry_after
+    assert hub._protected_retry_at > 100.0  # noqa: SLF001
+
+
+async def test_command_session_failure_invalidates_every_protected_cache(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A handler-side session failure immediately clears all protected state."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi", "data/WLANBasic.json", authenticated=True
+                ),
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/PortForwarding.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+
+    async def get_feature(endpoint: str, **_kwargs: object) -> dict[str, object]:
+        if endpoint == "data/WLANBasic.json":
+            return {"use_wlan": True}
+        return {"internet_ports_active": True}
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    coordinators = {group: MagicMock() for group in PollGroup}
+    for group, coordinator in coordinators.items():
+        hub.attach_coordinator(group, coordinator)
+    handler = AsyncMock(side_effect=SpeedportSessionBusyError("busy"))
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_failed"
+    assert hub.get("management.access.state") == "blocked"
+    assert hub.get("wifi.enabled") is None
+    assert hub.get("nat.port_forwarding_enabled") is None
+    handler.assert_awaited_once_with(enabled=False)
+    for coordinator in coordinators.values():
+        coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_command_invalid_credentials_starts_reauth_without_second_write(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A rejected command starts reauth and subsequent presses fail before I/O."""
+    entry = MagicMock()
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(side_effect=SpeedportInvalidCredentialsError("invalid"))
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    with patch.object(
+        hass.config_entries,
+        "async_get_entry",
+        return_value=entry,
+    ):
+        with pytest.raises(HomeAssistantError):
+            await hub.async_execute("wifi_set_enabled", enabled=False)
+        with pytest.raises(HomeAssistantError):
+            await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    entry.async_start_reauth.assert_called_once_with(hass)
+    handler.assert_awaited_once_with(enabled=False)
+
+
+async def test_command_backoff_rejects_before_handler_io(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Repeated control presses cannot bypass a protected-session backoff."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+    hub._mark_management_busy(SpeedportSessionBusyError("busy"))  # noqa: SLF001
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_failed"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+    hub._set_management_access("available")  # noqa: SLF001
+    hub._protected_retry_at = 101.0  # noqa: SLF001
+
+    with pytest.raises(HomeAssistantError):
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+async def test_commands_remain_serialized(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Concurrent callers cannot overlap mutation or verification work."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    active = 0
+    max_active = 0
+
+    async def execute_wifi(*, enabled: bool) -> bool:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return enabled
+
+    mock_speedport_client.execute_wifi_set_enabled = AsyncMock(side_effect=execute_wifi)
+    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+
+    assert await asyncio.gather(
+        hub.async_execute("wifi_set_enabled", enabled=True),
+        hub.async_execute("wifi_set_enabled", enabled=False),
+    ) == [True, False]
+
+    assert max_active == 1
+    assert mock_speedport_client.execute_wifi_set_enabled.await_count == 2
+    assert hub._async_update_group_locked.await_count == 2  # noqa: SLF001
+    assert mock_speedport_client.logout.await_count == 2
 
 
 async def test_closed_hub_cannot_be_reopened(

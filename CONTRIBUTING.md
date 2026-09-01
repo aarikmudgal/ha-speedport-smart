@@ -42,6 +42,7 @@ ruff check .
 ruff format --check .
 mypy custom_components/speedport_smart
 python scripts/check_translations.py
+node --test tests/frontend/*.test.mjs
 pytest
 ~~~
 
@@ -78,8 +79,8 @@ changes, secret export, or another destructive shortcut.
 - Preserve unique IDs and entity-registry compatibility.
 - Prefer Home Assistant device classes, state classes, units, and translations
   over custom presentation logic.
-- Keep all user-facing text in **strings.json** and the English translation in
-  sync.
+- Keep all user-facing text in **strings.json**, every integration translation,
+  and the English and German panel dictionaries in sync.
 - Keep runtime dependencies inside the integration manifest and package all
   required runtime files under **custom_components/speedport_smart**.
 - Do not make a router call from the frontend panel.

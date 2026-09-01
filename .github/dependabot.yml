@@ -26,7 +26,8 @@ updates:
       python-development-dependencies:
         dependency-type: development
     ignore:
-      # These exact fixture pins intentionally test separate HA releases.
+      # The minimum HA fixture stays fixed here. The current fixture has its
+      # own manifest and update configuration below.
       - dependency-name: pytest-homeassistant-custom-component
       # HA 2025.12's aiodns 3.x cannot use pycares 5's breaking API.
       - dependency-name: pycares
@@ -35,3 +36,16 @@ updates:
     labels:
       - dependencies
     open-pull-requests-limit: 5
+
+  - package-ecosystem: pip
+    directory: /requirements/current-home-assistant
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:45"
+      timezone: Europe/Berlin
+    allow:
+      - dependency-name: pytest-homeassistant-custom-component
+    labels:
+      - dependencies
+    open-pull-requests-limit: 1
