@@ -76,12 +76,137 @@ def test_ddns_uses_firmware_enabled_field() -> None:
     assert ddns["enabled"] is True
 
 
+def test_ddns_provider_and_status_use_exact_firmware_fields() -> None:
+    """DynDNS provider and registration state stay nonsecret and bounded."""
+    ddns = normalize_feature_payload(
+        "ddns",
+        {
+            "use_dyndns": "1",
+            "dyndns_provider": "4",
+            "dyndns_status": "2",
+            "dyndns_domain": "PRIVATE-DOMAIN",
+            "dyndns_user": "PRIVATE-USER",
+            "dyndns_password": "PRIVATE-PASSWORD",
+        },
+    )["ddns"]
+
+    assert ddns == {
+        "enabled": True,
+        "connected": True,
+        "provider": "4",
+        "status_code": 2,
+    }
+    assert "PRIVATE" not in repr(ddns)
+
+
+def test_lan_and_dhcp_exact_octets_create_bounded_read_only_state() -> None:
+    """LAN and DHCP pages share one payload without losing either root."""
+    raw = {
+        "lan_ipv4_1": "10",
+        "lan_ipv4_2": "168",
+        "lan_ipv4_3": "10",
+        "lan_ipv4_4": "1",
+        "lan_mask_2": "255",
+        "lan_mask_3": "255",
+        "lan_mask_4": "0",
+        "lan_ip_v6_used": "1",
+        "lan_use_dhcp": "1",
+        "lan_dhcp_from": "20",
+        "lan_dhcp_to": "200",
+        "lan_ip_v6": "PRIVATE-IPV6",
+        "lan_ip_v6_range": "PRIVATE-RANGE",
+    }
+
+    expected = {
+        "lan": {
+            "ipv4_address": "10.168.10.1",
+            "subnet_mask": "255.255.255.0",
+            "ipv6_enabled": True,
+        },
+        "dhcp": {
+            "enabled": True,
+            "pool_start_ipv4": "10.168.10.20",
+            "pool_end_ipv4": "10.168.10.200",
+            "pool_size": 181,
+        },
+    }
+    assert normalize_feature_payload("lan", raw) == expected
+    assert normalize_feature_payload("dhcp", raw) == expected
+    assert "PRIVATE" not in repr(expected)
+
+
 def test_vpn_profile_enabled_state_is_not_connection_state() -> None:
     """A profile's vpn_status flag must not claim a connected tunnel."""
     vpn = normalize_feature_payload("vpn", {"vpn_status": "1"})["vpn"]
 
     assert vpn["enabled"] is True
     assert "connected" not in vpn
+
+
+def test_detail_family_normalizers_are_scoped_to_owned_fields() -> None:
+    """Additive detail families cannot claim unrelated base-family fields."""
+    wifi = normalize_feature_payload(
+        "wifi_schedule",
+        {
+            "use_wlan": "0",
+            "wlan_guest_active": "1",
+            "wlan_timerule": "1",
+            "wlan_dfrom": "07:30",
+            "wlan_dto": "22:15",
+        },
+    )
+    vpn = normalize_feature_payload(
+        "vpn_details",
+        {
+            "enabled": "0",
+            "status": "0",
+            "vpn_status": "1",
+            "vpn_connected": "1",
+            "addpeer": [{"connected": "1"}, {"connected": "0"}],
+        },
+    )
+    dect = normalize_feature_payload(
+        "dect_repeater",
+        {
+            "use_dect": "0",
+            "adddectdevice": [{"id": "handset-1"}],
+            "addrepeater": [{"id": "1"}, {"id": "2"}],
+        },
+    )
+    mesh = normalize_feature_payload(
+        "mesh_topology",
+        {
+            "use_dhcp": "1",
+            "wlan_active": "1",
+            "addmeshdevice": [
+                {
+                    "id": "mesh-1",
+                    "mesh_connect_to": "r",
+                }
+            ],
+        },
+    )
+
+    assert wifi == {
+        "wifi": {
+            "schedule_enabled": True,
+            "schedule": {
+                "mode": 1,
+                "daily_from": "07:30",
+                "daily_to": "22:15",
+            },
+        }
+    }
+    assert vpn == {
+        "vpn": {
+            "enabled": True,
+            "connected": True,
+            "peers": [{"connected": True}, {"connected": False}],
+            "connected_peer_count": 1,
+        }
+    }
+    assert dect == {"dect": {"repeater_count": 2}}
+    assert mesh == {"mesh": {"nodes": [{"id": "mesh-1", "parent": "r"}]}}
 
 
 def test_connection_privacy_is_scoped_and_identifier_free() -> None:
@@ -140,6 +265,7 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
         "daily_from": "07:30",
         "daily_to": "22:15",
         "weekly": {"monday": {"from": "08:00", "to": "21:00"}},
+        "weekly_day_count": 1,
     }
     rendered = repr(normalized)
     for private_value in (
@@ -164,17 +290,23 @@ def test_mobile_and_receiver_management_fields_are_constrained() -> None:
         "ex5g_fw_version": "010152.5.0.001.0",
         "ex5g_fwupd_version": "010152.6.0.001.0",
         "ex5g_fwupd_planned": "1",
+        "mobile_network_type": "5G",
         "ex5g_eid": "PRIVATE-EID",
         "ex5g_imei": "PRIVATE-IMEI",
         "receiver_hostname": "PRIVATE-RECEIVER-HOSTNAME",
     }
 
-    mobile = normalize_feature_payload("mobile", raw)["mobile"]
-    receiver = normalize_feature_payload("receiver", raw)["receiver"]
+    mobile_payload = normalize_feature_payload("mobile", raw)
+    receiver_payload = normalize_feature_payload("receiver", raw)
+    mobile = mobile_payload["mobile"]
+    mobile_receiver = mobile_payload["receiver"]
+    receiver = receiver_payload["receiver"]
 
-    for payload in (mobile, receiver):
+    assert mobile == {"network_type": "5G"}
+    assert receiver_payload["mobile"] == mobile
+    for payload in (mobile_receiver, receiver):
         assert payload["external_modem_enabled"] is True
-        assert (payload.get("receiver_mode") or payload.get("mode")) == 3
+        assert payload["mode"] == 3
         assert payload["lte_enabled"] is True
         assert payload["led_mode"] == 2
         assert payload["firmware_auto_update"] is True
@@ -182,13 +314,167 @@ def test_mobile_and_receiver_management_fields_are_constrained() -> None:
         assert payload["firmware_version"] == "010152.5.0.001.0"
         assert payload["latest_firmware"] == "010152.6.0.001.0"
         assert payload["firmware_update_planned"] is True
-    rendered = repr({"mobile": mobile, "receiver": receiver})
+    rendered = repr(
+        {
+            "mobile": mobile,
+            "mobile_receiver": mobile_receiver,
+            "receiver": receiver,
+        }
+    )
     for private_value in (
         "PRIVATE-EID",
         "PRIVATE-IMEI",
         "PRIVATE-RECEIVER-HOSTNAME",
     ):
         assert private_value not in rendered
+
+
+def test_receiver_child_keeps_link_speed_under_receiver_root() -> None:
+    """Receiver inventory exposes link speed once through its child record."""
+    normalized = normalize_feature_payload(
+        "receiver",
+        {
+            "addreceiver": [
+                {
+                    "id": "receiver-1",
+                    "name": "Outdoor receiver",
+                    "link_speed": "1000000000",
+                }
+            ]
+        },
+    )
+
+    assert normalized == {
+        "receiver": {
+            "items": [
+                {
+                    "id": "receiver-1",
+                    "name": "Outdoor receiver",
+                    "link_speed_bps": 1_000_000_000,
+                }
+            ]
+        }
+    }
+
+
+def test_managed_client_safe_network_metadata_uses_exact_varids() -> None:
+    """Managed rows separate directional link speeds from Wi-Fi generation."""
+    normalized = normalize_feature_payload(
+        "clients",
+        {
+            "addmdevice": [
+                {
+                    "id": "row-1",
+                    "mdevice_mac": "AA:BB:CC:DD:EE:FF",
+                    "mdevice_ipv4": "192.168.2.40",
+                    "mdevice_reservedip": "55",
+                    "mdevice_downspeed": "1000000000",
+                    "mdevice_upspeed": "500000000",
+                    "mdevice_wifi": "6",
+                }
+            ]
+        },
+    )["clients"]["items"][0]
+
+    assert normalized["reserved_ipv4"] == "192.168.2.55"
+    assert normalized["download_link_speed_bps"] == 1_000_000_000
+    assert normalized["upload_link_speed_bps"] == 500_000_000
+    assert normalized["wifi_generation"] == 6
+    assert "download_rate_bps" not in normalized
+    assert "upload_rate_bps" not in normalized
+    assert "medium" not in normalized
+
+
+def test_wifi_generation_never_implies_radio_band() -> None:
+    """Wi-Fi generation 5 is not counted as a proven 5 GHz connection."""
+    ambiguous = normalize_feature_payload(
+        "clients",
+        {
+            "addmdevice": [
+                {
+                    "id": "row-1",
+                    "mdevice_connected": "1",
+                    "mdevice_wifi": "5",
+                }
+            ]
+        },
+    )
+
+    assert ambiguous["clients"]["items"][0]["wifi_generation"] == 5
+    assert "medium" not in ambiguous["clients"]["items"][0]
+    assert "wifi" not in ambiguous
+
+    proven_band = normalize_feature_payload(
+        "clients",
+        {
+            "addmwlan5device": [
+                {
+                    "id": "row-2",
+                    "mdevice_connected": "1",
+                    "mdevice_wifi": "4",
+                }
+            ]
+        },
+    )
+    assert proven_band["clients"]["items"][0]["medium"] == "wifi_5"
+    assert proven_band["clients"]["items"][0]["wifi_generation"] == 4
+    assert proven_band["wifi"]["radio_5"]["client_count"] == 1
+
+
+def test_explicit_client_throughput_remains_distinct_from_link_speed() -> None:
+    """Explicit traffic-rate fields coexist with firmware directional speeds."""
+    client = normalize_feature_payload(
+        "clients",
+        {
+            "device": [
+                {
+                    "id": "row-1",
+                    "download_rate_bps": "80000000",
+                    "upload_rate_bps": "12000000",
+                    "downspeed": "1000000000",
+                    "upspeed": "500000000",
+                }
+            ]
+        },
+    )["clients"]["items"][0]
+
+    assert client["download_rate_bps"] == 80_000_000
+    assert client["upload_rate_bps"] == 12_000_000
+    assert client["download_link_speed_bps"] == 1_000_000_000
+    assert client["upload_link_speed_bps"] == 500_000_000
+
+
+def test_mesh_exact_topology_fields_are_bounded() -> None:
+    """Mesh topology retains exact safe status and direct UI speed units."""
+    mesh = normalize_feature_payload(
+        "mesh",
+        {
+            "addmeshdevice": [
+                {
+                    "id": "mesh-1",
+                    "mesh_connect_to": "r",
+                    "mesh_device_type": "2",
+                    "mesh_downspeed": "1200000000",
+                    "mesh_upspeed": "600000000",
+                    "mesh_ipv4": "192.168.2.2",
+                    "mesh_lan1": "1000",
+                    "mesh_lan2": "0",
+                    "mesh_use_wlan": "1",
+                }
+            ]
+        },
+    )["mesh"]["nodes"][0]
+
+    assert mesh == {
+        "id": "mesh-1",
+        "parent": "r",
+        "device_type": 2,
+        "ipv4": "192.168.2.2",
+        "wifi_enabled": True,
+        "download_link_speed_bps": 1_200_000_000,
+        "upload_link_speed_bps": 600_000_000,
+        "linked_lan_port_count": 1,
+    }
 
 
 def test_usb_tethering_and_nas_are_aggregate_only() -> None:
@@ -381,6 +667,66 @@ def test_telephony_management_keeps_status_counts_only() -> None:
         assert private_value not in rendered
 
 
+def test_client_time_fields_are_not_router_global() -> None:
+    """ClientTime-only values remain absent without a per-client read contract."""
+    normalized = normalize_feature_payload(
+        "parental",
+        {
+            "addprofile": [{"id": "profile-1"}],
+            "actual_time": "09:15",
+            "trule_from": "08:00",
+            "trule_to": "10:00",
+            "trule_from2": "14:30",
+            "trule_to2": "16:00",
+            "trule_from3": "bad",
+            "trule_to3": "21:00",
+            "remainingtime": "45 min",
+            "mdevice_name": "PRIVATE-CLIENT",
+        },
+    )
+
+    assert normalized == {"parental": {"profiles": 1}}
+    assert "PRIVATE-CLIENT" not in repr(normalized)
+
+
+def test_dect_handset_count_preserves_stable_handset_inventory() -> None:
+    """Aggregate count coexists with child records used by handset entities."""
+    normalized = normalize_feature_payload(
+        "dect",
+        {
+            "adddectdevice": [
+                {"id": "handset-1", "name": "Office"},
+                {"id": "handset-2", "name": "Living room"},
+            ]
+        },
+    )["dect"]
+
+    assert normalized["handset_count"] == 2
+    assert normalized["handsets"] == [
+        {"id": "handset-1", "name": "Office"},
+        {"id": "handset-2", "name": "Living room"},
+    ]
+
+
+def test_dect_paging_is_privacy_safe_and_phonebook_entries_are_withheld() -> None:
+    """Paging remains readable while unsupported contact counts stay absent."""
+    dect = normalize_feature_payload(
+        "phonebook",
+        {
+            "adddectdevice": [{"id": "1", "name": "Office"}],
+            "PagingStat1": "1",
+            "num_entries": "42",
+            "contact_name": "PRIVATE-CONTACT",
+            "phone_number": "PRIVATE-NUMBER",
+        },
+    )["dect"]
+
+    assert dect["handsets"] == [{"id": "1", "name": "Office", "paging": True}]
+    assert "phonebook_entry_count" not in dect
+    assert "PRIVATE-CONTACT" not in repr(dect)
+    assert "PRIVATE-NUMBER" not in repr(dect)
+
+
 def test_firmware_and_easy_support_states_are_nonsecret() -> None:
     """Firmware and EasySupport expose bounded states, not router identity."""
     firmware = normalize_feature_payload(
@@ -441,6 +787,7 @@ def test_firmware_and_easy_support_states_are_nonsecret() -> None:
         "telephony",
         "firmware",
         "easy_support",
+        "system_services",
     ],
 )
 def test_management_missing_fields_do_not_become_false(family: str) -> None:

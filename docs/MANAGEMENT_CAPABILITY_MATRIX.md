@@ -1,10 +1,108 @@
-# Version 0.2 management capability matrix
+# Router management capability matrix
 
-This document is a planning inventory for the Telekom Speedport Smart 4R Typ A. It separates implemented read-only behavior, implemented writes, firmware-evidenced but blocked work, and destructive or private work deferred from version 0.2. The **Coverage** column is the source of truth for each detailed row. A feature listed as `None` still needs protocol evidence and implementation.
+This document records the version 0.2 implemented baseline and the version 0.3 implementation plan for the Telekom Speedport Smart 4R Typ A. It separates implemented read-only behavior, implemented writes, firmware-evidenced but blocked work, and destructive or private work. The detailed **Coverage** column is the source of truth for current implementation state. A feature listed as `None` still needs protocol evidence and implementation.
 
 The router decides which menus exist. Contract type, provider, attached hardware, EasySupport state, Mesh devices, and firmware can all remove or add fields. Entities and actions must therefore be created from capabilities returned by the connected router, not from the model name alone.
 
 This matrix is based on static review of public manuals, firmware history, downloaded public web resources, public reverse-engineering projects, and current repository code and tests. It does not claim live verification of the reconnaissance. Static firmware evidence never generates a generic write contract. Exact reversible scalar candidates may be staged behind strict pre-read, acknowledgement, post-readback, model, firmware, and capability gates, but remain explicitly unproven until a user-authorized change and rollback succeeds.
+
+## Version 0.3 implementation gate
+
+The following table is the implementation decision made before adding any new
+write command. It covers the complete user-visible administration surface from
+the official Smart 4R manual plus additional operations found in the saved
+firmware web resources.
+
+- ✅ means an exact implementation path already exists in this repository for
+  the reviewed Smart 4R Typ A firmware. Live change, readback, and restoration
+  are still performed by the user before stable promotion.
+- ⚠️ means the feature is modelable, but at least one exact `FORM`, `ACK`,
+  `READBACK`, `IDENTITY`, `SECRET`, recovery, or user-operated roundtrip proof is
+  missing. It remains read only or visibly locked until that proof exists.
+- ❌ means no local web/API control exists: the operation is physical-only,
+  Telekom-account-only, or intentionally not configurable in this firmware.
+  Safe returned state is still shown.
+
+No router setting was changed while compiling this table. A missing write
+contract never suppresses safe readable state. Non-secret scalar state belongs
+in native entities. Structured private data belongs in an administrator-only
+live view so Recorder does not persist it. Credentials, keys, QR codes, phone
+records, backups, and logs require reauthentication or an explicit private
+view/download and never enter entity state, diagnostics, logs, or panel
+metadata.
+
+The read-exposure column below describes the target version 0.3 architecture,
+not current coverage. Text beginning with **Current** identifies behavior already
+implemented on this branch. Text beginning with **Planned** remains unavailable
+until its source schema, privacy boundary, and presentation path are implemented.
+The detailed coverage tables below remain authoritative for current support.
+
+| Area | Setting or action | Control | Target read exposure even when control is blocked |
+| --- | --- | :---: | --- |
+| Setup | Complete initial setup assistant | ⚠️ | **Planned:** completion and prerequisite status as native summaries; entered credentials only in a reauthenticated flow. No setup-status entity exists yet. |
+| Internet | Reconnect Internet / request fresh public addressing | ✅ | Connection, uptime, addresses, capacity, and WAN telemetry as native entities. |
+| Internet | Provider, username, MTU, VLAN, and fixed-IP configuration | ⚠️ | Non-secret selected mode and numeric settings as native entities; account values only in a reauthenticated editor. |
+| Internet | Preferred IPv4 and IPv6 DNS servers | ⚠️ | **Planned:** enabled state and safe server configuration in the administrator view. No DNS configuration view exists yet. |
+| Internet | USB-tether fallback, hardware rescan, and immediate failover | ⚠️ | Device support, primary/fallback state, and connection status as native entities. |
+| Internet | Telekom privacy level | ✅ | Current level as a native sensor and select. |
+| Internet | Hybrid bonding | ✅ | Enabled, tunnel, mobile, and DSL state as native entities. |
+| Internet | 5G receiver LED mode | ✅ | Current mode and receiver status as native entities. |
+| Internet | 5G receiver mode, routing exceptions, and receiver firmware actions | ⚠️ | Mode, radio, signal, version, and update state as native entities; exception list in the administrator view. |
+| Internet | Parental schedules and per-device pause/resume | ⚠️ | Profiles, allowance state, and aggregate blocked state as native or structured administrator data. |
+| Internet | Enable or disable an existing port-forward rule | ✅ | Each proven stable rule is an individual configuration switch. Private target fields are not exposed in entity state or attributes. |
+| Internet | Create, edit, or delete port forwards/redirections | ⚠️ | **Current:** aggregate rule count and proven existing-rule switches. **Planned:** redacted rule inventory in the administrator view. |
+| Internet | Port-blocking and firewall-exception rules | ⚠️ | **Current when returned:** enabled state and aggregate rule counts natively. **Planned:** structured rule list in the administrator view. |
+| Internet | Dynamic DNS provider, credentials, refresh, and delete | ⚠️ | **Current when returned:** enabled, provider, and status natively. **Planned:** host and credentials only in a reauthenticated editor. |
+| Internet | UPnP state and mappings | ⚠️ | **Current when returned:** enabled state and mapping count natively. **Planned:** redacted mappings in the administrator view. |
+| Internet | WireGuard/VPN enable, renew, create, import, export, and delete | ⚠️ | **Current when returned:** enabled, connected, type, and peer counts natively. **Planned:** peer state in the administrator view; keys and QR data only through a private one-time flow. |
+| Telephony | Providers, telephone numbers, and registration | ⚠️ | **Current when returned:** privacy-safe counts and status natively. **Planned:** numbers and provider details only in the administrator view. |
+| Telephony | Global number assignment and call behavior | ⚠️ | **Current when returned:** privacy-safe policy and count summaries natively. **Planned:** assignment summaries and detailed mappings in the administrator view. |
+| Telephony | Analog socket configuration | ⚠️ | **Planned:** socket availability and status natively when an exact safe response schema is captured. No analog-socket entity exists yet. |
+| Telephony | DECT base settings | ⚠️ | **Current when returned:** enabled, scan, SmartHome, handset, and repeater summaries natively. |
+| Telephony | DECT handset scan, enroll, disconnect, and paging | ⚠️ | **Current when returned:** stable handset inventory and status as child devices, with no PIN in state. **Planned:** guarded actions after contract proof. |
+| Telephony | DECT repeater scan and disconnect | ⚠️ | **Current when returned:** repeater count. **Planned:** safe inventory in the administrator view and guarded actions after contract proof. |
+| Telephony | IP PBX/IP-phone refresh, create, edit, and delete | ⚠️ | **Current when returned:** enabled state, client counts, and child-device status natively. **Planned:** credentials only in a reauthenticated editor. |
+| Telephony | Number use, dialing behavior, and automatic number memory | ⚠️ | **Current when returned:** privacy-safe policy and count summaries natively. **Planned:** remaining policy state after exact schema capture. |
+| Telephony | Call-list viewing, export, and clear | ⚠️ | **Current when returned:** aggregate counts and last-call time natively. **Planned:** records only in a private live view/download. |
+| Telephony | Phonebook search, create, edit, import, export, and delete | ⚠️ | **Current when returned:** book count natively. **Planned:** entry count after its exact parameterized read contract is proven; contacts only in a private live view/editor. |
+| Telephony | Telephone-keypad-only functions | ❌ | No local control; expose equivalent router status when available. |
+| Network | Rename a connected client | ✅ | Client name and presence as child-device state. |
+| Network | Toggle an existing client's fixed-DHCP flag | ✅ | Current flag and safe client addressing as permission-scoped child state. |
+| Network | Main Wi-Fi on/off | ✅ | Global and per-band status, channels, client counts, and schedule natively. |
+| Network | Guest Wi-Fi on/off | ✅ | Enabled state, client count, WPS state, and encryption mode natively. |
+| Network | Prioritized/office Wi-Fi on/off | ✅ | Enabled state and encryption mode natively. |
+| Network | Start WPS | ✅ | Enabled, firmware-disabled, and current WPS status natively. |
+| Network | WPS mode and PIN settings | ⚠️ | **Current when returned:** enabled and lifecycle status natively. **Planned:** mode after exact schema capture; PIN only in a reauthenticated editor. |
+| Network | Per-band enablement, band mode, channel, radio power, SSID, visibility, encryption, and key | ⚠️ | Returned, normalized safe radio state is exposed natively. Remaining fields are **planned** only after exact schema capture; SSID/key belong only in a private reauthenticated editor. |
+| Network | Daily and weekly Wi-Fi schedules | ⚠️ | Current mode and every returned time window as native read-only state. |
+| Network | Full guest/office Wi-Fi identity, security, and lifetime settings | ⚠️ | Safe mode/state natively; SSID/key only in a private reauthenticated editor. |
+| Network | Wi-Fi allowlist and per-device admission | ⚠️ | Policy and counts natively; stable redacted membership in the administrator view. |
+| Network | LAN IPv4/IPv6 identity and DHCP pool/lease settings | ⚠️ | Current safe LAN/DHCP state natively; lockout warning and recovery data in the administrator view. |
+| Network | Traffic prioritization and device selection | ⚠️ | Enabled state and aggregate prioritized-client count natively; selected devices permission-scoped. |
+| Network | DNS-rebind protection and exception list | ⚠️ | Protection state and count natively; structured exceptions in the administrator view. |
+| Network | Mesh/Powerline rename, identify, topology, and optimization | ⚠️ | Topology, parent, type, rate, port, Wi-Fi, firmware, and presence as child state. |
+| Network | Mesh restart, factory reset, and firmware update | ⚠️ | Target inventory and update state natively; actions require maintenance/recovery confirmation. |
+| Services | SmartHome activation | ⚠️ | **Planned:** linked/unlinked state natively after its exact schema is captured; activation code only in a reauthenticated flow. The existing DECT SmartHome flag is not this service state. |
+| Storage | USB port, printer sharing, and media server | ⚠️ | **Current when returned:** USB port, device, printer presence, capacity, media, and mount state natively. **Planned:** printer-sharing state after exact schema proof. |
+| Storage | NAS share/folder create, edit, enable, eject, and delete | ⚠️ | Device and aggregate storage state natively; paths/users in the administrator view; passwords only in a reauthenticated editor. |
+| System | Router password change | ⚠️ | No password or equivalent read exposure. **Planned:** change only through local reauthentication with secure config-entry credential replacement after exact contract proof. |
+| System | Front LED mode and schedule | ⚠️ | Current mode and schedule natively. |
+| System | Automatic cloud backup and local EasySupport flags | ⚠️ | Eligibility, enabled state, support state, and last safe status natively. |
+| System | Telekom Device Manager, hotline consent, and remote account actions | ❌ | Local eligibility/status only; open the official Telekom account flow for the action. |
+| System | Download local configuration backup | ⚠️ | No current integration download. **Planned after exact export-contract proof:** private authenticated download only, never Recorder or diagnostics. |
+| System | Restore configuration backup | ⚠️ | No current integration upload. **Planned after exact restore-contract proof:** private upload flow with backup, compatibility, typed confirmation, and reboot recovery. |
+| System | Reboot router | ✅ | Availability, identity, and polling recovery natively. |
+| System | Factory reset | ⚠️ | **Current:** router identity. **Planned:** verified backup-readiness status plus an admin-only typed action with physical recovery. |
+| System | Reset DECT while optionally retaining devices | ⚠️ | **Current when returned:** DECT inventory natively. **Planned:** admin-only typed action with reboot recovery. |
+| System | Router and Mesh online/manual firmware update | ⚠️ | **Current when returned:** current/latest version and update state natively. **Planned after exact contract proof:** install/upload through guarded maintenance actions. |
+| System | System information and active-services inventory | ⚠️ | Proven scalar state natively; identifiers/status/timestamps in a redacted administrator live view after exact schema capture. |
+| System | Detailed system messages, filter, export, and clear | ⚠️ | **Current when returned:** aggregate router health only. **Planned:** message counts plus a redacted private live view/download; clear requires a proven contract and confirmation. |
+| System | Email notifications and event selection | ⚠️ | No current notification entity. **Planned:** enabled/delivery state natively; addresses and credentials only in a reauthenticated editor. |
+| System | DSL modem mode | ⚠️ | **Current when returned:** DSL link state. **Planned:** explicit modem-mode state and an admin-only typed action after verified backup and a physical recovery plan. |
+| Security | HTTPS access to the router UI | ⚠️ | The integration connection scheme and certificate verification are configuration, not router-state entities. **Planned:** explicit router HTTPS state after schema proof plus a lockout-safe reconfiguration flow. |
+| Security | Firewall state | ❌ | Native read-only state. Official firmware intentionally exposes no editable firewall setting. |
+| System | External-modem and Link/LAN1 mode | ⚠️ | **Current when returned:** receiver external-modem and link state. **Planned:** explicit Link/LAN1 mode plus a guarded select with cabling and recovery warning. |
+| Front panel | Display/key actions without a local web equivalent | ❌ | Expose any equivalent state; keep physical-only actions physical. |
 
 ## Sources and evidence
 

@@ -25,7 +25,11 @@ from custom_components.speedport_smart.api.exceptions import (
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
 )
-from custom_components.speedport_smart.models import WanInterface
+from custom_components.speedport_smart.models import (
+    RouterInfo,
+    RouterStatus,
+    WanInterface,
+)
 from custom_components.speedport_smart.normalizers import normalize_feature_payload
 
 
@@ -1523,6 +1527,11 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "data/WLANBasicAss.json",
             "html/content/network/wlan_name_enc.html",
         ),
+        (
+            "wifi_schedule",
+            "data/WLANBasic.json",
+            "html/content/network/wlan_basic.html",
+        ),
         ("lan", "data/LAN.json", "html/content/network/lan.html"),
         (
             "clients",
@@ -1612,6 +1621,16 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "html/content/config/problem_handling_dect.html",
         ),
         (
+            "dect_repeater",
+            "data/DECTRepeater.json",
+            "html/content/phone/phone_dect_repeater.html",
+        ),
+        (
+            "vpn_details",
+            "data/VPN.json",
+            "html/content/internet/vpn.html",
+        ),
+        (
             "analog",
             "data/PhonePlugs.json",
             "html/content/phone/phone_analog.html",
@@ -1684,6 +1703,8 @@ def test_speedport_smart_4r_candidates_prefer_proven_firmware_routes(
         ("ddns", "data/DDNS.json"),
         ("vpn", "data/WireGuard.json"),
         ("vpn", "data/Wireguard.json"),
+        ("vpn_details", "data/WireGuard.json"),
+        ("vpn_details", "data/Wireguard.json"),
         ("pbx", "data/PhoneSettings.json"),
         ("dect", "data/PhoneSettings.json"),
         ("usb", "data/NASMediacenter.json"),
@@ -1699,6 +1720,223 @@ def test_documented_cross_firmware_aliases_are_never_primary(
     )
 
     assert endpoint in endpoints[1:]
+
+
+def test_detail_endpoint_families_poll_beyond_summary_evidence() -> None:
+    """A confirmed summary endpoint cannot shadow independent detail reads."""
+    assert DEFAULT_FEATURE_CANDIDATES["wifi"][0].endpoint == "data/SecureStatus.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["wifi_schedule"][0].endpoint == "data/WLANBasic.json"
+    )
+    assert DEFAULT_FEATURE_CANDIDATES["vpn"][0].endpoint == "data/SecureStatus.json"
+    assert DEFAULT_FEATURE_CANDIDATES["vpn_details"][0].endpoint == "data/VPN.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["mesh_topology"][0].endpoint
+        == "data/DeviceList.json"
+    )
+    assert DEFAULT_FEATURE_CANDIDATES["dect"][0].endpoint == "data/DECTStation.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["dect_repeater"][0].endpoint
+        == "data/DECTRepeater.json"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detail_result", ["success", "empty", "unsupported"])
+async def test_probe_keeps_summary_and_independent_detail_families(
+    detail_result: str,
+) -> None:
+    """Capability probing evaluates detail evidence after summary confirmation."""
+    overview = "html/content/overview/index.html"
+    candidates = {
+        "wifi": (
+            EndpointCapability(
+                "wifi",
+                "data/SecureStatus.json",
+                authenticated=True,
+                referer=overview,
+                evidence_keys=("wlan_active",),
+            ),
+        ),
+        "wifi_schedule": (
+            EndpointCapability(
+                "wifi_schedule",
+                "data/WLANBasic.json",
+                authenticated=True,
+                referer="html/content/network/wlan_basic.html",
+                evidence_keys=("wlan_timerule",),
+            ),
+        ),
+        "vpn": (
+            EndpointCapability(
+                "vpn",
+                "data/SecureStatus.json",
+                authenticated=True,
+                referer=overview,
+                evidence_keys=("vpn_active",),
+            ),
+        ),
+        "vpn_details": (
+            EndpointCapability(
+                "vpn_details",
+                "data/VPN.json",
+                authenticated=True,
+                referer="html/content/internet/vpn.html",
+                evidence_keys=("addpeer",),
+            ),
+        ),
+        "dect": (
+            EndpointCapability(
+                "dect",
+                "data/DECTStation.json",
+                authenticated=True,
+                referer="html/content/phone/phone_dect_mobiles.html",
+                evidence_keys=("use_dect",),
+            ),
+        ),
+        "dect_repeater": (
+            EndpointCapability(
+                "dect_repeater",
+                "data/DECTRepeater.json",
+                authenticated=True,
+                referer="html/content/phone/phone_dect_repeater.html",
+                evidence_keys=("addrepeater",),
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        base_payloads: dict[str, dict[str, object]] = {
+            "data/SecureStatus.json": {
+                "wlan_active": "1",
+                "vpn_active": "1",
+            },
+            "data/DECTStation.json": {"use_dect": "1"},
+        }
+        if endpoint in base_payloads:
+            return base_payloads[endpoint]
+        if detail_result == "unsupported":
+            raise SpeedportUnsupportedError("detail endpoint unavailable")
+        if detail_result == "empty":
+            return {}
+        return {
+            "data/WLANBasic.json": {"wlan_timerule": "1"},
+            "data/VPN.json": {"addpeer": [{"connected": "1"}]},
+            "data/DECTRepeater.json": {"addrepeater": [{"id": "1"}]},
+        }[endpoint]
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(side_effect=feature_payload)) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    summary_families = {"status", "wifi", "vpn", "dect"}
+    detail_families = {"wifi_schedule", "vpn_details", "dect_repeater"}
+    assert summary_families <= set(report.feature_endpoints)
+    if detail_result == "success":
+        assert detail_families <= set(report.feature_endpoints)
+    else:
+        assert detail_families.isdisjoint(report.feature_endpoints)
+        assert detail_families <= set(report.failures)
+    assert report.authenticated_json is True
+    assert get.await_count == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("family", "payload"),
+    [
+        ("wifi_schedule", {"wlan_time_active": "1"}),
+        ("dect_repeater", {"use_dect": "1"}),
+    ],
+)
+async def test_probe_rejects_detail_evidence_the_normalizer_does_not_consume(
+    family: str,
+    payload: dict[str, object],
+) -> None:
+    """Detail capability evidence must prove at least one owned output field."""
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={family: (DEFAULT_FEATURE_CANDIDATES[family][0],)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(return_value=payload)),
+    ):
+        report = await client.probe_capabilities()
+
+    assert family not in report.feature_endpoints
+    assert family in report.failures
+
+
+@pytest.mark.asyncio
+async def test_probe_receiver_accepts_exact_flat_status_evidence() -> None:
+    """Receiver fields cannot normalize into a capability-hidden data root."""
+    referer = "html/content/internet/lte_mode.html"
+    candidates = {
+        family: (
+            EndpointCapability(
+                family,
+                "data/LTE.json",
+                authenticated=True,
+                referer=referer,
+                evidence_keys=DEFAULT_FEATURE_CANDIDATES[family][0].evidence_keys,
+            ),
+        )
+        for family in ("mobile", "receiver")
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    payload = {
+        "auto_external_modem": "1",
+        "extwan_typ": "3",
+        "use_lte": "1",
+        "auto_update": "1",
+    }
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(return_value=payload)) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    assert {"mobile", "receiver"} <= set(report.feature_endpoints)
+    assert get.await_count == 1
 
 
 @pytest.mark.asyncio

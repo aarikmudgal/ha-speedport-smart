@@ -64,8 +64,10 @@ _CHILD_LABEL_KEYS = frozenset(
     {
         "access_point",
         "label",
+        "mesh_parent",
         "mesh_node",
         "name",
+        "parent",
         "parental_profile",
         "title",
     }

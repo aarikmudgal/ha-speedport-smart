@@ -62,8 +62,10 @@ def test_supported_and_value_transform() -> None:
     """Capability and path both gate entity creation."""
     hub = FakeHub()
     assert supported(hub, "wifi", "wifi.channel")
+    assert supported(hub, ("dsl", "wifi"), "wifi.channel")
     assert supported(hub, "wifi", None)
     assert not supported(hub, "dsl", "wifi.channel")
+    assert not supported(hub, ("dsl", "mesh"), "wifi.channel")
     assert not supported(hub, "wifi", "wifi.missing")
     assert value(hub, "wifi.channel", as_int) == 11
     assert value(hub, "wifi.channel") == 11

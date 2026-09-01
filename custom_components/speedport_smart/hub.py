@@ -28,7 +28,7 @@ from .api import (
 )
 from .const import DOMAIN, RATE_WINDOW_SECONDS
 from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinator
-from .management import get_command_write_contract
+from .management import ManagementExecutionSurface, get_command_write_contract
 from .normalizers import normalize_feature_payload, normalize_status_payload
 
 if TYPE_CHECKING:
@@ -56,6 +56,7 @@ NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
         "lte",
         "5g",
         "receiver",
+        "mesh_topology",
         "wifi",
         "clients",
         "telephony",
@@ -89,6 +90,7 @@ _FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "calls": ("telephony", "calls"),
         "connection_privacy": ("internet", "privacy"),
         "dect": ("dect",),
+        "dect_repeater": ("dect", "repeaters"),
         "dns_rebind": ("security", "dns_rebind"),
         "easy_support": ("system", "easy_support"),
         "firmware": ("system", "firmware_details"),
@@ -97,6 +99,7 @@ _FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "ip_phones": ("pbx", "ip_phones"),
         "lte": ("mobile", "lte"),
         "mobile": ("mobile",),
+        "mesh_topology": ("mesh", "nodes"),
         "nas": ("usb", "nas"),
         "parental_controls": ("parental", "configuration"),
         "pbx": ("pbx",),
@@ -110,7 +113,9 @@ _FAMILY_ROUTES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
         "usb_tethering": ("usb", "tethering"),
         "wifi_access": ("wifi", "access"),
         "wifi_configuration": ("wifi", "configuration"),
+        "wifi_schedule": ("wifi", "schedule"),
         "wireguard": ("vpn", "wireguard"),
+        "vpn_details": ("vpn", "details"),
         "wps": ("wifi", "wps"),
     }
 )
@@ -427,7 +432,7 @@ class SpeedportHub:
         return capability.casefold() in self._capabilities
 
     def supports_command(self, command: str) -> bool:
-        """Return whether control is enabled and protocol implements command."""
+        """Return whether a native entity may expose an implemented command."""
         contract = get_command_write_contract(command)
         handler = getattr(self.client, command, None) or getattr(
             self.client, f"execute_{command}", None
@@ -437,6 +442,7 @@ class SpeedportHub:
             self.controls_enabled
             and self.has_capability("authenticated_json")
             and contract is not None
+            and contract.execution_surface is ManagementExecutionSurface.NATIVE_ENTITY
             and contract.supports(identity.model, identity.firmware)
             and self.has_capability(contract.capability)
             and callable(handler)
@@ -1107,7 +1113,9 @@ class SpeedportHub:
     def _unavailable_public_status_values(self) -> dict[str, Any]:
         """Invalidate cached public status while retaining other source values."""
         unavailable = _null_values(self._public_status_data)
-        for family_data in self._family_data.values():
+        for family, family_data in self._family_data.items():
+            if family in self._endpoint_errors:
+                continue
             unavailable = _restore_values_at_paths(unavailable, family_data)
         return unavailable
 
@@ -1222,10 +1230,16 @@ class SpeedportHub:
                     )
                     break
                 except SpeedportUnsupportedError as err:
+                    failed_families = frozenset(endpoint_families)
                     for family in endpoint_families:
                         self._endpoint_errors[family] = type(err).__name__
+                    for family in endpoint_families:
                         partial = _deep_merge_dicts(
-                            partial, self._unavailable_family_data(family)
+                            partial,
+                            self._unavailable_family_data(
+                                family,
+                                excluded_families=failed_families,
+                            ),
                         )
                 except SpeedportError as err:
                     if authenticated:
@@ -1237,8 +1251,14 @@ class SpeedportHub:
                         break
                     for family in endpoint_families:
                         self._endpoint_errors[family] = type(err).__name__
+                    failed_families = frozenset(endpoint_families)
+                    for family in endpoint_families:
                         partial = _deep_merge_dicts(
-                            partial, self._unavailable_family_data(family)
+                            partial,
+                            self._unavailable_family_data(
+                                family,
+                                excluded_families=failed_families,
+                            ),
                         )
                 else:
                     authenticated_succeeded |= authenticated
@@ -1251,7 +1271,9 @@ class SpeedportHub:
                                 partial,
                                 _restore_values_at_paths(
                                     _removed_values(previous, normalized),
-                                    self._public_status_data,
+                                    self._family_fallback_data(
+                                        excluded_families=(family,)
+                                    ),
                                 ),
                             )
                         self._family_data[family] = normalized
@@ -1290,11 +1312,16 @@ class SpeedportHub:
     ) -> dict[str, Any]:
         """Clear all protected fields and flag other poll groups for notification."""
         invalidated: dict[str, Any] = {}
-        for family in self._authenticated_feature_families():
+        authenticated_families = self._authenticated_feature_families()
+        for family in authenticated_families:
             if error_name is not None:
                 self._endpoint_errors[family] = error_name
             invalidated = _deep_merge_dicts(
-                invalidated, self._unavailable_family_data(family)
+                invalidated,
+                self._unavailable_family_data(
+                    family,
+                    excluded_families=authenticated_families,
+                ),
             )
 
         before = _deep_merge_dicts(self._mutable_data, partial)
@@ -1303,15 +1330,37 @@ class SpeedportHub:
             self._protected_invalidation_pending = True
         return _deep_merge_dicts(partial, invalidated)
 
-    def _unavailable_family_data(self, family: str) -> dict[str, Any]:
+    def _unavailable_family_data(
+        self,
+        family: str,
+        *,
+        excluded_families: Iterable[str] = (),
+    ) -> dict[str, Any]:
         """Replace only values previously contributed by one family with nulls."""
         previous = self._family_data.get(family)
         if previous is None:
             return {}
         return _restore_values_at_paths(
             _null_values(previous),
-            self._public_status_data,
+            self._family_fallback_data(excluded_families=(*excluded_families, family)),
         )
+
+    def _family_fallback_data(
+        self,
+        *,
+        excluded_families: Iterable[str],
+    ) -> dict[str, Any]:
+        """Merge healthy alternate sources used when one family drops a field."""
+        excluded = frozenset(excluded_families)
+        fallback = _deep_merge_dicts({}, self._public_status_data)
+        for source_family in sorted(self._family_data):
+            if source_family in excluded or source_family in self._endpoint_errors:
+                continue
+            fallback = _deep_merge_dicts(
+                fallback,
+                self._family_data[source_family],
+            )
+        return fallback
 
     def _normalise_wan_counters(
         self,
@@ -1404,7 +1453,7 @@ class SpeedportHub:
         verify_group: PollGroup | None = PollGroup.NORMAL,
         **parameters: Any,
     ) -> Any:
-        """Run one allowed command and optionally publish one state readback."""
+        """Run one allowed native-entity command and optionally publish readback."""
         if not self.controls_enabled:
             raise HomeAssistantError(
                 "Router controls are disabled in the Telekom Speedport Smart "

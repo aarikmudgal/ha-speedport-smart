@@ -26,11 +26,12 @@ _WPS_COMPLETED_STATES = frozenset({"configured", "success"})
 
 def supported(
     hub: SpeedportHub,
-    capability: str,
+    capability: str | tuple[str, ...],
     data_path: str | tuple[str | int, ...] | None,
 ) -> bool:
     """Return whether capability and optional value exist."""
-    if not hub.has_capability(capability):
+    capabilities = (capability,) if isinstance(capability, str) else capability
+    if not any(hub.has_capability(item) for item in capabilities):
         return False
     return data_path is None or hub.get(data_path, MISSING) is not MISSING
 

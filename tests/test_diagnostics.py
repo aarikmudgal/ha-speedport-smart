@@ -78,6 +78,30 @@ def test_nested_client_relationship_metadata_is_redacted() -> None:
     assert client["transport"] == "wifi"
 
 
+def test_nested_mesh_relationship_metadata_is_redacted() -> None:
+    """Mesh parent identifiers and addresses never leave diagnostics."""
+    result = _redact(
+        {
+            "mesh": {
+                "nodes": [
+                    {
+                        "parent": "Repeater Upstairs",
+                        "mesh_parent": "private-router-row",
+                        "ipv4": "192.168.2.10",
+                        "connected": True,
+                    }
+                ]
+            }
+        }
+    )
+
+    node = result["mesh"]["nodes"][0]
+    assert node["parent"] == REDACTED
+    assert node["mesh_parent"] == REDACTED
+    assert node["ipv4"] == REDACTED
+    assert node["connected"] is True
+
+
 async def test_config_entry_diagnostics(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,

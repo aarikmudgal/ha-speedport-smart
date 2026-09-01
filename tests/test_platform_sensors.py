@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import EntityCategory, UnitOfInformation
+from homeassistant.const import EntityCategory, UnitOfDataRate, UnitOfInformation
 
 from custom_components.speedport_smart.binary_sensor import (
     BINARY_SENSOR_DESCRIPTIONS,
@@ -26,11 +26,16 @@ from custom_components.speedport_smart.coordinator import (
     SpeedportDataUpdateCoordinator,
 )
 from custom_components.speedport_smart.hub import SpeedportHub
+from custom_components.speedport_smart.models import (
+    CapabilityReport,
+    EndpointCapability,
+)
 from custom_components.speedport_smart.panel import _access_source_for_entity
 from custom_components.speedport_smart.sensor import (
     CHILD_SENSOR_COLLECTIONS,
     SENSOR_DESCRIPTIONS,
     WAN_TELEMETRY_SENSOR_DESCRIPTIONS,
+    SpeedportChildSensor,
     SpeedportManagementAccessSensor,
     SpeedportSensor,
     SpeedportWanTelemetrySensor,
@@ -521,6 +526,7 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
         "wifi_schedule_mode": ("wifi.schedule.mode", "daily"),
         "wifi_schedule_daily_from": ("wifi.schedule.daily_from", "07:30"),
         "wifi_schedule_daily_to": ("wifi.schedule.daily_to", "22:15"),
+        "wifi_schedule_weekly": ("wifi.schedule.weekly_day_count", 2),
         "receiver_mode": ("receiver.mode", 3),
         "receiver_led_mode": ("receiver.led_mode", "disabled"),
         "receiver_firmware_version": (
@@ -673,6 +679,11 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
                     "mode": 1,
                     "daily_from": "07:30",
                     "daily_to": "22:15",
+                    "weekly": {
+                        "monday": {"from": "08:00", "to": "21:00"},
+                        "friday": {"from": "09:00", "to": "22:30"},
+                    },
+                    "weekly_day_count": 2,
                 },
             },
             "receiver": {
@@ -801,6 +812,205 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
             _description(SENSOR_DESCRIPTIONS, key).device_class
             is SensorDeviceClass.TIMESTAMP
         )
+
+    weekly = SpeedportSensor(
+        hub,
+        _description(SENSOR_DESCRIPTIONS, "wifi_schedule_weekly"),
+    )
+    assert weekly.native_value == 2
+    assert weekly.available
+    assert weekly.extra_state_attributes == {
+        "monday_from": "08:00",
+        "monday_to": "21:00",
+        "friday_from": "09:00",
+        "friday_to": "22:30",
+    }
+    hub._merge_data(  # noqa: SLF001 - stale nested-path regression fixture
+        {
+            "wifi": {
+                "schedule": {
+                    "weekly_day_count": None,
+                    "weekly": {
+                        "monday": {"from": None, "to": None},
+                        "friday": {"from": None, "to": None},
+                    },
+                }
+            }
+        }
+    )
+    assert weekly.native_value is None
+    assert not weekly.available
+    assert weekly.extra_state_attributes == {}
+
+
+def test_dect_count_and_receiver_link_speed_have_native_entity_coverage() -> None:
+    """Aggregate DECT count and receiver link speed use existing entity seams."""
+    dect = _description(SENSOR_DESCRIPTIONS, "dect_handsets")
+    assert dect.data_path == "dect.handset_count"
+    assert dect.transform("3") == 3
+
+    receiver = next(
+        collection
+        for collection in CHILD_SENSOR_COLLECTIONS
+        if collection.kind == "receiver"
+    )
+    link_speed = _description(receiver.fields, "link_speed")
+    assert link_speed.field == "link_speed_bps"
+    assert link_speed.transform(1_000_000_000) == 1_000.0
+
+
+async def test_p1_safe_read_fields_have_native_entity_coverage(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Exact retained LAN and DDNS fields reach Home Assistant."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = hub.capabilities | {  # noqa: SLF001
+        "ddns",
+        "dhcp",
+        "lan",
+    }
+    hub._merge_data(  # noqa: SLF001 - entity contract fixture
+        {
+            "lan": {
+                "ipv4_address": "10.168.10.1",
+                "subnet_mask": "255.255.255.0",
+                "ipv6_enabled": True,
+            },
+            "dhcp": {
+                "pool_start_ipv4": "10.168.10.20",
+                "pool_end_ipv4": "10.168.10.200",
+                "pool_size": 181,
+            },
+            "ddns": {"provider": "4", "status_code": 2},
+        }
+    )
+
+    expected = {
+        "lan_ipv4_address": "10.168.10.1",
+        "lan_subnet_mask": "255.255.255.0",
+        "dhcp_pool_size": 181,
+        "ddns_provider": "4",
+        "ddns_status": "registered",
+    }
+    for key, expected_value in expected.items():
+        entity = SpeedportSensor(hub, _description(SENSOR_DESCRIPTIONS, key))
+        assert entity.native_value == expected_value
+        assert entity.available
+
+    pool = SpeedportSensor(hub, _description(SENSOR_DESCRIPTIONS, "dhcp_pool_size"))
+    assert pool.extra_state_attributes == {
+        "start_ipv4": "10.168.10.20",
+        "end_ipv4": "10.168.10.200",
+    }
+    ipv6 = SpeedportBinarySensor(
+        hub,
+        _description(BINARY_SENSOR_DESCRIPTIONS, "lan_ipv6_enabled"),
+    )
+    assert ipv6.is_on is True
+
+    mesh = next(
+        collection
+        for collection in CHILD_SENSOR_COLLECTIONS
+        if collection.kind == "mesh_node"
+    )
+    assert mesh.coordinator_group is PollGroup.NORMAL
+    mesh_binary = next(
+        collection
+        for collection in CHILD_BINARY_SENSOR_COLLECTIONS
+        if collection.kind == "mesh_node"
+    )
+    assert mesh_binary.coordinator_group is PollGroup.NORMAL
+    assert _description(SENSOR_DESCRIPTIONS, "mesh_nodes").coordinator_group is (
+        PollGroup.NORMAL
+    )
+    assert {field.key for field in mesh.fields} >= {
+        "download_link_speed",
+        "upload_link_speed",
+        "mesh_parent",
+        "mesh_device_type",
+        "mesh_linked_lan_ports",
+    }
+    client = next(
+        collection
+        for collection in CHILD_SENSOR_COLLECTIONS
+        if collection.kind == "client"
+    )
+    assert {field.key for field in client.fields} >= {
+        "download_link_speed",
+        "upload_link_speed",
+        "wifi_generation",
+    }
+
+
+async def test_mesh_devicelist_endpoint_reaches_directional_link_speed_entities(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The proven topology endpoint reaches native child data-rate entities."""
+    capability = EndpointCapability(
+        "mesh_topology",
+        "data/DeviceList.json",
+        authenticated=True,
+        referer="html/content/network/devices.html",
+    )
+    report = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints={"mesh_topology": capability},
+    )
+    mock_speedport_client.setup.return_value = report
+    mock_speedport_client.capabilities = report
+    mock_speedport_client.get_json.return_value = {
+        "addmeshdevice": [
+            {
+                "id": "mesh-1",
+                "mesh_name": "Mesh repeater",
+                "mesh_downspeed": "1200000000",
+                "mesh_upspeed": "600000000",
+            }
+        ]
+    }
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    _attach_coordinators(hass, hub)
+    entry = MagicMock(runtime_data=hub)
+    entities: list[Any] = []
+    await async_setup_sensors(hass, entry, entities.extend)
+
+    mesh_entities = {
+        entity._field_description.key: entity  # noqa: SLF001 - entity contract proof
+        for entity in entities
+        if isinstance(entity, SpeedportChildSensor)
+        and entity._collection_spec.kind == "mesh_node"  # noqa: SLF001
+    }
+    mesh_count = next(
+        entity
+        for entity in entities
+        if isinstance(entity, SpeedportSensor)
+        and entity.entity_description.key == "mesh_nodes"
+    )
+    assert mesh_count.native_value == 1
+    assert mesh_count.coordinator is hub.coordinator(PollGroup.NORMAL)
+    assert mesh_entities["download_link_speed"].native_value == 1_200.0
+    assert mesh_entities["upload_link_speed"].native_value == 600.0
+    assert mesh_entities["download_link_speed"].coordinator is hub.coordinator(
+        PollGroup.NORMAL
+    )
+    assert (
+        mesh_entities["download_link_speed"].native_unit_of_measurement
+        is UnitOfDataRate.MEGABITS_PER_SECOND
+    )
+    mock_speedport_client.get_json.assert_awaited_once_with(
+        "data/DeviceList.json",
+        authenticated=True,
+        referer="html/content/network/devices.html",
+    )
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
 
 
 def test_read_only_metadata_translations_are_complete() -> None:

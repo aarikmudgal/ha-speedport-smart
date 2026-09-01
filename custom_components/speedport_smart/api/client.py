@@ -228,6 +228,26 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("wlan", "wifi"),
                 ),
             ),
+            "wifi_schedule": (
+                _endpoint(
+                    "wifi_schedule",
+                    "data/WLANBasic.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_basic.html",
+                    evidence_keys=(
+                        "wlan_timerule",
+                        "wlan_dfrom",
+                        "wlan_dto",
+                        "wlan_time_mo_",
+                        "wlan_time_di_",
+                        "wlan_time_mi_",
+                        "wlan_time_do_",
+                        "wlan_time_fr_",
+                        "wlan_time_sa_",
+                        "wlan_time_so_",
+                    ),
+                ),
+            ),
             "lan": (
                 _endpoint(
                     "lan",
@@ -430,14 +450,28 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/LTE.json",
                     authenticated=True,
                     referer="html/content/internet/lte_mode.html",
-                    evidence_keys=("receiver", "ex5g", "external_5g"),
+                    evidence_keys=(
+                        "receiver",
+                        "ex5g",
+                        "external_5g",
+                        "auto_external_modem",
+                        "extwan_typ",
+                        "use_lte",
+                    ),
                 ),
                 _endpoint(
                     "receiver",
                     "data/SecureStatus.json",
                     authenticated=True,
                     referer="html/content/overview/index.html",
-                    evidence_keys=("receiver", "ex5g", "external_5g"),
+                    evidence_keys=(
+                        "receiver",
+                        "ex5g",
+                        "external_5g",
+                        "auto_external_modem",
+                        "extwan_typ",
+                        "use_lte",
+                    ),
                 ),
             ),
             "mesh": (
@@ -454,6 +488,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/network/mesh.html",
                     evidence_keys=("mesh",),
+                ),
+            ),
+            "mesh_topology": (
+                _endpoint(
+                    "mesh_topology",
+                    "data/DeviceList.json",
+                    authenticated=True,
+                    referer="html/content/network/devices.html",
+                    evidence_keys=(
+                        "addmeshdevice",
+                        "mesh_connect_to",
+                        "mesh_downspeed",
+                        "mesh_ipv4",
+                    ),
                 ),
             ),
             "mesh_firmware": (
@@ -598,6 +646,29 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("wireguard", "vpn", "peer"),
                 ),
             ),
+            "vpn_details": (
+                _endpoint(
+                    "vpn_details",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+                _endpoint(
+                    "vpn_details",
+                    "data/WireGuard.json",
+                    authenticated=True,
+                    referer="html/content/internet/wireguard.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+                _endpoint(
+                    "vpn_details",
+                    "data/Wireguard.json",
+                    authenticated=True,
+                    referer="html/content/internet/wireguard.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+            ),
             "parental": (
                 _endpoint(
                     "parental",
@@ -692,6 +763,15 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/problem_handling_dect.html",
                     evidence_keys=("dect", "handset", "base"),
+                ),
+            ),
+            "dect_repeater": (
+                _endpoint(
+                    "dect_repeater",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                    evidence_keys=("addrepeater", "dect_repeaters"),
                 ),
             ),
             "analog": (

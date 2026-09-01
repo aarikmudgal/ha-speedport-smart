@@ -11,13 +11,13 @@ import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.components.websocket_api.decorators import websocket_command
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
+from .management import ManagementRisk, get_entity_write_contract
 
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api.connection import ActiveConnection
@@ -32,7 +32,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 6
+PANEL_SCHEMA_VERSION: Final = 7
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -104,29 +104,6 @@ _CHILD_SECTIONS: Final = {
     "telephone_line": "telephony",
     "usb_device": "system",
 }
-_DISRUPTIVE_CONTROL_KEYS: Final = frozenset(
-    {
-        "firmware",
-        "hybrid_bonding",
-        "internet_privacy_level_control",
-        "optimize_mesh",
-        "reboot_router",
-        "reconnect_internet",
-        "restart_dsl",
-        "restart_vpn",
-        "update_ddns",
-        "wps",
-    }
-)
-_TYPED_CONTROL_KEYS: Final = {
-    "select": frozenset(
-        {
-            "internet_privacy_level_control",
-            "receiver_led_mode_control",
-        }
-    ),
-    "text": frozenset({"client_name"}),
-}
 _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     # Internet privacy.
     "internet_privacy_level": "connection_privacy",
@@ -143,8 +120,17 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "wifi_schedule_mode": "wireless_schedule",
     "wifi_schedule_daily_from": "wireless_schedule",
     "wifi_schedule_daily_to": "wireless_schedule",
+    "wifi_schedule_weekly": "wireless_schedule",
     "wifi_guest_encryption_mode": "wireless_guest",
     "wifi_office_encryption_mode": "wireless_office",
+    # LAN and DHCP addressing summaries.
+    "lan_ipv4_address": "clients_lan",
+    "lan_subnet_mask": "clients_lan",
+    "lan_ipv6_enabled": "clients_lan",
+    "dhcp_pool_size": "clients_dhcp",
+    # DDNS status.
+    "ddns_provider": "system_ddns",
+    "ddns_status": "system_ddns",
     # External mobile receiver status and firmware.
     "receiver_mode": "mobile_receiver_status",
     "receiver_led_mode": "mobile_receiver_status",
@@ -393,17 +379,17 @@ def _entity_panel_data(
     translation_key = entity_entry.translation_key or entity_id.partition(".")[2]
     child_kind = child_device["kind"] if child_device is not None else None
     protected_read_only = translation_key in _PROTECTED_READ_ONLY_GROUP_BY_KEY
+    write_contract = (
+        get_entity_write_contract(entity_domain, translation_key)
+        if entity_entry.translation_key is not None
+        else None
+    )
+    is_recovery_control = (
+        entity_domain == "button"
+        and entity_entry.translation_key == "retry_protected_data"
+    )
     supports_control = not protected_read_only and (
-        entity_domain in {"button", "switch"}
-        or (
-            entity_domain == "update"
-            and bool(entity_entry.supported_features & UpdateEntityFeature.INSTALL)
-        )
-        or (
-            entity_entry.translation_key is not None
-            and entity_entry.translation_key
-            in _TYPED_CONTROL_KEYS.get(entity_domain, ())
-        )
+        is_recovery_control or write_contract is not None
     )
     is_control = supports_control and _can_control_entity(
         connection,
@@ -431,8 +417,20 @@ def _entity_panel_data(
         ),
         "access_source": access_source,
         "control": is_control,
-        "mutates_router": is_control and translation_key != "retry_protected_data",
-        "disruptive": translation_key in _DISRUPTIVE_CONTROL_KEYS,
+        "mutates_router": is_control and write_contract is not None,
+        "risk": write_contract.risk.value if write_contract is not None else "normal",
+        "confirmation": (
+            write_contract.confirmation.value
+            if write_contract is not None
+            else "confirm"
+        ),
+        "disruptive": write_contract is not None
+        and write_contract.risk
+        in {
+            ManagementRisk.DISRUPTIVE,
+            ManagementRisk.LOCKOUT,
+            ManagementRisk.DESTRUCTIVE,
+        },
     }
     if capability_group := _PROTECTED_READ_ONLY_GROUP_BY_KEY.get(translation_key):
         panel_data["capability_group"] = capability_group
@@ -648,6 +646,7 @@ def _capability_panel_data(
     polling = diagnostics.get("polling", {})
     fast_available = _poll_group_available(polling, "fast")
     normal_available = _poll_group_available(polling, "normal")
+    slow_available = _poll_group_available(polling, "slow")
     management: Any = hub.get("management.access", {})
     management_available = (
         isinstance(management, Mapping) and management.get("state") == "available"
@@ -668,7 +667,10 @@ def _capability_panel_data(
             "label": "Protected router data",
             "supported": protected_supported,
             "available": (
-                protected_supported and management_available and normal_available
+                protected_supported
+                and management_available
+                and normal_available
+                and slow_available
             ),
         },
         {

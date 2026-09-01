@@ -40,6 +40,30 @@ test("Home Assistant language selects German with English fallback", () => {
   assert.equal(resolvePanelLanguage(undefined, "de-DE"), "de");
 });
 
+test("Firmware-discovered detail families have localized capability labels", () => {
+  const expected = {
+    de: {
+      dect_repeater: "DECT-Repeater",
+      mesh_topology: "Mesh-Topologie",
+      system_services: "Systemdienste",
+      vpn_details: "VPN-Details",
+      wifi_schedule: "WLAN-Zeitplan",
+    },
+    en: {
+      dect_repeater: "DECT repeaters",
+      mesh_topology: "Mesh topology",
+      system_services: "System services",
+      vpn_details: "VPN details",
+      wifi_schedule: "Wi-Fi schedule",
+    },
+  };
+  for (const [language, labels] of Object.entries(expected)) {
+    for (const [family, label] of Object.entries(labels)) {
+      assert.equal(panelTranslate(language, `capability.${family}`), label);
+    }
+  }
+});
+
 test("Panel translation interpolates values and falls back to English", () => {
   assert.equal(
     panelTranslate("de", "count.entities", { count: 4 }),
@@ -102,6 +126,10 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   assert.match(panel, /!meta\?\.control/);
   assert.match(panel, /data-text-draft/);
   assert.match(panel, /data-select-draft/);
+  assert.match(panel, /data-confirm-draft/);
+  assert.match(panel, /typedConfirmationMatches/);
+  assert.match(panel, /controlConfirmationPolicyMatches/);
+  assert.match(panel, /confirm\.sensitive_switch/);
   assert.match(panel, /selectControlServiceCall/);
   assert.match(panel, /escapeHtml\(this\._translatedSelectOption/);
   assert.match(panel, /"hybrid_bonding",[\s\S]*"internet_privacy_level_control"/);
@@ -126,8 +154,9 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   const frontendSchema = panel.match(/PANEL_SCHEMA_VERSION = (\d+)/)?.[1];
   const backendSchema = backend.match(/PANEL_SCHEMA_VERSION: Final = (\d+)/)?.[1];
   assert.ok(frontendSchema);
-  assert.equal(frontendSchema, "6");
+  assert.equal(frontendSchema, "7");
   assert.equal(frontendSchema, backendSchema);
+  assert.match(panel, new RegExp(`accessibility\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`translations\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`controls\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`entity-state\\.js\\?schema=${frontendSchema}`));

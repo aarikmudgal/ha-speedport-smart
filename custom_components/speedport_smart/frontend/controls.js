@@ -12,6 +12,10 @@ export const SELECT_CONTROL_OPTIONS = Object.freeze({
     "disabled",
   ]),
 });
+const WIFI_TYPED_CONFIRMATIONS = Object.freeze({
+  on: "TURN OFF WI-FI",
+  off: "TURN ON WI-FI",
+});
 
 function finiteInteger(value) {
   const numeric = Number(value);
@@ -161,9 +165,53 @@ export function managementControlAvailable(
   managementState,
   controlsAvailable,
 ) {
-  if (meta?.translation_key === "retry_protected_data") return true;
+  if (meta?.translation_key === "retry_protected_data") {
+    return (
+      meta.control === true &&
+      meta.domain === "button" &&
+      typeof meta.entity_id === "string" &&
+      meta.entity_id.startsWith("button.")
+    );
+  }
   if (typeof controlsAvailable === "boolean") return controlsAvailable;
   return managementState === "available";
+}
+
+export function controlConfirmationPhrase(meta, observedState) {
+  if (meta?.confirmation !== "typed") return undefined;
+  if (
+    meta.control === true &&
+    meta.domain === "switch" &&
+    meta.translation_key === "wifi" &&
+    typeof meta.entity_id === "string" &&
+    meta.entity_id.startsWith("switch.") &&
+    Object.hasOwn(WIFI_TYPED_CONFIRMATIONS, observedState)
+  ) {
+    return WIFI_TYPED_CONFIRMATIONS[observedState];
+  }
+  return undefined;
+}
+
+export function typedConfirmationMatches(expectedPhrase, draft) {
+  return (
+    typeof expectedPhrase === "string" &&
+    expectedPhrase.length > 0 &&
+    draft === expectedPhrase
+  );
+}
+
+export function controlConfirmationPolicyMatches(
+  meta,
+  observedState,
+  expectedConfirmation,
+  expectedRisk,
+  expectedPhrase,
+) {
+  return (
+    meta?.confirmation === expectedConfirmation &&
+    meta?.risk === expectedRisk &&
+    controlConfirmationPhrase(meta, observedState) === expectedPhrase
+  );
 }
 
 export function switchControlServiceCall(meta, observedState, currentState) {

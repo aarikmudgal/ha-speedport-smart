@@ -25,6 +25,13 @@ _EXPECTED_PROTECTED_READ_ONLY_GROUPS = {
     "wifi_schedule_mode": "wireless_schedule",
     "wifi_schedule_daily_from": "wireless_schedule",
     "wifi_schedule_daily_to": "wireless_schedule",
+    "wifi_schedule_weekly": "wireless_schedule",
+    "lan_ipv4_address": "clients_lan",
+    "lan_subnet_mask": "clients_lan",
+    "lan_ipv6_enabled": "clients_lan",
+    "dhcp_pool_size": "clients_dhcp",
+    "ddns_provider": "system_ddns",
+    "ddns_status": "system_ddns",
     "receiver_mode": "mobile_receiver_status",
     "receiver_led_mode": "mobile_receiver_status",
     "receiver_firmware_version": "mobile_receiver_firmware",
@@ -105,6 +112,7 @@ _PROTECTED_BINARY_KEYS = {
     "firmware_automatic_updates",
     "remote_support_active",
     "easy_support_enabled",
+    "lan_ipv6_enabled",
 }
 
 
@@ -146,6 +154,8 @@ def test_panel_metadata_allowlists_only_proven_text_control() -> None:
     assert metadata["control"] is True
     assert metadata["section"] == "controls"
     assert metadata["mutates_router"] is True
+    assert metadata["risk"] == "normal"
+    assert metadata["confirmation"] == "none"
     assert "value" not in metadata
     assert "pattern" not in metadata
 
@@ -207,6 +217,14 @@ def test_panel_metadata_allowlists_only_reviewed_select_controls() -> None:
         assert metadata["access_source"] == "router_control"
         assert metadata["mutates_router"] is True
         assert metadata["disruptive"] is disruptive
+        assert metadata["risk"] == (
+            "disruptive"
+            if translation_key == "internet_privacy_level_control"
+            else "normal"
+        )
+        assert metadata["confirmation"] == (
+            "confirm" if translation_key == "internet_privacy_level_control" else "none"
+        )
         assert "options" not in metadata
         assert "endpoint" not in metadata
         assert "payload" not in metadata
@@ -257,6 +275,77 @@ def test_hybrid_bonding_is_a_disruptive_control() -> None:
 
     assert metadata["control"] is True
     assert metadata["disruptive"] is True
+    assert metadata["risk"] == "disruptive"
+    assert metadata["confirmation"] == "confirm"
+
+
+def test_main_wifi_control_reports_lockout_and_typed_confirmation() -> None:
+    """Dashboard can distinguish a possible local-management lockout."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = True
+    entry = SimpleNamespace(
+        entity_id="switch.speedport_wifi",
+        translation_key="wifi",
+        entity_category="config",
+        supported_features=0,
+        name=None,
+    )
+
+    metadata = _entity_panel_data(entry, None, connection)
+
+    assert metadata["control"] is True
+    assert metadata["mutates_router"] is True
+    assert metadata["risk"] == "lockout"
+    assert metadata["confirmation"] == "typed"
+    assert metadata["disruptive"] is True
+
+
+def test_panel_never_promotes_an_unreviewed_entity_domain_to_control() -> None:
+    """A switch-shaped registry entry is not itself a write authorization."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = True
+    entry = SimpleNamespace(
+        entity_id="switch.speedport_factory_reset",
+        translation_key="factory_reset",
+        entity_category="config",
+        supported_features=0,
+        name=None,
+    )
+
+    metadata = _entity_panel_data(entry, None, connection)
+
+    assert metadata["control"] is False
+    assert metadata["mutates_router"] is False
+    assert metadata["section"] != "controls"
+    assert metadata["risk"] == "normal"
+    assert metadata["confirmation"] == "confirm"
+
+
+def test_retry_protected_data_control_requires_exact_button_registry_key() -> None:
+    """Recovery stays limited to its real button registry entry."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = True
+
+    for entity_id, translation_key, expected_control in (
+        ("button.speedport_retry_protected_data", "retry_protected_data", True),
+        ("button.retry_protected_data", None, False),
+        ("switch.speedport_retry_protected_data", "retry_protected_data", False),
+        ("text.speedport_retry_protected_data", "retry_protected_data", False),
+        ("update.speedport_retry_protected_data", "retry_protected_data", False),
+    ):
+        entry = SimpleNamespace(
+            entity_id=entity_id,
+            translation_key=translation_key,
+            entity_category="diagnostic",
+            supported_features=0,
+            name=None,
+        )
+
+        metadata = _entity_panel_data(entry, None, connection)
+
+        assert metadata["control"] is expected_control
+        assert (metadata["section"] == "controls") is expected_control
+        assert metadata["mutates_router"] is False
 
 
 def test_panel_source_health_is_limited_to_readable_entity_families() -> None:
@@ -369,6 +458,78 @@ def test_any_wan_endpoint_error_marks_source_unavailable() -> None:
     assert wan_source["state"] == "stable"
 
 
+def test_protected_source_is_unavailable_when_normal_polling_fails() -> None:
+    """Normal protected polling failure marks the combined source unhealthy."""
+    hub = MagicMock()
+    hub.capability_report = SimpleNamespace(feature_endpoints={})
+    hub.has_capability.side_effect = lambda capability: (
+        capability == "authenticated_json"
+    )
+    hub.get.return_value = {"state": "available"}
+    hub.endpoint_errors = {}
+    hub.wan_counter_telemetry = {}
+    hub.diagnostics.return_value = {
+        "polling": {
+            "fast": {"available": True},
+            "normal": {"available": False},
+            "slow": {"available": True},
+        }
+    }
+
+    sources, _families = _capability_panel_data(hub)
+
+    protected = next(source for source in sources if source["id"] == "protected_json")
+    assert protected["available"] is False
+
+
+def test_protected_source_is_unavailable_when_slow_polling_fails() -> None:
+    """Slow protected polling failure marks the combined source unhealthy."""
+    hub = MagicMock()
+    hub.capability_report = SimpleNamespace(feature_endpoints={})
+    hub.has_capability.side_effect = lambda capability: (
+        capability == "authenticated_json"
+    )
+    hub.get.return_value = {"state": "available"}
+    hub.endpoint_errors = {}
+    hub.wan_counter_telemetry = {}
+    hub.diagnostics.return_value = {
+        "polling": {
+            "fast": {"available": True},
+            "normal": {"available": True},
+            "slow": {"available": False},
+        }
+    }
+
+    sources, _families = _capability_panel_data(hub)
+
+    protected = next(source for source in sources if source["id"] == "protected_json")
+    assert protected["available"] is False
+
+
+def test_protected_source_is_available_when_both_poll_groups_are_healthy() -> None:
+    """Protected source is healthy only when normal and slow reads are healthy."""
+    hub = MagicMock()
+    hub.capability_report = SimpleNamespace(feature_endpoints={})
+    hub.has_capability.side_effect = lambda capability: (
+        capability == "authenticated_json"
+    )
+    hub.get.return_value = {"state": "available"}
+    hub.endpoint_errors = {}
+    hub.wan_counter_telemetry = {}
+    hub.diagnostics.return_value = {
+        "polling": {
+            "fast": {"available": True},
+            "normal": {"available": True},
+            "slow": {"available": True},
+        }
+    }
+
+    sources, _families = _capability_panel_data(hub)
+
+    protected = next(source for source in sources if source["id"] == "protected_json")
+    assert protected["available"] is True
+
+
 def test_new_management_entities_are_explicitly_grouped_and_read_only() -> None:
     """Every proven management summary stays protected data, never a control."""
     assert _PROTECTED_READ_ONLY_GROUP_BY_KEY == _EXPECTED_PROTECTED_READ_ONLY_GROUPS
@@ -395,6 +556,7 @@ def test_new_management_entities_are_explicitly_grouped_and_read_only() -> None:
             "wireless": "wireless",
             "mobile": "mobile",
             "telephony": "telephony",
+            "clients": "clients",
         }.get(group.partition("_")[0], "system")
         assert metadata["section"] == expected_section
 

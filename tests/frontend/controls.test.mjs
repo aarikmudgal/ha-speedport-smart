@@ -5,6 +5,8 @@ import test from "node:test";
 import {
   CLIENT_NAME_PATTERN,
   SELECT_CONTROL_OPTIONS,
+  controlConfirmationPhrase,
+  controlConfirmationPolicyMatches,
   isSupportedSelectControl,
   isSupportedTextControl,
   managementControlAvailable,
@@ -13,6 +15,7 @@ import {
   switchControlServiceCall,
   textControlConstraints,
   textControlServiceCall,
+  typedConfirmationMatches,
   validateTextControlValue,
 } from "../../custom_components/speedport_smart/frontend/controls.js";
 
@@ -62,6 +65,81 @@ test("switch confirmation keeps the exact state transition the user approved", (
   assert.equal(
     switchControlServiceCall({ ...meta, control: false }, "on", "on"),
     undefined,
+  );
+});
+
+test("typed confirmation is fixed to the reviewed main Wi-Fi transition", () => {
+  const meta = {
+    confirmation: "typed",
+    control: true,
+    domain: "switch",
+    entity_id: "switch.speedport_wifi",
+    translation_key: "wifi",
+  };
+
+  assert.equal(controlConfirmationPhrase(meta, "on"), "TURN OFF WI-FI");
+  assert.equal(controlConfirmationPhrase(meta, "off"), "TURN ON WI-FI");
+  assert.equal(
+    controlConfirmationPhrase({ ...meta, translation_key: "factory_reset" }, "on"),
+    undefined,
+  );
+  assert.equal(
+    controlConfirmationPhrase({ ...meta, confirmation: "confirm" }, "on"),
+    undefined,
+  );
+  assert.equal(typedConfirmationMatches("TURN OFF WI-FI", "TURN OFF WI-FI"), true);
+  assert.equal(typedConfirmationMatches("TURN OFF WI-FI", "turn off wi-fi"), false);
+  assert.equal(typedConfirmationMatches(undefined, ""), false);
+});
+
+test("confirmation policy changes and direction races fail closed", () => {
+  const meta = {
+    confirmation: "typed",
+    control: true,
+    domain: "switch",
+    entity_id: "switch.speedport_wifi",
+    risk: "lockout",
+    translation_key: "wifi",
+  };
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      meta,
+      "on",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    true,
+  );
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      meta,
+      "off",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    false,
+  );
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      { ...meta, confirmation: "confirm" },
+      "on",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    false,
+  );
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      { ...meta, risk: "destructive" },
+      "on",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    false,
   );
 });
 
@@ -203,7 +281,12 @@ test("management backoff disables mutations but preserves recovery", () => {
   );
   assert.equal(
     managementControlAvailable(
-      { translation_key: "retry_protected_data" },
+      {
+        control: true,
+        domain: "button",
+        entity_id: "button.speedport_retry_protected_data",
+        translation_key: "retry_protected_data",
+      },
       "blocked",
       false,
     ),
@@ -213,6 +296,24 @@ test("management backoff disables mutations but preserves recovery", () => {
     managementControlAvailable(CLIENT_NAME_META, "available", true),
     true,
   );
+});
+
+test("protected-data recovery bypass rejects colliding entity domains", () => {
+  for (const domain of ["switch", "text", "update"]) {
+    assert.equal(
+      managementControlAvailable(
+        {
+          control: true,
+          domain,
+          entity_id: `${domain}.speedport_retry_protected_data`,
+          translation_key: "retry_protected_data",
+        },
+        "available",
+        true,
+      ),
+      false,
+    );
+  }
 });
 
 test("typed control allowlist rejects missing permission and unrelated text", () => {

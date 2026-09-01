@@ -57,7 +57,7 @@ class SpeedportSensorEntityDescription(SensorEntityDescription):
     """Describe a normalized Speedport sensor."""
 
     data_path: str
-    capability: str
+    capability: str | tuple[str, ...]
     coordinator_group: PollGroup
     transform: Callable[[Any], Any] | None = None
 
@@ -74,6 +74,7 @@ class SpeedportChildSensorDescription:
     native_unit_of_measurement: Any = None
     state_class: SensorStateClass | None = None
     suggested_display_precision: int | None = None
+    attribute_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +158,16 @@ _WIFI_WPS_STATES = {
     1: "in_progress",
 }
 _WIFI_SCHEDULE_MODES = {0: "disabled", 1: "daily", 2: "weekly"}
+_DDNS_STATES = {0: "not_registered", 1: "error", 2: "registered"}
+_WIFI_SCHEDULE_DAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 _RECEIVER_LED_MODES = {
     0: "use_leds",
     1: "off_after_timeout",
@@ -204,6 +215,32 @@ _UPLOAD_RATE = SpeedportChildSensorDescription(
     state_class=SensorStateClass.MEASUREMENT,
     suggested_display_precision=2,
 )
+_DOWNLOAD_LINK_SPEED = SpeedportChildSensorDescription(
+    key="download_link_speed",
+    name="Download link speed",
+    field="download_link_speed_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+)
+_UPLOAD_LINK_SPEED = SpeedportChildSensorDescription(
+    key="upload_link_speed",
+    name="Upload link speed",
+    field="upload_link_speed_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+)
+_WIFI_GENERATION = SpeedportChildSensorDescription(
+    key="wifi_generation",
+    name="Wi-Fi generation",
+    field="wifi_generation",
+    transform=as_int,
+)
 _BYTES_RECEIVED = SpeedportChildSensorDescription(
     key="bytes_received",
     name="Data received",
@@ -237,7 +274,10 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
         fields=(
             _SIGNAL_DBM,
             _LINK_SPEED,
+            _DOWNLOAD_LINK_SPEED,
+            _UPLOAD_LINK_SPEED,
             *_TRAFFIC_FIELDS,
+            _WIFI_GENERATION,
             SpeedportChildSensorDescription(
                 key="radio_band",
                 name="Radio band",
@@ -261,10 +301,12 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
     SpeedportChildSensorCollection(
         kind="mesh_node",
         data_paths=("mesh.nodes",),
-        coordinator_group=SLOW,
+        coordinator_group=NORMAL,
         fields=(
             _SIGNAL_DBM,
             _LINK_SPEED,
+            _DOWNLOAD_LINK_SPEED,
+            _UPLOAD_LINK_SPEED,
             *_TRAFFIC_FIELDS,
             SpeedportChildSensorDescription(
                 key="radio_band",
@@ -281,6 +323,25 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
                 key="connected_clients",
                 name="Connected clients",
                 field="client_count",
+                transform=as_int,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="mesh_parent",
+                name="Mesh parent",
+                field="parent",
+                attribute_fields=("ipv4",),
+            ),
+            SpeedportChildSensorDescription(
+                key="mesh_device_type",
+                name="Mesh device type",
+                field="device_type",
+                transform=as_int,
+            ),
+            SpeedportChildSensorDescription(
+                key="mesh_linked_lan_ports",
+                name="Linked LAN ports",
+                field="linked_lan_port_count",
                 transform=as_int,
                 state_class=SensorStateClass.MEASUREMENT,
             ),
@@ -488,6 +549,7 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
                 name="Cell ID",
                 field="cell_id",
             ),
+            _LINK_SPEED,
             *_TRAFFIC_FIELDS,
             SpeedportChildSensorDescription(
                 key="temperature",
@@ -1140,11 +1202,21 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
+        key="wifi_schedule_weekly",
+        translation_key="wifi_schedule_weekly",
+        data_path="wifi.schedule.weekly_day_count",
+        capability="wifi",
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
         key="mesh_nodes",
         translation_key="mesh_nodes",
         data_path="mesh.nodes",
-        capability="mesh",
-        coordinator_group=SLOW,
+        capability=("mesh", "mesh_topology"),
+        coordinator_group=NORMAL,
         transform=count_items,
         state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -1184,6 +1256,32 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+    SpeedportSensorEntityDescription(
+        key="lan_ipv4_address",
+        translation_key="lan_ipv4_address",
+        data_path="lan.ipv4_address",
+        capability="lan",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lan_subnet_mask",
+        translation_key="lan_subnet_mask",
+        data_path="lan.subnet_mask",
+        capability="lan",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dhcp_pool_size",
+        translation_key="dhcp_pool_size",
+        data_path="dhcp.pool_size",
+        capability="dhcp",
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Network services and access policy.
     SpeedportSensorEntityDescription(
         key="port_forward_rules",
@@ -1209,6 +1307,17 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         data_path="ddns.provider",
         capability="ddns",
         coordinator_group=SLOW,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ddns_status",
+        translation_key="ddns_status",
+        data_path="ddns.status_code",
+        capability="ddns",
+        coordinator_group=SLOW,
+        transform=_code_enum(_DDNS_STATES),
+        device_class=SensorDeviceClass.ENUM,
+        options=["not_registered", "error", "registered"],
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
         key="ddns_last_update",
@@ -1442,10 +1551,10 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
     SpeedportSensorEntityDescription(
         key="dect_handsets",
         translation_key="dect_handsets",
-        data_path="dect.handsets",
+        data_path="dect.handset_count",
         capability="dect",
         coordinator_group=SLOW,
-        transform=count_items,
+        transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SpeedportSensorEntityDescription(
@@ -1785,13 +1894,40 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
-        """Return stable metadata for the selected WAN interface."""
-        if self.entity_description.key != "wan_interface":
-            return None
-        attributes = {
-            key: self.hub.get(("wan", "interface", key)) for key in ("index", "alias")
-        }
-        return {key: item for key, item in attributes.items() if item is not None}
+        """Return bounded metadata for compound read-only sensors."""
+        if self.entity_description.key == "wan_interface":
+            interface_attributes = {
+                key: self.hub.get(("wan", "interface", key))
+                for key in ("index", "alias")
+            }
+            return {
+                key: item
+                for key, item in interface_attributes.items()
+                if item is not None
+            }
+        if self.entity_description.key == "wifi_schedule_weekly":
+            weekly = self.hub.get("wifi.schedule.weekly")
+            if not isinstance(weekly, Mapping):
+                return None
+            schedule_attributes: dict[str, str] = {}
+            for day in _WIFI_SCHEDULE_DAYS:
+                window = weekly.get(day)
+                if not isinstance(window, Mapping):
+                    continue
+                for boundary in ("from", "to"):
+                    clock_time = window.get(boundary)
+                    if isinstance(clock_time, str):
+                        schedule_attributes[f"{day}_{boundary}"] = clock_time
+            return schedule_attributes
+        if self.entity_description.key == "dhcp_pool_size":
+            pool_attributes = {
+                "start_ipv4": self.hub.get("dhcp.pool_start_ipv4"),
+                "end_ipv4": self.hub.get("dhcp.pool_end_ipv4"),
+            }
+            return {
+                key: item for key, item in pool_attributes.items() if item is not None
+            }
+        return None
 
 
 class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
@@ -1980,3 +2116,15 @@ class SpeedportChildSensor(SpeedportEntity, SensorEntity):
             return transform(raw)
         except (TypeError, ValueError, ZeroDivisionError):
             return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Expose explicitly allowlisted child metadata."""
+        item = self._item
+        if item is None or not self._field_description.attribute_fields:
+            return None
+        return {
+            key: item[key]
+            for key in self._field_description.attribute_fields
+            if item.get(key) is not None
+        }

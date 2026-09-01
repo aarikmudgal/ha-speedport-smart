@@ -1,5 +1,7 @@
-import { keepDialogFocus } from "./accessibility.js?schema=6";
+import { keepDialogFocus } from "./accessibility.js?schema=7";
 import {
+  controlConfirmationPhrase,
+  controlConfirmationPolicyMatches,
   isSupportedSelectControl,
   isSupportedTextControl,
   managementControlAvailable,
@@ -8,26 +10,27 @@ import {
   switchControlServiceCall,
   textControlConstraints,
   textControlServiceCall,
+  typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=6";
+} from "./controls.js?schema=7";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=6";
+} from "./entity-state.js?schema=7";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=6";
+} from "./render-state.js?schema=7";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=6";
+} from "./translations.js?schema=7";
 
 const API_TYPE = "speedport_smart/panel";
-const PANEL_SCHEMA_VERSION = 6;
+const PANEL_SCHEMA_VERSION = 7;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -659,7 +662,7 @@ export function wanTelemetryPresentation(
   };
 }
 
-class SpeedportSmartPanel extends HTMLElement {
+export class SpeedportSmartPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -957,7 +960,8 @@ class SpeedportSmartPanel extends HTMLElement {
     }
     if (
       event.key === "Enter" &&
-      event.target?.dataset?.textDraft !== undefined &&
+      (event.target?.dataset?.textDraft !== undefined ||
+        event.target?.dataset?.confirmDraft !== undefined) &&
       !this._actionBusy
     ) {
       event.preventDefault();
@@ -984,6 +988,20 @@ class SpeedportSmartPanel extends HTMLElement {
       pending.errorKey = undefined;
       target.removeAttribute("aria-invalid");
       const error = this.shadowRoot.querySelector("[data-text-error]");
+      if (error) error.textContent = "";
+      return;
+    }
+    if (target.dataset.confirmDraft !== undefined) {
+      pending.confirmationDraft = target.value;
+      pending.confirmationError = false;
+      const matches = typedConfirmationMatches(
+        pending.confirmationPhrase,
+        pending.confirmationDraft,
+      );
+      target.removeAttribute("aria-invalid");
+      const button = this.shadowRoot.querySelector("[data-confirm-action]");
+      if (button) button.disabled = this._actionBusy || !matches;
+      const error = this.shadowRoot.querySelector("[data-confirm-error]");
       if (error) error.textContent = "";
     }
   }
@@ -1029,10 +1047,17 @@ class SpeedportSmartPanel extends HTMLElement {
       options = [...selectControlOptions(meta, state)];
       actionLabel = this._t("action.apply_setting");
       message = this._t(
-        meta.disruptive ? "confirm.disruptive_select" : "confirm.select",
+        meta.risk === "sensitive"
+          ? "confirm.sensitive_select"
+          : meta.disruptive
+            ? "confirm.disruptive_select"
+            : "confirm.select",
         { label },
       );
-    } else if (meta.translation_key === "retry_protected_data") {
+    } else if (
+      meta.domain === "button" &&
+      meta.translation_key === "retry_protected_data"
+    ) {
       actionLabel = this._t("action.retry_protected");
       message = this._t("confirm.retry");
     } else if (meta.domain === "switch") {
@@ -1041,7 +1066,13 @@ class SpeedportSmartPanel extends HTMLElement {
         state.state === "on" ? "action.turn_off" : "action.turn_on",
       );
       message = this._t(
-        meta.disruptive ? "confirm.disruptive_switch" : "confirm.switch",
+        meta.risk === "lockout"
+          ? "confirm.lockout_switch"
+          : meta.risk === "sensitive"
+            ? "confirm.sensitive_switch"
+          : meta.disruptive
+            ? "confirm.disruptive_switch"
+            : "confirm.switch",
         { label },
       );
     } else if (meta.domain === "update") {
@@ -1049,6 +1080,16 @@ class SpeedportSmartPanel extends HTMLElement {
       message = this._t("confirm.update");
     } else if (meta.disruptive) {
       message = this._t("confirm.disruptive");
+    } else if (meta.risk === "sensitive") {
+      message = this._t("confirm.sensitive");
+    }
+
+    const confirmationPhrase = controlConfirmationPhrase(meta, observedState);
+    if (meta.confirmation === "typed" && !confirmationPhrase) {
+      this._notice = this._t("notice.control_unavailable");
+      this._noticeKind = "status";
+      this._render();
+      return;
     }
 
     this._pendingAction = {
@@ -1062,6 +1103,11 @@ class SpeedportSmartPanel extends HTMLElement {
       constraints,
       options,
       observedState,
+      confirmationPhrase,
+      confirmationDraft: "",
+      confirmationPolicy: meta.confirmation,
+      risk: meta.risk,
+      confirmationError: false,
       errorKey: undefined,
     };
     if (["select", "text"].includes(kind) && this._renderFrame) {
@@ -1083,6 +1129,35 @@ class SpeedportSmartPanel extends HTMLElement {
       this._focusAfterRenderEntityId = pending.entityId;
       this._notice = this._t("notice.control_changed");
       this._noticeKind = "status";
+      this._render();
+      return;
+    }
+
+    if (
+      !controlConfirmationPolicyMatches(
+        meta,
+        state.state,
+        pending.confirmationPolicy,
+        pending.risk,
+        pending.confirmationPhrase,
+      )
+    ) {
+      this._pendingAction = undefined;
+      this._focusAfterRenderEntityId = pending.entityId;
+      this._notice = this._t("notice.control_changed");
+      this._noticeKind = "status";
+      this._render();
+      return;
+    }
+
+    if (
+      pending.confirmationPhrase &&
+      !typedConfirmationMatches(
+        pending.confirmationPhrase,
+        pending.confirmationDraft,
+      )
+    ) {
+      pending.confirmationError = true;
       this._render();
       return;
     }
@@ -1457,6 +1532,7 @@ class SpeedportSmartPanel extends HTMLElement {
     }
 
     const actionLabel =
+      meta.domain === "button" &&
       meta.translation_key === "retry_protected_data"
         ? this._t("action.retry")
         : isSupportedTextControl(meta)
@@ -1754,13 +1830,26 @@ class SpeedportSmartPanel extends HTMLElement {
   _renderConfirmation() {
     const pending = this._pendingAction;
     if (!pending) return "";
+    const riskClass = pending.disruptive
+      ? "danger"
+      : pending.risk === "sensitive"
+        ? "caution"
+        : "";
+    const riskIcon = pending.disruptive
+      ? "mdi:alert-outline"
+      : pending.risk === "sensitive"
+        ? "mdi:shield-alert-outline"
+        : "mdi:shield-check-outline";
     const textEditor = pending.kind === "text";
     const selectEditor = pending.kind === "select";
     const constraints = pending.constraints || {};
     const textError = pending.errorKey ? this._t(pending.errorKey) : "";
-    const describedBy = textEditor
-      ? "speedport-confirm-description speedport-text-error"
-      : "speedport-confirm-description";
+    const describedByIds = ["speedport-confirm-description"];
+    if (textEditor) describedByIds.push("speedport-text-error");
+    if (pending.confirmationPhrase) {
+      describedByIds.push("speedport-confirm-phrase", "speedport-confirm-error");
+    }
+    const describedBy = describedByIds.join(" ");
     let editor = "";
     if (textEditor) {
       editor = `
@@ -1807,10 +1896,43 @@ class SpeedportSmartPanel extends HTMLElement {
         </label>
       `;
     }
+    const confirmationMatches = typedConfirmationMatches(
+      pending.confirmationPhrase,
+      pending.confirmationDraft,
+    );
+    const confirmationEditor = pending.confirmationPhrase
+      ? `
+        <p id="speedport-confirm-phrase">${escapeHtml(
+          this._t("confirm.type_phrase", {
+            phrase: pending.confirmationPhrase,
+          }),
+        )}</p>
+        <label class="confirm-field" for="speedport-confirm-value">
+          <span>${escapeHtml(this._t("label.confirmation_phrase"))}</span>
+          <input
+            id="speedport-confirm-value"
+            data-confirm-draft
+            type="text"
+            value="${escapeHtml(pending.confirmationDraft)}"
+            ${pending.confirmationError ? 'aria-invalid="true"' : ""}
+            aria-describedby="speedport-confirm-phrase speedport-confirm-error"
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck="false"
+            ${this._actionBusy ? "disabled" : ""}
+          >
+        </label>
+        <p id="speedport-confirm-error" class="confirm-error" data-confirm-error role="alert">${
+          pending.confirmationError
+            ? escapeHtml(this._t("error.confirmation_phrase"))
+            : ""
+        }</p>
+      `
+      : "";
     return `
       <div class="modal-backdrop" role="presentation">
         <section
-          class="confirm-dialog ${pending.disruptive ? "danger" : ""}"
+          class="confirm-dialog ${riskClass}"
           role="alertdialog"
           aria-modal="true"
           aria-labelledby="speedport-confirm-title"
@@ -1819,16 +1941,22 @@ class SpeedportSmartPanel extends HTMLElement {
           tabindex="-1"
         >
           <span class="confirm-icon" aria-hidden="true">
-            <ha-icon icon="${pending.disruptive ? "mdi:alert-outline" : "mdi:shield-check-outline"}"></ha-icon>
+            <ha-icon icon="${riskIcon}"></ha-icon>
           </span>
           <h2 id="speedport-confirm-title">${escapeHtml(pending.label)}</h2>
           <p id="speedport-confirm-description">${escapeHtml(pending.message)}</p>
           ${editor}
+          ${confirmationEditor}
           <div class="confirm-actions">
             <button class="secondary" data-cancel-action ${this._actionBusy ? "disabled" : ""}>
               ${escapeHtml(this._t("action.cancel"))}
             </button>
-            <button class="primary" data-confirm-action ${this._actionBusy ? "disabled" : ""}>
+            <button class="primary" data-confirm-action ${
+              this._actionBusy ||
+              (pending.confirmationPhrase && !confirmationMatches)
+                ? "disabled"
+                : ""
+            }>
               ${this._actionBusy ? escapeHtml(this._t("action.working")) : escapeHtml(pending.actionLabel)}
             </button>
           </div>
@@ -2019,7 +2147,7 @@ class SpeedportSmartPanel extends HTMLElement {
       window.requestAnimationFrame(() => {
         const dialog = this.shadowRoot.querySelector(".confirm-dialog");
         const editor = this.shadowRoot.querySelector(
-          "[data-text-draft]:not([disabled]), [data-select-draft]:not([disabled])",
+          "[data-text-draft]:not([disabled]), [data-select-draft]:not([disabled]), [data-confirm-draft]:not([disabled])",
         );
         const cancel = this.shadowRoot.querySelector(
           "[data-cancel-action]:not([disabled])",
@@ -2821,6 +2949,7 @@ class SpeedportSmartPanel extends HTMLElement {
           border-radius: 16px;
           background: color-mix(in srgb, var(--sp-magenta) 10%, var(--sp-surface));
         }
+        .confirm-dialog.caution .confirm-icon { color: var(--sp-warning); background: color-mix(in srgb, var(--sp-warning) 10%, var(--sp-surface)); }
         .confirm-dialog.danger .confirm-icon { color: var(--sp-error); background: color-mix(in srgb, var(--sp-error) 10%, var(--sp-surface)); }
         .confirm-dialog h2 { margin: 18px 0 8px; }
         .confirm-dialog p { color: var(--sp-muted); line-height: 1.55; }

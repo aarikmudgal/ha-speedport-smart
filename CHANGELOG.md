@@ -8,6 +8,29 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ## [Unreleased]
 
+### Added
+
+- Central immutable risk, dashboard-confirmation, and execution-surface metadata
+  for every reviewed router command. Destructive commands cannot be exposed as
+  native entities and must use a future admin-only backend grant flow.
+- Read-only mesh topology details from the proven DeviceList endpoint, including
+  directional link speeds and Wi-Fi generation metadata for managed clients.
+
+### Fixed
+
+- Wi-Fi generation is no longer mistaken for a radio band, and firmware link
+  speeds are no longer presented as live traffic throughput.
+- Unproven router-global parental-time and phonebook-entry entities are withheld
+  until their separate read-only request contracts are implemented.
+
+### Security
+
+- Dashboard controls now derive their warning and confirmation policy from the
+  same exact-firmware write registry used by backend command gating. Unknown
+  switch-, button-, select-, text-, or update-shaped entities remain read only.
+- Confirmation policy, risk, target state, and typed phrase are rechecked at
+  execution time so a metadata refresh or concurrent state change fails closed.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

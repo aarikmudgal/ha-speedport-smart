@@ -4,8 +4,10 @@ Telekom Speedport Smart exposes a control only when the integration has an
 exact request contract and the connected router reports the required source
 data. A source-code descriptor alone does not create an entity.
 
-Version 0.2 targets the public behavior documented for a Speedport Smart 4R
-Typ A with firmware `010152.5.0.001.0`. This document combines repository code
+The stable version 0.2 baseline targets the public behavior documented for a
+Speedport Smart 4R Typ A with firmware `010152.5.0.001.0`. Version 0.3 work adds
+only capability-gated behavior that meets the evidence and safety rules below.
+This document combines repository code
 and tests with static review of public manuals, firmware history, public web
 resources, and non-official implementations. That static review is not live
 router verification. Other models and firmware versions may expose a smaller
@@ -13,13 +15,13 @@ set.
 
 ## Evidence classes
 
-| Class | Version 0.2 meaning |
+| Class | Stable version 0.2 baseline meaning |
 | --- | --- |
 | Implemented read-only | A discovered response is normalized and exposed without sending a setting request. |
 | Implemented writable | An allowlisted request has a complete endpoint and form contract, positive acknowledgement handling, independent readback where the action permits it, and stable target identity when it addresses a row. |
 | Staged guarded writable | The current firmware proves one exact scalar endpoint, field, value domain, and read source. The beta control additionally requires a fresh pre-read, positive acknowledgement, and matching post-write readback at runtime, but still needs one user-authorized change and rollback before promotion. |
 | Firmware-evidenced but blocked | Public firmware material names a page, field, endpoint candidate, or request shape, but at least one required proof is missing. No control is exposed. |
-| Destructive, private, or deferred | The operation can erase configuration, interrupt recovery, or reveal credentials or key material, or it lacks a safe Home Assistant interaction model. It is excluded from version 0.2. |
+| Destructive, private, or deferred | The operation can erase configuration, interrupt recovery, or reveal credentials or key material, or it lacks a safe Home Assistant interaction model. It is excluded from the stable version 0.2 baseline; version 0.3 can add it only through the structured admin contract below after all proof gates pass. |
 
 No write is promoted as proven without a complete endpoint, form,
 acknowledgement, readback, and stable-identity contract. Static reconnaissance
@@ -28,9 +30,30 @@ controls are staged for an explicit user roundtrip; they retain strict runtime
 acknowledgement and readback gates and never retry a rejected or ambiguous
 request.
 
-## Implemented controls
+Read coverage is independent of write eligibility. A missing write contract
+never suppresses a safe, non-secret value that the router returns. Readable
+settings and measurements will be normalized and exposed as read-only entities
+or an administrator-only live view according to their privacy and persistence
+requirements. Passwords, keys, recovery material, and raw private records are
+never copied into entity state, diagnostics, logs, or dashboard metadata.
 
-Version 0.2 enables write contracts only for the reviewed Speedport Smart 4R
+Version 0.3 development uses one immutable safety policy for both backend
+contracts and dashboard controls. Each reviewed command has a normal,
+sensitive, disruptive, lockout, or destructive risk tier plus a none, confirm,
+or typed dashboard-confirmation presentation. The dashboard receives only
+those semantic labels, never router endpoints or request fields, and revalidates
+the current policy and target state immediately before invoking the native Home
+Assistant service. This dialog is user-experience protection, not backend
+authorization: native entities remain callable through Home Assistant services
+and automations. Destructive commands are therefore forbidden from native
+entity exposure. Before the first destructive command is added, its admin-only
+action surface must require a single-use backend grant bound to the exact
+command, target, parameters, current state, and documented recovery
+prerequisites. Unknown control-shaped entities fail closed as read only.
+
+## Implemented stable-baseline controls
+
+Stable version 0.2 enables write contracts only for the reviewed Speedport Smart 4R
 Typ A firmware `010152.5.0.001.0`, and only when the current response also
 proves the required capability. An unknown or newly updated firmware remains
 read-only until its write contract is reviewed.
@@ -125,9 +148,9 @@ authenticated save forms. Mesh identify has a start and stop request shape, but
 it remains deferred until the firmware provides a dependable lifetime and
 readback contract. It will be a bounded action, not a persistent switch.
 
-## Destructive, private, or deferred operations
+## Destructive, private, or deferred operations in the stable baseline
 
-Version 0.2 does not expose:
+Stable version 0.2 does not expose:
 
 - factory reset, configuration restore, or storage erase
 - router, Wi-Fi, SIP, NAS, VPN, APN, or SIM credential changes

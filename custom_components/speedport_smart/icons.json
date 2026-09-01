@@ -43,6 +43,33 @@
       "wifi_schedule_daily_to": {
         "default": "mdi:clock-end"
       },
+      "wifi_schedule_weekly": {
+        "default": "mdi:calendar-week"
+      },
+      "lan_ipv4_address": {
+        "default": "mdi:ip-network"
+      },
+      "lan_subnet_mask": {
+        "default": "mdi:ip-outline"
+      },
+      "dhcp_pool_size": {
+        "default": "mdi:ip-network-outline"
+      },
+      "ddns_status": {
+        "default": "mdi:dns"
+      },
+      "ddns_provider": {
+        "default": "mdi:dns-outline"
+      },
+      "mesh_parent": {
+        "default": "mdi:source-branch"
+      },
+      "mesh_device_type": {
+        "default": "mdi:access-point-network"
+      },
+      "mesh_linked_lan_ports": {
+        "default": "mdi:ethernet"
+      },
       "receiver_mode": {
         "default": "mdi:access-point-network"
       },
@@ -84,6 +111,9 @@
       },
       "qos_prioritized_clients": {
         "default": "mdi:priority-high"
+      },
+      "dect_handsets": {
+        "default": "mdi:phone-wireless"
       },
       "dect_repeaters": {
         "default": "mdi:phone-wireless"
@@ -132,10 +162,23 @@
           "unavailable": "mdi:account-off",
           "unknown": "mdi:account-question"
         }
+      },
+      "link_speed": {
+        "default": "mdi:speedometer"
+      },
+      "download_link_speed": {
+        "default": "mdi:download-network-outline"
+      },
+      "upload_link_speed": {
+        "default": "mdi:upload-network-outline"
+      },
+      "wifi_generation": {
+        "default": "mdi:wifi-cog"
       }
     },
     "binary_sensor": {
       "wifi_wps_enabled": { "default": "mdi:wifi-plus" },
+      "lan_ipv6_enabled": { "default": "mdi:ip-network" },
       "wifi_wps_disabled_by_firmware": { "default": "mdi:wifi-alert" },
       "guest_wifi_wps_enabled": { "default": "mdi:wifi-star" },
       "wifi_allow_all_devices": { "default": "mdi:account-multiple-check" },
@@ -160,7 +203,9 @@
       "firmware_update_planned": { "default": "mdi:calendar-clock" },
       "firmware_automatic_updates": { "default": "mdi:update" },
       "remote_support_active": { "default": "mdi:lifebuoy" },
-      "easy_support_enabled": { "default": "mdi:lifebuoy" }
+      "easy_support_enabled": { "default": "mdi:lifebuoy" },
+      "mesh_wifi_enabled": { "default": "mdi:wifi" },
+      "paging": { "default": "mdi:phone-ring" }
     },
     "button": {
       "retry_protected_data": {

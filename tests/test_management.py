@@ -4,17 +4,22 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.speedport_smart import hub as hub_module
 from custom_components.speedport_smart.hub import SpeedportHub
 from custom_components.speedport_smart.management import (
     COMMAND_WRITE_CONTRACTS,
     ManagementCommandContract,
+    ManagementConfirmation,
+    ManagementExecutionSurface,
+    ManagementRisk,
     RouterWriteContract,
     get_command_write_contract,
+    get_entity_write_contract,
 )
 
 if TYPE_CHECKING:
@@ -23,42 +28,164 @@ if TYPE_CHECKING:
     from custom_components.speedport_smart.models import RouterInfo
 
 
-_EXPECTED_COMMANDS = {
-    "guest_wifi_set_enabled": ("set_guest_wifi", "wifi"),
-    "internet_reconnect": ("reconnect", "internet"),
-    "port_mapping_set_enabled": ("set_port_forward_rule", "port_forwarding"),
-    "reboot": ("reboot", "system"),
-    "reconnect": ("reconnect", "internet"),
-    "rename_client": ("rename_client", "clients"),
-    "router_reboot": ("reboot", "system"),
-    "set_client_fixed_dhcp": ("set_client_fixed_dhcp", "clients"),
-    "set_guest_wifi": ("set_guest_wifi", "wifi"),
-    "set_hybrid_bonding": ("set_hybrid_bonding", "hybrid"),
-    "set_internet_privacy_level": (
-        "set_internet_privacy_level",
-        "connection_privacy",
+_EXPECTED_CANONICAL_COMMANDS = {
+    "reboot": (
+        "system",
+        frozenset({"router_reboot"}),
+        ManagementRisk.DISRUPTIVE,
+        ManagementConfirmation.CONFIRM,
     ),
-    "set_office_wifi": ("set_office_wifi", "wifi"),
-    "set_port_forward_rule": ("set_port_forward_rule", "port_forwarding"),
-    "set_receiver_led_mode": ("set_receiver_led_mode", "receiver"),
-    "wifi_set_enabled": ("wifi_set_enabled", "wifi"),
-    "wps": ("wps", "wps"),
-    "wps_start": ("wps", "wps"),
+    "reconnect": (
+        "internet",
+        frozenset({"internet_reconnect"}),
+        ManagementRisk.DISRUPTIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "rename_client": (
+        "clients",
+        frozenset(),
+        ManagementRisk.NORMAL,
+        ManagementConfirmation.NONE,
+    ),
+    "set_client_fixed_dhcp": (
+        "clients",
+        frozenset(),
+        ManagementRisk.SENSITIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "set_guest_wifi": (
+        "wifi",
+        frozenset({"guest_wifi_set_enabled"}),
+        ManagementRisk.SENSITIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "set_hybrid_bonding": (
+        "hybrid",
+        frozenset(),
+        ManagementRisk.DISRUPTIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "set_internet_privacy_level": (
+        "connection_privacy",
+        frozenset(),
+        ManagementRisk.DISRUPTIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "set_office_wifi": (
+        "wifi",
+        frozenset(),
+        ManagementRisk.SENSITIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "set_port_forward_rule": (
+        "port_forwarding",
+        frozenset({"port_mapping_set_enabled"}),
+        ManagementRisk.SENSITIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+    "set_receiver_led_mode": (
+        "receiver",
+        frozenset(),
+        ManagementRisk.NORMAL,
+        ManagementConfirmation.NONE,
+    ),
+    "wifi_set_enabled": (
+        "wifi",
+        frozenset(),
+        ManagementRisk.LOCKOUT,
+        ManagementConfirmation.TYPED,
+    ),
+    "wps": (
+        "wps",
+        frozenset({"wps_start"}),
+        ManagementRisk.SENSITIVE,
+        ManagementConfirmation.CONFIRM,
+    ),
+}
+
+_EXPECTED_ENTITY_COMMANDS = {
+    ("button", "reboot_router"): "reboot",
+    ("button", "reconnect_internet"): "reconnect",
+    ("button", "wps"): "wps",
+    ("select", "internet_privacy_level_control"): "set_internet_privacy_level",
+    ("select", "receiver_led_mode_control"): "set_receiver_led_mode",
+    ("switch", "client_fixed_dhcp"): "set_client_fixed_dhcp",
+    ("switch", "guest_wifi"): "set_guest_wifi",
+    ("switch", "hybrid_bonding"): "set_hybrid_bonding",
+    ("switch", "office_wifi"): "set_office_wifi",
+    ("switch", "port_forward_rule"): "set_port_forward_rule",
+    ("switch", "wifi"): "wifi_set_enabled",
+    ("text", "client_name"): "rename_client",
 }
 
 
 def test_registry_covers_only_existing_commands_and_aliases() -> None:
     """Every existing command and alias resolves to its canonical contract."""
-    assert set(COMMAND_WRITE_CONTRACTS) == set(_EXPECTED_COMMANDS)
+    expected_names = set(_EXPECTED_CANONICAL_COMMANDS)
+    expected_names.update(
+        alias
+        for _capability, aliases, _risk, _confirmation in (
+            _EXPECTED_CANONICAL_COMMANDS.values()
+        )
+        for alias in aliases
+    )
+    assert set(COMMAND_WRITE_CONTRACTS) == expected_names
 
-    for name, (canonical, capability) in _EXPECTED_COMMANDS.items():
-        contract = get_command_write_contract(name)
+    for canonical, (
+        capability,
+        aliases,
+        risk,
+        confirmation,
+    ) in _EXPECTED_CANONICAL_COMMANDS.items():
+        contract = get_command_write_contract(canonical)
         assert contract is not None
         assert contract.command == canonical
         assert contract.capability == capability
-        assert contract is get_command_write_contract(canonical)
+        assert contract.aliases == aliases
+        assert contract.risk is risk
+        assert contract.confirmation is confirmation
+        assert contract.execution_surface is ManagementExecutionSurface.NATIVE_ENTITY
+        for alias in aliases:
+            assert get_command_write_contract(alias) is contract
 
     assert get_command_write_contract("factory_reset") is None
+
+
+def test_safety_metadata_vocabulary_is_stable_and_complete() -> None:
+    """Future controls can rely on one closed risk and confirmation vocabulary."""
+    assert {risk.value for risk in ManagementRisk} == {
+        "normal",
+        "sensitive",
+        "disruptive",
+        "lockout",
+        "destructive",
+    }
+    assert {confirmation.value for confirmation in ManagementConfirmation} == {
+        "none",
+        "confirm",
+        "typed",
+    }
+    assert {surface.value for surface in ManagementExecutionSurface} == {
+        "native_entity",
+        "admin_action",
+    }
+
+
+def test_entity_controls_resolve_only_to_reviewed_write_contracts() -> None:
+    """Panel safety metadata cannot invent a command from an entity domain."""
+    assert set(_EXPECTED_ENTITY_COMMANDS.values()) == set(_EXPECTED_CANONICAL_COMMANDS)
+    for entity_key, command in _EXPECTED_ENTITY_COMMANDS.items():
+        assert get_entity_write_contract(*entity_key) is get_command_write_contract(
+            command
+        )
+
+    for entity_key in (
+        ("button", "factory_reset"),
+        ("switch", "upnp"),
+        ("text", "router_password"),
+        ("update", "firmware"),
+    ):
+        assert get_entity_write_contract(*entity_key) is None
 
 
 def test_read_only_management_telemetry_has_no_write_contracts() -> None:
@@ -86,6 +213,97 @@ def test_read_only_management_telemetry_has_no_write_contracts() -> None:
     )
 
 
+def test_destructive_commands_cannot_use_native_entity_surface() -> None:
+    """Destructive work must use a future admin-only one-time grant flow."""
+    target = RouterWriteContract(
+        model="Speedport Smart 4R Typ A",
+        firmware="010152.5.0.001.0",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Destructive commands require a typed admin action surface",
+    ):
+        ManagementCommandContract(
+            command="factory_reset",
+            capability="system",
+            supported_routers=frozenset({target}),
+            risk=ManagementRisk.DESTRUCTIVE,
+            confirmation=ManagementConfirmation.TYPED,
+            execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+        )
+
+    contract = ManagementCommandContract(
+        command="factory_reset",
+        capability="system",
+        supported_routers=frozenset({target}),
+        risk=ManagementRisk.DESTRUCTIVE,
+        confirmation=ManagementConfirmation.TYPED,
+        execution_surface=ManagementExecutionSurface.ADMIN_ACTION,
+    )
+    assert contract.execution_surface is ManagementExecutionSurface.ADMIN_ACTION
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(("reboot", "system"), id="button"),
+        pytest.param(("wifi_set_enabled", "wifi"), id="switch"),
+        pytest.param(
+            ("set_receiver_led_mode", "receiver"),
+            id="select",
+        ),
+        pytest.param(("rename_client", "clients"), id="text"),
+    ],
+)
+async def test_admin_actions_cannot_use_native_entity_command_gate(
+    case: tuple[str, str],
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    router_info: RouterInfo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native entity discovery and execution reject admin-only contracts."""
+    command, capability = case
+    contract = ManagementCommandContract(
+        command=command,
+        capability=capability,
+        supported_routers=frozenset(
+            {
+                RouterWriteContract(
+                    model="Speedport Smart 4R Typ A",
+                    firmware="010152.5.0.001.0",
+                )
+            }
+        ),
+        risk=ManagementRisk.DESTRUCTIVE,
+        confirmation=ManagementConfirmation.TYPED,
+        execution_surface=ManagementExecutionSurface.ADMIN_ACTION,
+    )
+    monkeypatch.setattr(
+        hub_module,
+        "get_command_write_contract",
+        lambda requested: contract if requested == command else None,
+    )
+    handler = AsyncMock()
+    setattr(mock_speedport_client, command, handler)
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    hub._router_info = router_info  # noqa: SLF001 - explicit safety boundary
+    hub._capabilities = frozenset(  # noqa: SLF001 - explicit safety boundary
+        {"authenticated_json", capability}
+    )
+
+    assert not hub.supports_command(command)
+    with pytest.raises(HomeAssistantError, match="does not support"):
+        await hub.async_execute(command, verify_group=None)
+    handler.assert_not_awaited()
+
+
 def test_every_command_contract_contains_its_exact_firmware_gate() -> None:
     """Each command owns the exact router identity approved for that write."""
     expected_target = RouterWriteContract(
@@ -108,6 +326,8 @@ def test_registry_and_contract_values_are_immutable() -> None:
         COMMAND_WRITE_CONTRACTS["factory_reset"] = contract  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         contract.capability = "factory_reset"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        contract.risk = ManagementRisk.DESTRUCTIVE  # type: ignore[misc]
 
 
 def test_hub_uses_the_requested_commands_firmware_contract(
@@ -130,11 +350,17 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             command="wifi_set_enabled",
             capability="wifi",
             supported_routers=frozenset({reviewed_target}),
+            risk=ManagementRisk.LOCKOUT,
+            confirmation=ManagementConfirmation.TYPED,
+            execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
         ),
         "reboot": ManagementCommandContract(
             command="reboot",
             capability="system",
             supported_routers=frozenset({future_target}),
+            risk=ManagementRisk.DISRUPTIVE,
+            confirmation=ManagementConfirmation.CONFIRM,
+            execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
         ),
     }
     monkeypatch.setattr(

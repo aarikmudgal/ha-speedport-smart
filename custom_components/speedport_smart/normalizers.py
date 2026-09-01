@@ -32,6 +32,10 @@ _TETHERING_CONNECTED_STATUS: Final = 2
 _MAX_CLOCK_HOUR: Final = 23
 _MAX_CLOCK_MINUTE: Final = 59
 _MAX_FIRMWARE_VERSION_LENGTH: Final = 64
+_IPV4_MAX_OCTET: Final = 255
+_IPV4_PREFIX_OCTETS: Final = 3
+_DDNS_REGISTERED_STATUS: Final = 2
+_MESH_WLAN_DISABLED: Final = 2
 _WIFI_SCHEDULE_DAYS: Final = (
     ("mo", "monday"),
     ("di", "tuesday"),
@@ -81,16 +85,20 @@ _CALL_GROUPS: Final = {
 _MANAGEMENT_SCOPED_FAMILIES: Final = frozenset(
     {
         "connection_privacy",
+        "dect_repeater",
         "dns_rebind",
         "easy_support",
         "firmware",
+        "mesh_topology",
         "nas",
         "port_blocking",
         "qos",
         "usb_tethering",
         "wifi_access",
         "wifi_configuration",
+        "wifi_schedule",
         "wps",
+        "vpn_details",
     }
 )
 
@@ -164,18 +172,22 @@ def normalize_feature_payload(
         "wifi": _normalize_wifi,
         "wifi_access": _normalize_wifi,
         "wifi_configuration": _normalize_wifi,
+        "wifi_schedule": _normalize_wifi_schedule,
         "wps": _normalize_wifi,
         "mesh": _normalize_mesh,
+        "mesh_topology": _normalize_mesh,
         "lan": _normalize_lan,
         "dhcp": _normalize_dhcp,
         "clients": _normalize_clients,
         "nat": _normalize_nat,
         "ddns": _normalize_ddns,
         "vpn": _normalize_vpn,
+        "vpn_details": _normalize_vpn_details,
         "parental": _normalize_parental,
         "telephony": _normalize_telephony,
         "pbx": _normalize_pbx,
         "dect": _normalize_dect,
+        "dect_repeater": _normalize_dect_repeater,
         "receiver": _normalize_receiver,
         "security": _normalize_security,
         "dns_rebind": _normalize_security,
@@ -258,6 +270,7 @@ def _normalize_known_flat(raw: Mapping[str, Any]) -> NormalizedData:
     _merge_root(result, "wifi", _wifi_fields(view))
     _merge_root(result, "mesh", _mesh_fields(view))
     _merge_root(result, "lan", _lan_fields(view))
+    _merge_root(result, "dhcp", _dhcp_fields(raw, view))
     _merge_root(result, "dect", _dect_fields(view))
     _merge_root(result, "pbx", _pbx_fields(view))
     _merge_root(result, "vpn", _vpn_fields(view, include_generic=False))
@@ -403,8 +416,15 @@ def _hybrid_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
 
 
 def _normalize_mobile(raw: Mapping[str, Any]) -> NormalizedData:
-    mobile = _mobile_fields(_view(raw), include_generic=True)
-    return {"mobile": mobile} if mobile else {}
+    view = _view(raw)
+    mobile = _mobile_fields(view, include_generic=True)
+    receiver = _receiver_status_fields(view)
+    result: NormalizedData = {}
+    if mobile:
+        result["mobile"] = mobile
+    if receiver:
+        result["receiver"] = receiver
+    return result
 
 
 def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> NormalizedData:
@@ -471,16 +491,6 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
             _number_value,
         ),
         "cell_id": (("ex5g_cell_id", "lte_cell_id", "mobile_cell_id"), _text),
-        "external_modem_enabled": (("auto_external_modem",), _boolean),
-        "receiver_mode": (("extwan_typ",), _receiver_mode),
-        "lte_enabled": (("use_lte",), _boolean),
-        "led_mode": (("ex5g_led_mode",), _led_mode),
-        "firmware_auto_update": (("auto_update",), _boolean),
-        "firmware_update_available": (("ex5g_fwupd_avail",), _boolean),
-        "firmware_version": (("ex5g_fw_version",), _firmware_version),
-        "latest_firmware": (("ex5g_fwupd_version",), _firmware_version),
-        "firmware_update_planned": (("ex5g_fwupd_planned",), _boolean),
-        "firmware_update_time": (("ex5g_fwupd_time",), _timestamp),
     }
     if include_generic:
         aliases = {
@@ -514,6 +524,18 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
 def _normalize_wifi(raw: Mapping[str, Any]) -> NormalizedData:
     wifi = _wifi_fields(_view(raw))
     return {"wifi": wifi} if wifi else {}
+
+
+def _normalize_wifi_schedule(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize only schedule fields owned by the detail endpoint."""
+    schedule = _wifi_schedule_fields(_view(raw))
+    if not schedule:
+        return {}
+    wifi: NormalizedData = {"schedule": schedule}
+    mode = schedule.get("mode")
+    if isinstance(mode, int):
+        wifi["schedule_enabled"] = mode != 0
+    return {"wifi": wifi}
 
 
 def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
@@ -653,6 +675,7 @@ def _wifi_schedule_fields(view: Mapping[str, Any]) -> NormalizedData:
             weekly[canonical_day] = window
     if weekly:
         schedule["weekly"] = weekly
+        schedule["weekly_day_count"] = len(weekly)
     return schedule
 
 
@@ -686,8 +709,15 @@ def _mesh_fields(view: Mapping[str, Any]) -> NormalizedData:
 
 
 def _normalize_lan(raw: Mapping[str, Any]) -> NormalizedData:
-    lan = _lan_fields(_view(raw))
-    return {"lan": lan} if lan else {}
+    view = _view(raw)
+    lan = _lan_fields(view)
+    dhcp = _dhcp_fields(raw, view)
+    result: NormalizedData = {}
+    if lan:
+        result["lan"] = lan
+    if dhcp:
+        result["dhcp"] = dhcp
+    return result
 
 
 def _lan_fields(view: Mapping[str, Any]) -> NormalizedData:
@@ -706,15 +736,39 @@ def _lan_fields(view: Mapping[str, Any]) -> NormalizedData:
     explicit = _first(view, ("linked_port_count", "lan_linked_ports"), _integer)
     if explicit is not None:
         lan["linked_port_count"] = explicit
+    ipv4_address = _dotted_octets(view, "lan_ipv4", first_default=None)
+    if ipv4_address is not None:
+        lan["ipv4_address"] = ipv4_address
+    subnet_mask = _dotted_octets(view, "lan_mask", first_default=255)
+    if subnet_mask is not None:
+        lan["subnet_mask"] = subnet_mask
+    ipv6_enabled = _first(view, ("lan_ip_v6_used",), _boolean)
+    if ipv6_enabled is not None:
+        lan["ipv6_enabled"] = ipv6_enabled
     return lan
 
 
 def _normalize_dhcp(raw: Mapping[str, Any]) -> NormalizedData:
     view = _view(raw)
+    dhcp = _dhcp_fields(raw, view)
+    lan = _lan_fields(view)
+    result: NormalizedData = {}
+    if dhcp:
+        result["dhcp"] = dhcp
+    if lan:
+        result["lan"] = lan
+    return result
+
+
+def _dhcp_fields(raw: Mapping[str, Any], view: Mapping[str, Any]) -> NormalizedData:
+    """Normalize DHCP state and a private pool derived from LAN octets."""
     dhcp = _fields(
         view,
         {
-            "enabled": (("use_dhcp", "dhcp_enabled", "dhcp_active"), _boolean),
+            "enabled": (
+                ("lan_use_dhcp", "use_dhcp", "dhcp_enabled", "dhcp_active"),
+                _boolean,
+            ),
         },
     )
     lease_count = _collection_count(raw, ("addlease", "leases", "dhcp_leases"))
@@ -722,7 +776,16 @@ def _normalize_dhcp(raw: Mapping[str, Any]) -> NormalizedData:
         lease_count = _first(view, ("lease_count", "dhcp_lease_count"), _integer)
     if lease_count is not None:
         dhcp["leases"] = lease_count
-    return {"dhcp": dhcp} if dhcp else {}
+    prefix = _lan_ipv4_prefix(view)
+    pool_from = _first(view, ("lan_dhcp_from",), _ipv4_octet)
+    pool_to = _first(view, ("lan_dhcp_to",), _ipv4_octet)
+    if prefix is not None and pool_from is not None:
+        dhcp["pool_start_ipv4"] = f"{prefix}.{pool_from}"
+    if prefix is not None and pool_to is not None:
+        dhcp["pool_end_ipv4"] = f"{prefix}.{pool_to}"
+    if pool_from is not None and pool_to is not None and pool_to >= pool_from:
+        dhcp["pool_size"] = pool_to - pool_from + 1
+    return dhcp
 
 
 def _normalize_clients(raw: Mapping[str, Any]) -> NormalizedData:
@@ -833,6 +896,7 @@ def _normalize_client_record(
                 _text,
             ),
             "ipv4": _first(view, ("ipv4", "ip", "ip_address"), _private_address),
+            "reserved_ipv4": _managed_reserved_ipv4(view),
             "ipv6": _first(view, ("ipv6", "gua_ipv6", "ula_ipv6"), _private_address),
             "connected": _first(
                 view,
@@ -841,6 +905,7 @@ def _normalize_client_record(
             ),
             "medium": medium
             or _first(view, ("medium", "interface", "connection_type"), _text),
+            "wifi_generation": _first(view, ("wifi",), _wifi_generation),
             "signal_dbm": _first(view, ("rssi", "signal", "signal_dbm"), _number_value),
             "link_speed_bps": _first(
                 view,
@@ -849,12 +914,32 @@ def _normalize_client_record(
             ),
             "download_rate_bps": _first(
                 view,
-                ("download_rate_bps", "download_rate", "down_rate", "rx_rate"),
+                (
+                    "download_rate_bps",
+                    "download_rate",
+                    "down_rate",
+                    "rx_rate",
+                ),
                 _bps,
             ),
             "upload_rate_bps": _first(
                 view,
-                ("upload_rate_bps", "upload_rate", "up_rate", "tx_rate"),
+                (
+                    "upload_rate_bps",
+                    "upload_rate",
+                    "up_rate",
+                    "tx_rate",
+                ),
+                _bps,
+            ),
+            "download_link_speed_bps": _first(
+                view,
+                ("download_link_speed_bps", "downlink_speed_bps", "downspeed"),
+                _bps,
+            ),
+            "upload_link_speed_bps": _first(
+                view,
+                ("upload_link_speed_bps", "uplink_speed_bps", "upspeed"),
                 _bps,
             ),
             "bytes_received": _first(
@@ -897,6 +982,18 @@ def _normalize_client_record(
             ),
         }
     )
+
+
+def _managed_reserved_ipv4(view: Mapping[str, Any]) -> str | None:
+    """Reconstruct the firmware's fixed-DHCP address from its final octet."""
+    current = _first(view, ("ipv4",), _private_address)
+    reserved = _first(view, ("reservedip",), _ipv4_octet)
+    if current is None or reserved is None:
+        return None
+    prefix, separator, _last = current.rpartition(".")
+    if not separator or len(prefix.split(".")) != _IPV4_PREFIX_OCTETS:
+        return None
+    return f"{prefix}.{reserved}"
 
 
 def _managed_form_supported(record: Mapping[str, Any], source_kind: str | None) -> bool:
@@ -995,8 +1092,9 @@ def _normalize_nat(raw: Mapping[str, Any]) -> NormalizedData:
 
 
 def _normalize_ddns(raw: Mapping[str, Any]) -> NormalizedData:
+    view = _view(raw)
     ddns = _fields(
-        _view(raw),
+        view,
         {
             "enabled": (
                 (
@@ -1012,16 +1110,22 @@ def _normalize_ddns(raw: Mapping[str, Any]) -> NormalizedData:
                 ("ddns_connected", "ddns_status", "status"),
                 _boolean_or_state,
             ),
-            "provider": (("ddns_provider", "provider"), _text),
+            "provider": (("dyndns_provider", "ddns_provider", "provider"), _text),
             "last_update": (("ddns_last_update", "last_update"), _timestamp),
         },
     )
+    status_code = _first(view, ("dyndns_status",), _ddns_status_code)
+    if status_code is not None:
+        ddns["status_code"] = status_code
+        ddns["connected"] = status_code == _DDNS_REGISTERED_STATUS
     return {"ddns": ddns} if ddns else {}
 
 
-def _normalize_vpn(raw: Mapping[str, Any]) -> NormalizedData:
+def _normalize_vpn(
+    raw: Mapping[str, Any], *, include_generic: bool = True
+) -> NormalizedData:
     view = _view(raw)
-    vpn = _vpn_fields(view, include_generic=True)
+    vpn = _vpn_fields(view, include_generic=include_generic)
     peer_values = next(
         (view[key] for key in ("addpeer", "peers", "wireguard_peers") if key in view),
         None,
@@ -1049,6 +1153,11 @@ def _normalize_vpn(raw: Mapping[str, Any]) -> NormalizedData:
             peer.get("connected") is True for peer in peers
         )
     return {"vpn": vpn} if vpn else {}
+
+
+def _normalize_vpn_details(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize only exact VPN fields owned by the detail endpoint."""
+    return _normalize_vpn(raw, include_generic=False)
 
 
 def _vpn_fields(view: Mapping[str, Any], *, include_generic: bool) -> NormalizedData:
@@ -1248,6 +1357,13 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
         ("adddectdevice", "handsets", "dect_devices"),
         kind="dect",
     )
+    for handset in handsets:
+        identifier = handset.get("id")
+        if identifier is None:
+            continue
+        paging = _first(view, (f"pagingstat{identifier}",), _boolean)
+        if paging is not None:
+            handset["paging"] = paging
     if handsets:
         dect["handsets"] = handsets
     else:
@@ -1256,7 +1372,10 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
             dect["handsets"] = count
     handset_count = _first(view, ("dect_real_count",), _nonnegative_integer)
     if handset_count is None:
-        handset_count = _collection_count(raw, ("adddect", "handsets", "dect_devices"))
+        handset_count = _collection_count(
+            raw,
+            ("adddectdevice", "adddect", "handsets", "dect_devices"),
+        )
     if handset_count is not None:
         dect["handset_count"] = handset_count
     repeater_count = _collection_count(raw, ("addrepeater", "dect_repeaters"))
@@ -1266,6 +1385,14 @@ def _normalize_dect(raw: Mapping[str, Any]) -> NormalizedData:
     if phonebooks is not None:
         dect["phonebooks"] = phonebooks
     return {"dect": dect} if dect else {}
+
+
+def _normalize_dect_repeater(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize only the aggregate owned by the repeater detail endpoint."""
+    repeater_count = _collection_count(raw, ("addrepeater", "dect_repeaters"))
+    if repeater_count is None:
+        return {}
+    return {"dect": {"repeater_count": repeater_count}}
 
 
 def _dect_fields(view: Mapping[str, Any]) -> NormalizedData:
@@ -1383,21 +1510,9 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
 
 
 def _normalize_receiver(raw: Mapping[str, Any]) -> NormalizedData:
-    receiver = _fields(
-        _view(raw),
-        {
-            "external_modem_enabled": (("auto_external_modem",), _boolean),
-            "mode": (("extwan_typ",), _receiver_mode),
-            "lte_enabled": (("use_lte",), _boolean),
-            "led_mode": (("ex5g_led_mode",), _led_mode),
-            "firmware_auto_update": (("auto_update",), _boolean),
-            "firmware_update_available": (("ex5g_fwupd_avail",), _boolean),
-            "firmware_version": (("ex5g_fw_version",), _firmware_version),
-            "latest_firmware": (("ex5g_fwupd_version",), _firmware_version),
-            "firmware_update_planned": (("ex5g_fwupd_planned",), _boolean),
-            "firmware_update_time": (("ex5g_fwupd_time",), _timestamp),
-        },
-    )
+    view = _view(raw)
+    receiver = _receiver_status_fields(view)
+    mobile = _mobile_fields(view, include_generic=True)
     receiver_groups = (
         "addreceiver",
         "receiver_items",
@@ -1420,7 +1535,31 @@ def _normalize_receiver(raw: Mapping[str, Any]) -> NormalizedData:
         prefixes=_device_prefixes("receiver"),
     ):
         receiver["items"] = receivers
-    return {"receiver": receiver} if receiver else {}
+    result: NormalizedData = {}
+    if receiver:
+        result["receiver"] = receiver
+    if mobile:
+        result["mobile"] = mobile
+    return result
+
+
+def _receiver_status_fields(view: Mapping[str, Any]) -> NormalizedData:
+    """Return receiver settings under their canonical receiver root."""
+    return _fields(
+        view,
+        {
+            "external_modem_enabled": (("auto_external_modem",), _boolean),
+            "mode": (("extwan_typ",), _receiver_mode),
+            "lte_enabled": (("use_lte",), _boolean),
+            "led_mode": (("ex5g_led_mode",), _led_mode),
+            "firmware_auto_update": (("auto_update",), _boolean),
+            "firmware_update_available": (("ex5g_fwupd_avail",), _boolean),
+            "firmware_version": (("ex5g_fw_version",), _firmware_version),
+            "latest_firmware": (("ex5g_fwupd_version",), _firmware_version),
+            "firmware_update_planned": (("ex5g_fwupd_planned",), _boolean),
+            "firmware_update_time": (("ex5g_fwupd_time",), _timestamp),
+        },
+    )
 
 
 def _normalize_system(raw: Mapping[str, Any]) -> NormalizedData:
@@ -1534,6 +1673,9 @@ def _normalize_stable_device_record(
     )
     if kind == "telephone_line" and name is not None and _phone_like(name):
         name = None
+    model_aliases: tuple[str, ...] = ("model", "product_name", "model_name")
+    if kind != "mesh":
+        model_aliases = ("model", "type", "product_name", "model_name")
 
     device = _without_missing(
         {
@@ -1548,7 +1690,7 @@ def _normalize_stable_device_record(
             ),
             "model": _first(
                 view,
-                ("model", "type", "product_name", "model_name"),
+                model_aliases,
                 _text,
             ),
             "firmware": _first(
@@ -1600,12 +1742,24 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
     }
 
     if kind == "mesh":
-        return _fields(
+        mesh = _fields(
             view,
             {
                 **common_connection,
                 **traffic,
                 **radio,
+                "parent": (("connect_to",), _text),
+                "device_type": (("device_type",), _mesh_device_type),
+                "ipv4": (("ipv4",), _private_address),
+                "wifi_enabled": (("use_wlan",), _mesh_wifi_enabled),
+                "download_link_speed_bps": (
+                    ("download_link_speed_bps", "downlink_speed_bps", "downspeed"),
+                    _bps,
+                ),
+                "upload_link_speed_bps": (
+                    ("upload_link_speed_bps", "uplink_speed_bps", "upspeed"),
+                    _bps,
+                ),
                 "client_count": (
                     ("client_count", "connected_clients", "clients"),
                     _integer,
@@ -1621,6 +1775,10 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
                 ),
             },
         )
+        linked_lan_ports = _linked_lan_port_count(view, ("lan1", "lan2"))
+        if linked_lan_ports is not None:
+            mesh["linked_lan_port_count"] = linked_lan_ports
+        return mesh
     if kind == "telephone_line":
         return _fields(
             view,
@@ -2313,6 +2471,41 @@ def _nonnegative_integer(value: Any) -> int | None:
     return number if number is not None and number >= 0 else None
 
 
+def _ipv4_octet(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number is not None and 0 <= number <= _IPV4_MAX_OCTET else None
+
+
+def _dotted_octets(
+    view: Mapping[str, Any], prefix: str, *, first_default: int | None
+) -> str | None:
+    """Build one dotted IPv4 value only from four valid firmware octets."""
+    parts: list[int] = []
+    for index in range(1, 5):
+        if index == 1 and first_default is not None:
+            key = f"{prefix}_{index}"
+            if key in view:
+                part = _ipv4_octet(view[key])
+                if part is None:
+                    return None
+                parts.append(part)
+            else:
+                parts.append(first_default)
+            continue
+        part = _first(view, (f"{prefix}_{index}",), _ipv4_octet)
+        if part is None:
+            return None
+        parts.append(part)
+    return ".".join(str(part) for part in parts)
+
+
+def _lan_ipv4_prefix(view: Mapping[str, Any]) -> str | None:
+    parts = [_first(view, (f"lan_ipv4_{index}",), _ipv4_octet) for index in range(1, 4)]
+    if any(part is None for part in parts):
+        return None
+    return ".".join(str(part) for part in parts)
+
+
 def _privacy_level(value: Any) -> int | None:
     number = _integer(value)
     return number if number in {0, 1, 2} else None
@@ -2328,6 +2521,16 @@ def _wifi_schedule_mode(value: Any) -> int | None:
     return number if number in {0, 1, 2} else None
 
 
+def _wifi_generation(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {4, 5, 6} else None
+
+
+def _ddns_status_code(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2} else None
+
+
 def _wps_state_code(value: Any) -> int | None:
     number = _integer(value)
     return number if number in {-2, -1, 0, 1} else None
@@ -2336,6 +2539,18 @@ def _wps_state_code(value: Any) -> int | None:
 def _receiver_mode(value: Any) -> int | None:
     number = _integer(value)
     return number if number in {0, 1, 2, 3} else None
+
+
+def _mesh_device_type(value: Any) -> int | None:
+    number = _integer(value)
+    return number if number in {0, 1, 2} else None
+
+
+def _mesh_wifi_enabled(value: Any) -> bool | None:
+    number = _integer(value)
+    if number not in {0, 1, 2}:
+        return None
+    return number != _MESH_WLAN_DISABLED
 
 
 def _led_mode(value: Any) -> int | None:
@@ -2506,3 +2721,10 @@ def _port_has_device(value: Any) -> bool:
         return boolean
     text = _text(value)
     return text is not None and text.casefold() not in {"none", "unknown", "-"}
+
+
+def _linked_lan_port_count(view: Mapping[str, Any], keys: Iterable[str]) -> int | None:
+    observed = [view[key] for key in keys if key in view]
+    if not observed:
+        return None
+    return sum(_port_has_device(value) for value in observed)

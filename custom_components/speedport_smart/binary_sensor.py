@@ -106,8 +106,16 @@ CHILD_BINARY_SENSOR_COLLECTIONS: tuple[SpeedportChildBinarySensorCollection, ...
     SpeedportChildBinarySensorCollection(
         kind="mesh_node",
         data_paths=("mesh.nodes",),
-        coordinator_group=SLOW,
-        fields=(_CONNECTED,),
+        coordinator_group=NORMAL,
+        fields=(
+            _CONNECTED,
+            SpeedportChildBinarySensorDescription(
+                key="mesh_wifi_enabled",
+                name="Mesh Wi-Fi",
+                field="wifi_enabled",
+                device_class=BinarySensorDeviceClass.RUNNING,
+            ),
+        ),
     ),
     SpeedportChildBinarySensorCollection(
         kind="telephone_line",
@@ -147,6 +155,12 @@ CHILD_BINARY_SENSOR_COLLECTIONS: tuple[SpeedportChildBinarySensorCollection, ...
                 name="Charging",
                 field="charging",
                 device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
+            ),
+            SpeedportChildBinarySensorDescription(
+                key="paging",
+                name="Paging",
+                field="paging",
+                device_class=BinarySensorDeviceClass.RUNNING,
             ),
         ),
     ),
@@ -423,6 +437,15 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
         translation_key="dhcp_enabled",
         data_path="dhcp.enabled",
         capability="dhcp",
+        coordinator_group=SLOW,
+        device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportBinarySensorEntityDescription(
+        key="lan_ipv6_enabled",
+        translation_key="lan_ipv6_enabled",
+        data_path="lan.ipv6_enabled",
+        capability="lan",
         coordinator_group=SLOW,
         device_class=BinarySensorDeviceClass.RUNNING,
         entity_category=EntityCategory.DIAGNOSTIC,

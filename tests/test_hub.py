@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -74,6 +74,54 @@ async def test_setup_and_grouped_data(
     assert hub.get("missing.path", "fallback") == "fallback"
 
 
+async def test_devicelist_families_share_one_normal_poll(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Clients and mesh topology share one authenticated DeviceList read."""
+    capability_kwargs = {
+        "endpoint": "data/DeviceList.json",
+        "authenticated": True,
+        "referer": "html/content/network/devices.html",
+    }
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "clients": EndpointCapability("clients", **capability_kwargs),
+                "mesh_topology": EndpointCapability(
+                    "mesh_topology", **capability_kwargs
+                ),
+            }
+        ),
+    )
+    mock_speedport_client.get_json.return_value = {
+        "addmdevice": [{"id": "client-1", "mdevice_mac": "AA:BB:CC:DD:EE:FF"}],
+        "addmeshdevice": [
+            {
+                "id": "mesh-1",
+                "mesh_name": "Mesh repeater",
+                "mesh_downspeed": "1200000000",
+            }
+        ],
+    }
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    normal = await hub.async_update_group(PollGroup.NORMAL)
+    slow = await hub.async_update_group(PollGroup.SLOW)
+
+    mock_speedport_client.get_json.assert_awaited_once_with(
+        "data/DeviceList.json",
+        authenticated=True,
+        referer="html/content/network/devices.html",
+    )
+    mock_speedport_client.logout.assert_awaited_once()
+    assert normal.data["clients"]["items"][0]["id"] == "client-1"
+    assert normal.data["mesh"]["nodes"][0]["id"] == "mesh-1"
+    assert slow.data["mesh"]["nodes"][0]["id"] == "mesh-1"
+
+
 def test_management_feature_families_publish_their_normalized_roots(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -93,6 +141,7 @@ def test_management_feature_families_publish_their_normalized_roots(
         "port_blocking",
         "qos",
         "receiver",
+        "system_services",
         "telephony",
         "usb_tethering",
         "wifi_access",
@@ -131,6 +180,212 @@ def test_management_feature_families_publish_their_normalized_roots(
     }
     assert feature_families <= hub.capabilities
     assert expected_roots <= hub.capabilities
+
+
+async def test_detail_families_use_independent_exact_get_routes(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Summary evidence cannot hide safe schedule, VPN, or repeater detail."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi_schedule": EndpointCapability(
+                    "wifi_schedule",
+                    "data/WLANBasic.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_basic.html",
+                ),
+                "vpn_details": EndpointCapability(
+                    "vpn_details",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                ),
+                "dect_repeater": EndpointCapability(
+                    "dect_repeater",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                ),
+            }
+        ),
+    )
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        return {
+            "data/WLANBasic.json": {
+                "wlan_timerule": "1",
+                "wlan_dfrom": "07:30",
+                "wlan_dto": "22:15",
+            },
+            "data/VPN.json": {
+                "vpn_status": "1",
+                "vpn_connected": "1",
+                "addpeer": [{"connected": "1"}, {"connected": "0"}],
+            },
+            "data/DECTRepeater.json": {
+                "addrepeater": [{"id": "1"}, {"id": "2"}],
+            },
+        }[endpoint]
+
+    mock_speedport_client.get_json.side_effect = feature_payload
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.SLOW)
+
+    mock_speedport_client.get_json.assert_has_awaits(
+        [
+            call(
+                "data/WLANBasic.json",
+                authenticated=True,
+                referer="html/content/network/wlan_basic.html",
+            ),
+            call(
+                "data/VPN.json",
+                authenticated=True,
+                referer="html/content/internet/vpn.html",
+            ),
+            call(
+                "data/DECTRepeater.json",
+                authenticated=True,
+                referer="html/content/phone/phone_dect_repeater.html",
+            ),
+        ],
+        any_order=True,
+    )
+    assert mock_speedport_client.get_json.await_count == 3
+    mock_speedport_client.logout.assert_awaited_once()
+    assert {"wifi_schedule", "vpn_details", "dect_repeater"} <= hub.capabilities
+    assert {"wifi", "vpn", "dect"} <= hub.capabilities
+    assert hub.get("wifi.schedule.daily_from") == "07:30"
+    assert hub.get("vpn.connected_peer_count") == 1
+    assert hub.get("dect.repeater_count") == 2
+
+
+@pytest.mark.parametrize("detail_result", ["daily", "empty", "unsupported"])
+async def test_detail_family_loss_preserves_healthy_base_sources(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    detail_result: str,
+) -> None:
+    """One missing detail source cannot clear overlapping healthy base state."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                ),
+                "wifi_schedule": EndpointCapability(
+                    "wifi_schedule",
+                    "data/WLANBasic.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_basic.html",
+                ),
+                "vpn": EndpointCapability(
+                    "vpn",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                ),
+                "vpn_details": EndpointCapability(
+                    "vpn_details",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                ),
+                "dect": EndpointCapability(
+                    "dect",
+                    "data/DECTStation.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_mobiles.html",
+                ),
+                "dect_repeater": EndpointCapability(
+                    "dect_repeater",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                ),
+            }
+        ),
+    )
+    phase = {"detail": "initial"}
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        base_payloads: dict[str, dict[str, object]] = {
+            "data/SecureStatus.json": {
+                "use_wlan": "1",
+                "wlan_time_active": "1",
+                "vpn_active": "1",
+                "vpn_connected": "1",
+            },
+            "data/DECTStation.json": {"use_dect": "1"},
+        }
+        if endpoint in base_payloads:
+            return base_payloads[endpoint]
+        if phase["detail"] == "unsupported":
+            raise SpeedportUnsupportedError("detail endpoint disappeared")
+        if phase["detail"] == "empty":
+            return {}
+        if phase["detail"] == "daily":
+            if endpoint == "data/WLANBasic.json":
+                return {
+                    "wlan_timerule": "1",
+                    "wlan_dfrom": "07:30",
+                    "wlan_dto": "22:15",
+                }
+            return {}
+        return {
+            "data/WLANBasic.json": {
+                "use_wlan": "0",
+                "wlan_timerule": "2",
+                "wlan_time_mo_from": "08:00",
+                "wlan_time_mo_to": "21:00",
+            },
+            "data/VPN.json": {
+                "enabled": "0",
+                "addpeer": [{"connected": "1"}, {"connected": "0"}],
+            },
+            "data/DECTRepeater.json": {
+                "use_dect": "0",
+                "addrepeater": [{"id": "1"}, {"id": "2"}],
+            },
+        }[endpoint]
+
+    mock_speedport_client.get_json.side_effect = feature_payload
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("vpn.enabled") is True
+    assert hub.get("dect.enabled") is True
+    assert hub.get("wifi.schedule.weekly_day_count") == 1
+    assert hub.get("vpn.connected_peer_count") == 1
+    assert hub.get("dect.repeater_count") == 2
+
+    phase["detail"] = detail_result
+    await hub.async_update_group(PollGroup.SLOW)
+
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("wifi.schedule_enabled") is True
+    assert hub.get("vpn.enabled") is True
+    assert hub.get("vpn.connected") is True
+    assert hub.get("dect.enabled") is True
+    assert hub.get("wifi.schedule.weekly_day_count") is None
+    assert hub.get("vpn.connected_peer_count") is None
+    assert hub.get("dect.repeater_count") is None
+    if detail_result == "daily":
+        assert hub.get("wifi.schedule.daily_from") == "07:30"
+        assert hub.get("wifi.schedule.daily_to") == "22:15"
 
 
 async def test_rate_delta_and_counter_reset(
@@ -847,6 +1102,62 @@ async def test_protected_failure_restores_latest_public_status_values(
     assert hub.get("dsl.upstream_bps") is not None
     assert hub.get("internet.ipv4_address") is None
     assert hub.get("dsl.snr_downstream_db") is None
+
+
+async def test_public_status_failure_does_not_restore_errored_family_cache(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Two failed sources cannot revive an older overlapping family value."""
+    now = [100.0]
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                )
+            }
+        ),
+    )
+    mock_speedport_client.get_status.side_effect = (
+        RouterStatus(
+            info=RouterInfo(model="Speedport Smart 4R"),
+            raw={"use_wlan": "1"},
+        ),
+        SpeedportConnectionError("public status unavailable"),
+    )
+    mock_speedport_client.get_json.return_value = {"use_wlan": "0"}
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=1,
+        monotonic_time=lambda: now[0],
+    )
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.FAST)
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert hub.get("wifi.enabled") is False
+
+    mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert hub.get("wifi.enabled") is True
+    assert hub.diagnostics()["endpoint_errors"]["wifi"] == ("SpeedportSessionBusyError")
+
+    now[0] = 101.0
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert hub.get("wifi.enabled") is None
+    assert hub.diagnostics()["endpoint_errors"] == {
+        "status": "SpeedportConnectionError",
+        "wifi": "SpeedportSessionBusyError",
+    }
 
 
 async def test_protected_failure_invalidates_every_poll_group_immediately(
