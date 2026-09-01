@@ -33,9 +33,15 @@ Include:
 - any mitigation already tested
 
 Do not send a router password, session cookie, login challenge, private key,
-raw router response, full packet capture, public IP address, phone number, MAC
-address, SSID, serial number, client list, SIM identifier, or VPN secret.
-Coordinate privately before sending material that cannot be fully sanitized.
+raw router response, HAR file, browser network log, copied cURL request, full
+packet capture, public IP address, phone number, MAC address, SSID, serial
+number, client list, SIM identifier, or VPN secret. Coordinate privately before
+sending material that cannot be fully sanitized.
+
+The repository's offline control-capture sanitizer accepts raw HAR only through
+standard input and emits structural evidence without raw values. Its output
+still requires manual review before sharing. Never assume a browser's built-in
+HAR redaction is sufficient.
 
 The maintainer will acknowledge reports when available, investigate, coordinate
 a fix and disclosure, and credit reporters who want attribution. No response or

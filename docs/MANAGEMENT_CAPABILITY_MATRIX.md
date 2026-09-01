@@ -355,7 +355,14 @@ Management work should proceed by family, not by adding guessed controls in bulk
 1. Record model, hardware revision, firmware, provider mode, line type, attached 5G/USB/Mesh/DECT hardware, and the exact menu set. Do not record credentials or personally identifying values.
 2. Run GET-only discovery. The only POST requests allowed in this phase are the router's required login and logout requests. Fetch one page and its referenced JSON at a time, with the correct Referer, through one serialized session.
 3. Save only a sanitized contract fixture: endpoint, authentication requirement, Referer, response shape, stable IDs, data types, enum candidates, dependency flags, and which fields are masked or omitted. Remove values, tokens, nonces, keys, passwords, phone numbers, contacts, call records, public and private IP addresses, MAC addresses, SSIDs, hostnames, serial numbers, and free-text logs.
-4. Obtain the complete form without sending it. Use downloaded firmware web resources or a user-performed browser request capture. Record every submitted field, unchanged hidden field, CSRF or session requirement, allowed range, acknowledgement shape, and independent GET used for verification.
+4. Obtain the complete form without sending it. Use downloaded firmware web
+   resources first. For an explicitly authorized reversible scalar roundtrip,
+   use the offline stdin-only sanitizer documented in
+   [Protocol discovery](PROTOCOL_DISCOVERY.md#user-operated-reversible-control-capture).
+   Never retain or share the raw HAR. Record every submitted field, unchanged
+   hidden field, CSRF or session requirement, allowed range, acknowledgement
+   shape, independent GET, and verified restoration. A sanitizer report with
+   any proof blocker remains incomplete evidence.
 5. Implement one narrow action. Preserve unrelated fields, fail closed on missing or ambiguous state, serialize it with polling, and expose it only when the current response proves the capability.
 6. Ask for explicit permission before `ROUNDTRIP` or `MAINT`. A reversible test records the pre-state, changes one field, verifies it, restores the original value, and verifies restoration. A disruptive or destructive test also requires a current backup, maintenance window, physical recovery path, and a named target.
 7. Repeat capability checks on relevant firmware and hardware variants before calling a family generally supported.

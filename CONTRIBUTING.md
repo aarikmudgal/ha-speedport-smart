@@ -66,6 +66,13 @@ material, public IP addresses, MAC addresses, phone numbers, SSIDs, client
 names, serial numbers, SIM identifiers, VPN data, and other household
 information with unmistakably synthetic values.
 
+Raw HAR files, browser network logs, copied cURL requests, and packet captures
+are equally sensitive and must never be attached to an issue or pull request.
+For one explicitly authorized reversible scalar operation, follow the
+[offline control-capture workflow](docs/PROTOCOL_DISCOVERY.md#user-operated-reversible-control-capture)
+and submit only its reviewed sanitized JSON. A complete report is evidence for
+manual review, not permission to generate a runtime command.
+
 Read-only discovery comes first. A router-changing contribution also requires
 a specific allowlisted command, capability proof, serialized execution, a
 post-action state refresh, clear user-facing wording, and explicit maintainer

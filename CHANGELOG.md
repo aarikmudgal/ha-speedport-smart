@@ -15,6 +15,9 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   native entities and must use a future admin-only backend grant flow.
 - Read-only mesh topology details from the proven DeviceList endpoint, including
   directional link speeds and Wi-Fi generation metadata for managed clients.
+- An offline, stdin-only browser-capture sanitizer that verifies one explicit
+  reversible scalar apply/readback/rollback sequence and emits only bounded,
+  privacy-safe contract evidence.
 
 ### Fixed
 
@@ -30,6 +33,9 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   switch-, button-, select-, text-, or update-shaped entities remain read only.
 - Confirmation policy, risk, target state, and typed phrase are rechecked at
   execution time so a metadata refresh or concurrent state change fails closed.
+- Raw HAR bodies, browser headers, authentication material, router origins,
+  subscriber identifiers, and non-allowlisted values never enter sanitized
+  control-contract evidence.
 
 ## [0.2.0] - 2026-09-01
 
