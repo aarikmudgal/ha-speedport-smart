@@ -91,7 +91,7 @@ test("Internet connection presentation distinguishes unavailable from offline", 
   });
 });
 
-test("major sections fill the dashboard while source groups respond inside them", () => {
+test("major sections fill the dashboard with wrapping source groups", () => {
   const sections = cssDeclarations(".sections");
   assert.match(
     sections,
@@ -104,13 +104,41 @@ test("major sections fill the dashboard while source groups respond inside them"
   assert.match(dashboardSection, /width:\s*100%\s*;/);
 
   const sourceGroups = cssDeclarations(".entity-source-groups");
+  assert.match(sourceGroups, /display:\s*flex\s*;/);
+  assert.match(sourceGroups, /flex-wrap:\s*wrap\s*;/);
+  assert.doesNotMatch(sourceGroups, /grid-template-columns|auto-fit/);
+
+  const sourceGroup = cssDeclarations(".entity-source-group");
   assert.match(
-    sourceGroups,
-    /grid-template-columns:\s*repeat\(\s*auto-fit\s*,\s*minmax\(\s*min\(\s*100%\s*,\s*400px\s*\)\s*,\s*1fr\s*\)\s*\)\s*;/,
+    sourceGroup,
+    /flex:\s*1\s+1\s+min\(\s*100%\s*,\s*400px\s*\)\s*;/,
   );
 
-  const narrowSourceGroups = cssDeclarations(
-    ":host([narrow]) .entity-source-groups",
+  assert.ok(
+    /const sourceGroupClass\s*=\s*capabilityGroups\.size\s*>=\s*3\s*\?\s*"entity-source-group source-group-wide"\s*:\s*"entity-source-group"/.test(
+      panelSource,
+    ),
+    "Three or more capability blocks must mark their source group wide",
   );
-  assert.match(narrowSourceGroups, /grid-template-columns:\s*1fr\s*;/);
+  assert.ok(
+    /class="\$\{sourceGroupClass\}"/.test(panelSource),
+    "Rendered source groups must use the computed width class",
+  );
+  const wideSourceGroup = cssDeclarations(
+    ".entity-source-group.source-group-wide",
+  );
+  assert.match(wideSourceGroup, /flex-basis:\s*100%\s*;/);
+
+  const narrowSourceGroups = cssDeclarations(
+    ":host([narrow]) .entity-source-group",
+  );
+  assert.match(narrowSourceGroups, /flex-basis:\s*100%\s*;/);
+
+  assert.equal(
+    /^\s*\.entity-source-groups\s*\{[^}]*grid-template-columns/ims.test(
+      panelSource,
+    ),
+    false,
+    "Source groups must not return to a fixed auto-fit grid",
+  );
 });

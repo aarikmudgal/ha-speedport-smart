@@ -1411,8 +1411,12 @@ class SpeedportSmartPanel extends HTMLElement {
         const capabilityGrid = capabilityBlocks
           ? `<div class="entity-capability-grid">${capabilityBlocks}</div>`
           : "";
+        const sourceGroupClass =
+          capabilityGroups.size >= 3
+            ? "entity-source-group source-group-wide"
+            : "entity-source-group";
         return `
-          <div class="entity-source-group">
+          <div class="${sourceGroupClass}">
             <header class="entity-source-heading ${statusClass}">
               <span class="entity-source-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(sourceInfo.icon)}"></ha-icon></span>
               <div>
@@ -2146,12 +2150,16 @@ class SpeedportSmartPanel extends HTMLElement {
           font-weight: 700;
         }
         .entity-source-groups {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
+          display: flex;
+          flex-wrap: wrap;
           align-items: start;
           gap: 20px;
         }
-        .entity-source-group { min-width: 0; }
+        .entity-source-group {
+          flex: 1 1 min(100%, 400px);
+          min-width: 0;
+        }
+        .entity-source-group.source-group-wide { flex-basis: 100%; }
         .entity-source-heading {
           display: grid;
           grid-template-columns: auto 1fr auto;
@@ -2528,12 +2536,12 @@ class SpeedportSmartPanel extends HTMLElement {
         .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
         :host([narrow]) .sections { grid-template-columns: 1fr; }
         :host([narrow]) .dashboard-section { grid-column: auto; }
-        :host([narrow]) .entity-source-groups { grid-template-columns: 1fr; }
+        :host([narrow]) .entity-source-group { flex-basis: 100%; }
         :host([narrow]) .entity-capability-grid { grid-template-columns: 1fr; }
         @media (max-width: 900px) {
           .sections { grid-template-columns: 1fr; }
           .dashboard-section { grid-column: auto; }
-          .entity-source-groups { grid-template-columns: 1fr; }
+          .entity-source-group { flex-basis: 100%; }
           .source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         }
         @media (max-width: 680px) {
