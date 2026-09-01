@@ -31,6 +31,8 @@ def test_recursive_redaction() -> None:
             "public_key": "wireguard-public-material",
             "imsi": "262010123456789",
             "client_mac": "aa:bb:cc:dd:ee:ff",
+            "_identity_fingerprint": "rule-target-hash",
+            "source_row_id": "private-router-row",
             "number": "+49 30 123456",
             "wan_ip": "203.0.113.4",
             "system_log": "phone and client history",
@@ -43,6 +45,8 @@ def test_recursive_redaction() -> None:
     assert result["public_key"] == REDACTED
     assert result["imsi"] == REDACTED
     assert result["client_mac"] == REDACTED
+    assert result["_identity_fingerprint"] == REDACTED
+    assert result["source_row_id"] == REDACTED
     assert result["number"] == REDACTED
     assert result["wan_ip"] == REDACTED
     assert result["system_log"] == REDACTED

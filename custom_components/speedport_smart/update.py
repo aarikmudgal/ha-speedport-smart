@@ -99,4 +99,3 @@ class SpeedportFirmwareUpdate(SpeedportEntity, UpdateEntity):
             verify_group=PollGroup.SLOW,
             version=version,
         )
-        await self.coordinator.async_request_refresh()

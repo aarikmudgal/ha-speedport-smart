@@ -63,16 +63,32 @@
         "data": {
           "enable_controls": "Show supported router controls",
           "fast_interval": "Fast polling interval",
+          "wan_interval": "Advanced WAN counter interval",
           "normal_interval": "Normal polling interval",
           "slow_interval": "Slow polling interval"
         },
         "data_description": {
           "enable_controls": "Show only implemented controls supported by this router. They remain idle until you explicitly use them and never run automatically.",
-          "fast_interval": "Seconds between WAN counter and live-state updates (1–60). One second is best-effort; 5 seconds is recommended for router reliability.",
+          "fast_interval": "Seconds between browser-independent live-state updates (1–60). This does not control router-sensitive WAN counters.",
+          "wan_interval": "Use 0 for automatic learning: counters start at 5 seconds and safely test 4, 3, 2 and 1 second after stable reads. Set 1–60 only to choose an advanced target; transient busy responses still back off automatically.",
           "normal_interval": "Seconds between status, Wi-Fi, client and telephony updates.",
           "slow_interval": "Seconds between configuration, topology and firmware updates."
         }
       }
+    }
+  },
+  "exceptions": {
+    "controls_disabled": {
+      "message": "Router controls are disabled in the Telekom Speedport Smart integration options."
+    },
+    "command_unsupported": {
+      "message": "This router does not support the requested action."
+    },
+    "command_failed": {
+      "message": "The router could not complete the requested action. Check the Home Assistant log before trying again."
+    },
+    "command_verification_failed": {
+      "message": "The router action was sent, but its resulting state could not be verified. Check the router state before trying again."
     }
   },
   "entity": {
@@ -93,9 +109,35 @@
       "wan_upload_capacity": { "name": "Upload capacity" },
       "internet_uptime": { "name": "Internet uptime" },
       "wan_interface": { "name": "WAN interface" },
+      "wan_interface_status": { "name": "WAN interface status" },
+      "wan_polling_mode": {
+        "name": "WAN polling mode",
+        "state": { "auto": "Auto", "manual": "Manual" }
+      },
+      "wan_polling_interval": { "name": "WAN polling interval" },
+      "wan_polling_state": {
+        "name": "WAN polling state",
+        "state": {
+          "learning": "Learning",
+          "stable": "Stable",
+          "retrying": "Retrying",
+          "limited": "Limited"
+        }
+      },
+      "wan_fastest_proven_interval": { "name": "WAN fastest proven interval" },
+      "wan_last_sample": { "name": "WAN last successful sample" },
       "wan_mtu": { "name": "WAN MTU" },
       "public_ipv4": { "name": "Public IPv4 address" },
       "public_ipv6_prefix": { "name": "Public IPv6 prefix" },
+      "internet_ip_stack": { "name": "Internet IP stack" },
+      "internet_privacy_level": {
+        "name": "Internet privacy level",
+        "state": {
+          "off": "Off",
+          "level_1": "Level 1",
+          "level_2": "Level 2"
+        }
+      },
       "dsl_downstream": { "name": "DSL downstream" },
       "dsl_upstream": { "name": "DSL upstream" },
       "dsl_attainable_downstream": { "name": "DSL attainable downstream" },
@@ -117,6 +159,18 @@
       "mobile_band": { "name": "Mobile band" },
       "mobile_frequency": { "name": "Mobile frequency" },
       "mobile_cell_id": { "name": "Mobile cell ID" },
+      "receiver_mode": { "name": "Receiver mode" },
+      "receiver_led_mode": {
+        "name": "Receiver LED mode",
+        "state": {
+          "use_leds": "Use LEDs",
+          "off_after_timeout": "Switch off after timeout",
+          "disabled": "Do not use LEDs"
+        }
+      },
+      "receiver_firmware_version": { "name": "Receiver firmware version" },
+      "receiver_latest_firmware": { "name": "Latest receiver firmware" },
+      "receiver_firmware_update_time": { "name": "Receiver firmware update time" },
       "lte_tunnel_bytes_received": { "name": "LTE tunnel data received" },
       "lte_tunnel_bytes_sent": { "name": "LTE tunnel data sent" },
       "wifi_2_4_clients": { "name": "2.4 GHz Wi-Fi clients" },
@@ -124,6 +178,35 @@
       "wifi_guest_clients": { "name": "Guest Wi-Fi clients" },
       "wifi_2_4_channel": { "name": "2.4 GHz Wi-Fi channel" },
       "wifi_5_channel": { "name": "5 GHz Wi-Fi channel" },
+      "wifi_band_mode": {
+        "name": "Wi-Fi band mode",
+        "state": {
+          "both_bands": "Both bands",
+          "2_4_ghz_only": "2.4 GHz only",
+          "5_ghz_only": "5 GHz only"
+        }
+      },
+      "wifi_wps_state_code": {
+        "name": "WPS state",
+        "state": {
+          "failed": "Failed",
+          "successful": "Successful",
+          "in_progress": "In progress"
+        }
+      },
+      "wifi_2_4_encryption_mode": { "name": "2.4 GHz Wi-Fi encryption mode" },
+      "wifi_guest_encryption_mode": { "name": "Guest Wi-Fi encryption mode" },
+      "wifi_office_encryption_mode": { "name": "Office Wi-Fi encryption mode" },
+      "wifi_schedule_mode": {
+        "name": "Wi-Fi schedule mode",
+        "state": {
+          "disabled": "Disabled",
+          "daily": "Daily",
+          "weekly": "Weekly"
+        }
+      },
+      "wifi_schedule_daily_from": { "name": "Wi-Fi schedule starts" },
+      "wifi_schedule_daily_to": { "name": "Wi-Fi schedule ends" },
       "mesh_nodes": { "name": "Mesh nodes" },
       "mesh_clients": { "name": "Mesh clients" },
       "connected_clients": { "name": "Connected clients" },
@@ -135,22 +218,81 @@
       "ddns_last_update": { "name": "Dynamic DNS last update" },
       "vpn_peers": { "name": "VPN peers" },
       "vpn_connected_peers": { "name": "Connected VPN peers" },
+      "vpn_type": { "name": "VPN type" },
       "parental_profiles": { "name": "Parental-control profiles" },
       "parental_blocked_clients": { "name": "Blocked clients" },
+      "dns_rebind_exceptions": { "name": "DNS rebind exceptions" },
+      "port_block_rules": { "name": "Port-blocking rules" },
+      "active_port_block_rules": { "name": "Active port-blocking rules" },
+      "qos_prioritized_clients": { "name": "Prioritized clients" },
       "telephone_numbers_registered": { "name": "Registered telephone numbers" },
+      "telephony_voip_policy": {
+        "name": "VoIP security level",
+        "state": {
+          "off": "Off",
+          "level_1": "Level 1",
+          "level_2": "Level 2"
+        }
+      },
+      "telephony_providers": { "name": "Telephony providers" },
+      "telephony_configured_numbers": { "name": "Configured telephone numbers" },
+      "telephony_registered_voip_numbers": { "name": "Registered VoIP numbers" },
+      "telephony_inactive_voip_numbers": { "name": "Inactive VoIP numbers" },
+      "telephony_warning_voip_numbers": { "name": "VoIP numbers with warnings" },
       "missed_calls": { "name": "Missed calls" },
       "last_call": { "name": "Last call" },
       "ip_phones": { "name": "IP phones" },
+      "pbx_configured_clients": { "name": "Configured telephone-system clients" },
+      "pbx_disconnected_clients": { "name": "Disconnected telephone-system clients" },
+      "pbx_registered_clients": { "name": "Registered telephone-system clients" },
+      "pbx_locked_clients": { "name": "Locked telephone-system clients" },
       "dect_handsets": { "name": "DECT handsets" },
+      "dect_repeaters": { "name": "DECT repeaters" },
       "phonebooks": { "name": "Phonebooks" },
       "usb_devices": { "name": "USB devices" },
+      "usb_tethering_status": { "name": "USB tethering status" },
+      "usb_storage_devices": { "name": "USB storage devices" },
+      "usb_storage_total": { "name": "USB storage capacity" },
+      "usb_storage_used": { "name": "USB storage used" },
+      "usb_storage_free": { "name": "USB storage free" },
       "system_uptime": { "name": "System uptime" },
       "system_temperature": { "name": "System temperature" },
       "system_cpu": { "name": "CPU utilization" },
       "system_memory": { "name": "Memory utilization" },
+      "firmware_update_time": { "name": "Firmware update time" },
       "request_latency": { "name": "Request latency" },
       "update_failures": { "name": "Update failures" },
       "last_successful_update": { "name": "Last successful update" },
+      "backhaul": { "name": "Backhaul" },
+      "band": { "name": "Radio band" },
+      "battery_level": { "name": "Battery level" },
+      "bytes_received": { "name": "Data received" },
+      "bytes_sent": { "name": "Data sent" },
+      "call_state": { "name": "Call state" },
+      "capacity": { "name": "Storage capacity" },
+      "cell_id": { "name": "Cell ID" },
+      "download_rate": { "name": "Download throughput" },
+      "free_space": { "name": "Free space" },
+      "frequency": { "name": "Frequency" },
+      "last_seen": { "name": "Last seen" },
+      "link_speed": { "name": "Link speed" },
+      "media_type": { "name": "Media type" },
+      "network_type": { "name": "Network type" },
+      "operator": { "name": "Network operator" },
+      "radio_band": { "name": "Radio band" },
+      "role": { "name": "Mesh role" },
+      "rsrp": { "name": "RSRP" },
+      "rsrq": { "name": "RSRQ" },
+      "rssi": { "name": "RSSI" },
+      "signal_quality": { "name": "Signal quality" },
+      "signal_strength": { "name": "Signal strength" },
+      "sinr": { "name": "SINR" },
+      "storage_usage": { "name": "Storage usage" },
+      "temperature": { "name": "Temperature" },
+      "upload_rate": { "name": "Upload throughput" },
+      "uptime": { "name": "Uptime" },
+      "used_space": { "name": "Used space" },
+      "wifi_channel": { "name": "Wi-Fi channel" },
       "management_access": {
         "name": "Management access",
         "state": {
@@ -168,28 +310,74 @@
       "internet_connected": { "name": "Internet" },
       "dsl_connected": { "name": "DSL" },
       "hybrid_connected": { "name": "Hybrid" },
+      "hybrid_enabled": { "name": "Hybrid service" },
+      "hybrid_dsl_tunnel": { "name": "Hybrid DSL tunnel" },
+      "hybrid_lte_tunnel": { "name": "Hybrid LTE tunnel" },
       "mobile_connected": { "name": "Mobile network" },
       "wifi_2_4_enabled": { "name": "2.4 GHz Wi-Fi" },
       "wifi_5_enabled": { "name": "5 GHz Wi-Fi" },
       "guest_wifi_enabled": { "name": "Guest Wi-Fi" },
       "office_wifi_enabled": { "name": "Office Wi-Fi" },
+      "wifi_wps_active": { "name": "WPS" },
+      "wifi_wps_enabled": { "name": "WPS enabled" },
+      "wifi_wps_disabled_by_firmware": { "name": "WPS disabled by firmware" },
+      "guest_wifi_wps_enabled": { "name": "Guest Wi-Fi WPS" },
+      "wifi_allow_all_devices": { "name": "Allow all Wi-Fi devices" },
+      "wifi_2_4_visible": { "name": "2.4 GHz Wi-Fi name visible" },
+      "wifi_5_visible": { "name": "5 GHz Wi-Fi name visible" },
+      "wifi_mac_filter_enabled": { "name": "Wi-Fi MAC filter" },
+      "wifi_schedule_enabled": { "name": "Wi-Fi schedule" },
       "mesh_enabled": { "name": "Mesh" },
       "dhcp_enabled": { "name": "DHCP server" },
       "upnp_enabled": { "name": "UPnP" },
+      "port_forwarding_enabled": { "name": "Port forwarding" },
+      "ddns_enabled": { "name": "Dynamic DNS service" },
       "ddns_connected": { "name": "Dynamic DNS" },
       "vpn_connected": { "name": "VPN" },
+      "vpn_enabled": { "name": "VPN service" },
       "parental_controls_enabled": { "name": "Parental controls" },
       "telephony_registered": { "name": "Telephony" },
       "active_call": { "name": "Active call" },
       "dect_enabled": { "name": "DECT" },
+      "dect_scan_active": { "name": "DECT scan" },
+      "dect_smart_home_enabled": { "name": "DECT smart home" },
+      "pbx_enabled": { "name": "Telephone system" },
+      "telephony_voip_possible": { "name": "VoIP encryption available" },
       "firewall_enabled": { "name": "Firewall" },
       "dns_rebind_protection": { "name": "DNS rebind protection" },
       "remote_management": { "name": "Remote management" },
       "usb_connected": { "name": "USB device" },
+      "usb_port_enabled": { "name": "USB port" },
+      "usb_tethering_enabled": { "name": "USB tethering" },
+      "usb_tethering_connected": { "name": "USB tethering connected" },
+      "usb_printer_connected": { "name": "USB printer connected" },
+      "nas_enabled": { "name": "NAS" },
+      "nas_secure": { "name": "Secure NAS access" },
+      "nas_read_only": { "name": "NAS read-only access" },
+      "port_blocking_enabled": { "name": "Port blocking" },
+      "media_server_enabled": { "name": "Media server" },
+      "wan_interface_enabled": { "name": "WAN interface" },
       "firmware_update_available": { "name": "Firmware update available" },
+      "firmware_update_planned": { "name": "Firmware update planned" },
+      "firmware_automatic_updates": { "name": "Automatic firmware updates" },
+      "receiver_external_modem_enabled": { "name": "External receiver enabled" },
+      "receiver_lte_enabled": { "name": "Receiver LTE enabled" },
+      "receiver_firmware_automatic_updates": { "name": "Automatic receiver firmware updates" },
+      "receiver_firmware_update_available": { "name": "Receiver firmware update available" },
+      "receiver_firmware_update_planned": { "name": "Receiver firmware update planned" },
+      "remote_support_active": { "name": "Remote support active" },
+      "easy_support_enabled": { "name": "EasySupport" },
+      "charging": { "name": "Charging" },
+      "connected": { "name": "Connected" },
+      "enabled": { "name": "Enabled" },
+      "internet_access_allowed": { "name": "Internet access allowed" },
+      "internet_paused": { "name": "Internet paused" },
+      "mounted": { "name": "Mounted" },
+      "registered": { "name": "Registered" },
       "router_problem": { "name": "Router problem" }
     },
     "switch": {
+      "hybrid_bonding": { "name": "Hybrid bonding" },
       "wifi": { "name": "Wi-Fi" },
       "guest_wifi": { "name": "Guest Wi-Fi" },
       "office_wifi": { "name": "Office Wi-Fi" },
@@ -199,7 +387,29 @@
       "parental_controls": { "name": "Parental controls" },
       "media_server": { "name": "Media server" },
       "port_forward_rule": { "name": "Port forwarding rule" },
-      "client_internet_access": { "name": "Internet access" }
+      "client_internet_access": { "name": "Internet access" },
+      "client_fixed_dhcp": { "name": "Fixed DHCP reservation" }
+    },
+    "select": {
+      "internet_privacy_level_control": {
+        "name": "Internet privacy level",
+        "state": {
+          "off": "Off",
+          "level_1": "Level 1",
+          "level_2": "Level 2"
+        }
+      },
+      "receiver_led_mode_control": {
+        "name": "Receiver LED mode",
+        "state": {
+          "use_leds": "Use LEDs",
+          "off_after_timeout": "Switch off after timeout",
+          "disabled": "Do not use LEDs"
+        }
+      }
+    },
+    "text": {
+      "client_name": { "name": "Name" }
     },
     "button": {
       "retry_protected_data": { "name": "Retry protected data (log out of the router first)" },

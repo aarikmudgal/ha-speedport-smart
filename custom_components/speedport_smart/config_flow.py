@@ -31,12 +31,14 @@ from .const import (
     CONF_SLOW_INTERVAL,
     CONF_USE_HTTPS,
     CONF_VERIFY_SSL,
+    CONF_WAN_INTERVAL,
     DEFAULT_FAST_INTERVAL,
     DEFAULT_HOST,
     DEFAULT_NORMAL_INTERVAL,
     DEFAULT_SLOW_INTERVAL,
     DEFAULT_TR064_HTTP_PORT,
     DEFAULT_TR064_HTTPS_PORT,
+    DEFAULT_WAN_INTERVAL,
     DOMAIN,
 )
 
@@ -293,6 +295,12 @@ class SpeedportSmartOptionsFlow(OptionsFlow):
                             )
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+                    vol.Required(
+                        CONF_WAN_INTERVAL,
+                        default=int(
+                            current.get(CONF_WAN_INTERVAL, DEFAULT_WAN_INTERVAL)
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0, max=60)),
                     vol.Required(
                         CONF_NORMAL_INTERVAL,
                         default=int(

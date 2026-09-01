@@ -1,6 +1,126 @@
 {
   "entity": {
     "sensor": {
+      "wan_polling_mode": {
+        "default": "mdi:tune-variant"
+      },
+      "wan_polling_interval": {
+        "default": "mdi:timer-sync-outline"
+      },
+      "wan_polling_state": {
+        "default": "mdi:progress-clock"
+      },
+      "wan_fastest_proven_interval": {
+        "default": "mdi:speedometer"
+      },
+      "wan_last_sample": {
+        "default": "mdi:clock-check-outline"
+      },
+      "internet_privacy_level": {
+        "default": "mdi:shield-account-outline"
+      },
+      "wifi_band_mode": {
+        "default": "mdi:radio-tower"
+      },
+      "wifi_wps_state_code": {
+        "default": "mdi:wifi-plus"
+      },
+      "wifi_2_4_encryption_mode": {
+        "default": "mdi:wifi-lock"
+      },
+      "wifi_guest_encryption_mode": {
+        "default": "mdi:wifi-lock"
+      },
+      "wifi_office_encryption_mode": {
+        "default": "mdi:wifi-lock"
+      },
+      "wifi_schedule_mode": {
+        "default": "mdi:calendar-clock"
+      },
+      "wifi_schedule_daily_from": {
+        "default": "mdi:clock-start"
+      },
+      "wifi_schedule_daily_to": {
+        "default": "mdi:clock-end"
+      },
+      "receiver_mode": {
+        "default": "mdi:access-point-network"
+      },
+      "receiver_led_mode": {
+        "default": "mdi:led-outline"
+      },
+      "receiver_firmware_version": {
+        "default": "mdi:chip"
+      },
+      "receiver_latest_firmware": {
+        "default": "mdi:update"
+      },
+      "receiver_firmware_update_time": {
+        "default": "mdi:calendar-clock"
+      },
+      "usb_tethering_status": {
+        "default": "mdi:usb-port"
+      },
+      "usb_storage_devices": {
+        "default": "mdi:nas"
+      },
+      "usb_storage_total": {
+        "default": "mdi:harddisk"
+      },
+      "usb_storage_used": {
+        "default": "mdi:database"
+      },
+      "usb_storage_free": {
+        "default": "mdi:database-outline"
+      },
+      "dns_rebind_exceptions": {
+        "default": "mdi:dns-outline"
+      },
+      "port_block_rules": {
+        "default": "mdi:shield-lock-outline"
+      },
+      "active_port_block_rules": {
+        "default": "mdi:shield-check-outline"
+      },
+      "qos_prioritized_clients": {
+        "default": "mdi:priority-high"
+      },
+      "dect_repeaters": {
+        "default": "mdi:phone-wireless"
+      },
+      "pbx_configured_clients": {
+        "default": "mdi:phone-switch"
+      },
+      "pbx_disconnected_clients": {
+        "default": "mdi:phone-off-outline"
+      },
+      "pbx_registered_clients": {
+        "default": "mdi:phone-check-outline"
+      },
+      "pbx_locked_clients": {
+        "default": "mdi:phone-lock"
+      },
+      "telephony_voip_policy": {
+        "default": "mdi:phone-lock"
+      },
+      "telephony_providers": {
+        "default": "mdi:phone-settings"
+      },
+      "telephony_configured_numbers": {
+        "default": "mdi:phone-cog"
+      },
+      "telephony_registered_voip_numbers": {
+        "default": "mdi:phone-check-outline"
+      },
+      "telephony_inactive_voip_numbers": {
+        "default": "mdi:phone-off-outline"
+      },
+      "telephony_warning_voip_numbers": {
+        "default": "mdi:phone-alert-outline"
+      },
+      "firmware_update_time": {
+        "default": "mdi:calendar-clock"
+      },
       "management_access": {
         "default": "mdi:account-lock",
         "state": {
@@ -14,9 +134,58 @@
         }
       }
     },
+    "binary_sensor": {
+      "wifi_wps_enabled": { "default": "mdi:wifi-plus" },
+      "wifi_wps_disabled_by_firmware": { "default": "mdi:wifi-alert" },
+      "guest_wifi_wps_enabled": { "default": "mdi:wifi-star" },
+      "wifi_allow_all_devices": { "default": "mdi:account-multiple-check" },
+      "wifi_2_4_visible": { "default": "mdi:eye-outline" },
+      "wifi_5_visible": { "default": "mdi:eye-outline" },
+      "receiver_external_modem_enabled": { "default": "mdi:access-point-network" },
+      "receiver_lte_enabled": { "default": "mdi:signal-cellular-3" },
+      "receiver_firmware_automatic_updates": { "default": "mdi:update" },
+      "receiver_firmware_update_available": { "default": "mdi:update" },
+      "receiver_firmware_update_planned": { "default": "mdi:calendar-clock" },
+      "usb_port_enabled": { "default": "mdi:usb" },
+      "usb_tethering_enabled": { "default": "mdi:usb-port" },
+      "usb_tethering_connected": { "default": "mdi:usb-port" },
+      "usb_printer_connected": { "default": "mdi:printer" },
+      "nas_enabled": { "default": "mdi:nas" },
+      "nas_secure": { "default": "mdi:shield-lock-outline" },
+      "nas_read_only": { "default": "mdi:file-lock-outline" },
+      "port_blocking_enabled": { "default": "mdi:shield-lock-outline" },
+      "dect_scan_active": { "default": "mdi:phone-sync" },
+      "dect_smart_home_enabled": { "default": "mdi:home-automation" },
+      "telephony_voip_possible": { "default": "mdi:phone-lock" },
+      "firmware_update_planned": { "default": "mdi:calendar-clock" },
+      "firmware_automatic_updates": { "default": "mdi:update" },
+      "remote_support_active": { "default": "mdi:lifebuoy" },
+      "easy_support_enabled": { "default": "mdi:lifebuoy" }
+    },
     "button": {
       "retry_protected_data": {
         "default": "mdi:account-sync"
+      }
+    },
+    "text": {
+      "client_name": {
+        "default": "mdi:rename-box"
+      }
+    },
+    "select": {
+      "internet_privacy_level_control": {
+        "default": "mdi:shield-account-outline"
+      },
+      "receiver_led_mode_control": {
+        "default": "mdi:led-outline"
+      }
+    },
+    "switch": {
+      "hybrid_bonding": {
+        "default": "mdi:transit-connection-variant"
+      },
+      "client_fixed_dhcp": {
+        "default": "mdi:ip-network"
       }
     }
   }

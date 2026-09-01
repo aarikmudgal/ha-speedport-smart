@@ -25,12 +25,21 @@ EXCLUDED_SUFFIXES: Final = frozenset({".pyc", ".pyo"})
 REQUIRED_ENTRIES: Final = frozenset(
     {
         "__init__.py",
+        "brand/dark_icon.png",
+        "brand/dark_icon@2x.png",
         "brand/icon.png",
+        "brand/icon@2x.png",
+        "frontend/accessibility.js",
+        "frontend/controls.js",
+        "frontend/entity-state.js",
+        "frontend/render-state.js",
         "frontend/speedport-smart-panel.js",
+        "frontend/translations.js",
         "icons.json",
         "manifest.json",
         "strings.json",
         "translations/en.json",
+        "translations/de.json",
     }
 )
 ZIP_TIMESTAMP: Final = (1980, 1, 1, 0, 0, 0)
@@ -52,6 +61,8 @@ def _manifest(source: Path) -> dict[str, object]:
 
 def _release_files(source: Path) -> tuple[Path, ...]:
     """Return sorted runtime files while rejecting unsafe symlinks."""
+    if source.is_symlink():
+        raise ValueError("Release source must not be a symlink")
     files: list[Path] = []
     for path in source.rglob("*"):
         relative = path.relative_to(source)

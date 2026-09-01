@@ -9,10 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_component
 
 from custom_components.speedport_smart import (
     _async_reload_entry,
+    _enable_previously_integration_disabled_entities,
     _poll_interval,
     async_setup_entry,
     async_unload_entry,
@@ -30,6 +32,7 @@ from custom_components.speedport_smart.const import (
     CONF_SLOW_INTERVAL,
     CONF_USE_HTTPS,
     CONF_VERIFY_SSL,
+    CONF_WAN_INTERVAL,
     DOMAIN,
     PLATFORMS,
 )
@@ -51,6 +54,7 @@ def _entry() -> MockConfigEntry:
         options={
             CONF_ENABLE_CONTROLS: True,
             CONF_FAST_INTERVAL: 6,
+            CONF_WAN_INTERVAL: 0,
             CONF_NORMAL_INTERVAL: 31,
             CONF_SLOW_INTERVAL: 301,
         },
@@ -90,9 +94,12 @@ async def test_setup_unload_and_reload(
     hub = entry.runtime_data
     assert entry.state is ConfigEntryState.LOADED
     assert hub.controls_enabled
-    assert hub.coordinator(PollGroup.FAST).update_interval == timedelta(seconds=6)
+    assert hub.coordinator(PollGroup.FAST).update_interval == timedelta(seconds=1)
     assert hub.coordinator(PollGroup.NORMAL).update_interval == timedelta(seconds=31)
     assert hub.coordinator(PollGroup.SLOW).update_interval == timedelta(seconds=301)
+    telemetry = hub.diagnostics()["telemetry"]
+    assert telemetry["public_status"]["interval_seconds"] == 6
+    assert telemetry["wan_counters"]["mode"] == "auto"
     assert hub.available
     forward.assert_awaited_once_with(entry, PLATFORMS)
 
@@ -109,6 +116,103 @@ async def test_setup_unload_and_reload(
     with patch.object(hass.config_entries, "async_reload", AsyncMock()) as reload_entry:
         await _async_reload_entry(hass, entry)
     reload_entry.assert_awaited_once_with(entry.entry_id)
+
+
+async def test_setup_enables_only_integration_disabled_entities_without_commands(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Setup migrates old defaults without commands or overriding user choice."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    for dependency in ("frontend", "http", "panel_custom", "websocket_api"):
+        mock_component(hass, dependency)
+    registry = er.async_get(hass)
+    integration_disabled = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "old_integration_default",
+        config_entry=entry,
+        disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+    )
+    user_disabled = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "user_disabled",
+        config_entry=entry,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+
+    with (
+        patch(
+            "custom_components.speedport_smart.async_register_panel",
+            AsyncMock(),
+        ),
+        patch(
+            "custom_components.speedport_smart.SpeedportClient",
+            return_value=mock_speedport_client,
+        ),
+        patch(
+            "custom_components.speedport_smart._create_isolated_session",
+            return_value=MagicMock(),
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert registry.async_get(integration_disabled.entity_id).disabled_by is None
+    assert (
+        registry.async_get(user_disabled.entity_id).disabled_by
+        is er.RegistryEntryDisabler.USER
+    )
+    for method_name in (
+        "reconnect",
+        "execute_internet_reconnect",
+        "reboot",
+        "execute_router_reboot",
+        "wps",
+        "execute_wps_start",
+        "execute_wifi_set_enabled",
+        "set_guest_wifi",
+        "execute_guest_wifi_set_enabled",
+        "set_office_wifi",
+        "rename_client",
+        "set_client_fixed_dhcp",
+        "set_port_forward_rule",
+        "execute_port_mapping_set_enabled",
+    ):
+        getattr(mock_speedport_client, method_name).assert_not_awaited()
+
+
+def test_entity_migration_respects_disable_new_entities_preference(
+    hass: HomeAssistant,
+) -> None:
+    """Do not override the config entry's explicit disable-new preference."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_HOST: "speedport.ip"},
+        pref_disable_new_entities=True,
+    )
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    integration_disabled = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        "preference_disabled",
+        config_entry=entry,
+        disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+    )
+
+    _enable_previously_integration_disabled_entities(hass, entry)
+
+    assert (
+        registry.async_get(integration_disabled.entity_id).disabled_by
+        is er.RegistryEntryDisabler.INTEGRATION
+    )
 
 
 async def test_unload_failure_keeps_client_open(

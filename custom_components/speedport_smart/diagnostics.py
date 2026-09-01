@@ -46,6 +46,7 @@ _SECRET_KEY_PARTS = frozenset(
 _IDENTIFIER_KEY_PARTS = frozenset(
     {
         "client_mac",
+        "fingerprint",
         "hardware_address",
         "hostname",
         "imei",
@@ -56,7 +57,9 @@ _IDENTIFIER_KEY_PARTS = frozenset(
         "ssid",
     }
 )
-_IDENTIFIER_KEYS = frozenset({"device_id", "id", "router_id", "uid", "uuid"})
+_IDENTIFIER_KEYS = frozenset(
+    {"device_id", "id", "router_id", "source_row_id", "uid", "uuid"}
+)
 _CHILD_LABEL_KEYS = frozenset(
     {
         "access_point",

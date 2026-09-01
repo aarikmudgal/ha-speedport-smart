@@ -28,16 +28,17 @@ The integration domain is **speedport_smart**. The public integration name is
 - Capability-driven entity creation across different models and firmware
 - Explicit management-session status and read-only recovery
 - Bundled, responsive Home Assistant sidebar dashboard
-- Home Assistant sensors, binary sensors, device trackers, switches, buttons,
-  and firmware update entities
+- Home Assistant sensors, binary sensors, device trackers, switches, selects,
+  buttons, text controls, and firmware update entities
 - Privacy-redacted diagnostics
 - Configurable fast, normal, and slow polling groups
 
 ## Dashboard preview
 
-The bundled dashboard follows Home Assistant's dark theme and adapts to both
-desktop and mobile layouts. These captures contain only the router model and
-generic availability states; network and household identifiers are excluded.
+The bundled dashboard follows Home Assistant's active light or dark theme and
+adapts to both desktop and mobile layouts. These dark-theme captures contain
+only the router model and generic availability states; network and household
+identifiers are excluded.
 
 ### Desktop
 
@@ -54,7 +55,7 @@ The current integration code has been validated with read-only requests against:
 - **Router:** Speedport Smart 4R Typ A
 - **Firmware:** 010152.5.0.001.0
 - **Home Assistant:** 2025.12.0 or newer
-- **Language:** English
+- **Languages:** English and German
 
 Other Speedport models or firmware may expose a different set of endpoints and
 entities. An entity appears only when both the integration implements it and
@@ -159,16 +160,31 @@ in Home Assistant also removes it from the bundled panel.
 One serialized client owns encrypted JSON authentication, ToTR64 SOAP, and the
 router management lease so polling groups do not compete with each other.
 
-| Group | Default | Allowed | Typical data |
+An internal one-second scheduler checks which live data is due; a scheduler tick
+does not necessarily send a router request. Public status and WAN counters use
+separate due-time gates, so changing one cadence does not force the other to use
+the same interval.
+
+| Data path | Default | Allowed or behavior | Typical data |
 | --- | ---: | ---: | --- |
-| Fast | 5 seconds | 1–60 seconds | WAN counters, rates, utilization, live connection state |
-| Normal | 30 seconds | 15–300 seconds | Wi-Fi, clients, telephony, operational status |
-| Slow | 5 minutes | 1–60 minutes | Configuration, topology, firmware, slow-changing services |
+| Public status (Fast) | 5 seconds | 1 to 60 seconds | Browser-independent live connection state |
+| WAN counters | Auto (`0`) | Auto, or an advanced target from 1 to 60 seconds | Cumulative byte and packet counters, derived rates, utilization |
+| Normal | 30 seconds | 15 to 300 seconds | Wi-Fi, clients, telephony, operational status |
+| Slow | 5 minutes | 1 to 60 minutes | Configuration, topology, firmware, slow-changing services |
 
 Change these values from **Settings > Devices & services > Telekom Speedport
-Smart > Configure**. One-second fast polling is best-effort; five seconds is
-recommended for router reliability and usually matches the router's own counter
-refresh cadence.
+Smart > Configure**. The Fast setting controls public status only. The advanced
+WAN counter setting uses `0` for Auto or `1` to `60` for a requested target.
+Auto begins at five seconds and, after stable successful reads, tests four,
+three, two, and one second in sequence. These shorter cadences remain adaptive
+and should not be treated as independently validated for every model or firmware.
+
+If the router returns ToTR64 fault `9801` (session busy), WAN polling backs off
+and retries later instead of disturbing public, normal, or slow polling.
+Previously confirmed cumulative totals remain available with their last-success
+freshness information while retrying; derived live rates resume from valid
+samples after recovery. A manually selected WAN target keeps the same busy
+protection. Normal and Slow retain their existing intervals and data scopes.
 
 The router supplies cumulative byte counters. The integration calculates live
 rates from counter changes over monotonic time and rejects negative values,
@@ -212,6 +228,13 @@ are enabled by default so users can access their router's full confirmed
 capability set. They remain idle during setup, polling, discovery, retry,
 reload, and diagnostics.
 
+For the reviewed Speedport Smart 4R Typ A firmware, version 0.2.0 also
+stages guarded controls for Hybrid bonding, Telekom Internet privacy level,
+and 5G receiver LED behavior. Each reads the exact scalar first, submits only
+one allowlisted field, requires a positive acknowledgement, refreshes the
+independent Home Assistant state, and rejects a mismatch. These controls still
+require one user-driven change and rollback before being promoted as proven.
+
 The bundled dashboard asks for confirmation before an action. Invoking the same
 button, switch, update, service, script, or automation elsewhere in Home
 Assistant follows normal Home Assistant behavior, so review automations
@@ -221,7 +244,13 @@ Router-changing commands were not executed during read-only development
 validation. Review and test each action on your own router. The integration
 does not expose factory reset, configuration restore, credential changes, SIM
 PIN/PUK operations, secret export, firewall disable, arbitrary SOAP execution,
-or destructive device deletion.
+or destructive device deletion. Firmware-discovered forms are never turned
+into a generic editor; structured or secret operations remain blocked until
+their full typed form, identity, acknowledgement, readback, confirmation, and
+redaction contracts are proven.
+
+See [Router management support](docs/MANAGEMENT.md) for exact implemented
+requests, readback behavior, deferred areas, and permanent exclusions.
 
 ## Diagnostics and privacy
 
@@ -265,6 +294,8 @@ its recorder settings.
 - Maintainers can use the [HACS submission checklist](docs/HACS_SUBMISSION.md).
 - Protocol and lifecycle design is documented in
   [Architecture](ARCHITECTURE.md).
+- Firmware feature coverage and remaining proof requirements are tracked in
+  [Management capability matrix](docs/MANAGEMENT_CAPABILITY_MATRIX.md).
 - Changes are recorded in [Changelog](CHANGELOG.md).
 
 ## License and trademark notice

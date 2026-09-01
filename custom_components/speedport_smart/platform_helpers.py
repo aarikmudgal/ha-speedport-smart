@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN, MANAGED_DEVICE_FORM_FIELDS, MANUFACTURER
 
 if TYPE_CHECKING:
     from .coordinator import PollGroup, SpeedportDataUpdateCoordinator
@@ -16,7 +16,12 @@ if TYPE_CHECKING:
     from .hub import SpeedportHub
 
 MISSING = object()
+_WRITABLE_MANAGED_KINDS = frozenset(MANAGED_DEVICE_FORM_FIELDS)
 _MIN_PHONE_LABEL_DIGITS = 5
+_WPS_IN_PROGRESS_STATES = frozenset(
+    {"active", "connecting", "in_progress", "running", "started"}
+)
+_WPS_COMPLETED_STATES = frozenset({"configured", "success"})
 
 
 def supported(
@@ -99,6 +104,7 @@ def as_bool(raw: Any) -> bool:
             "disabled",
             "disconnected",
             "down",
+            "idle",
             "inactive",
             "no",
             "off",
@@ -107,6 +113,29 @@ def as_bool(raw: Any) -> bool:
             return False
     message = f"Unsupported boolean value: {raw!r}"
     raise ValueError(message)
+
+
+def wps_in_progress(raw: Any) -> bool:
+    """Return whether explicit WPS readback proves an active pairing window."""
+    if raw is True:
+        return True
+    return isinstance(raw, str) and raw.strip().casefold() in _WPS_IN_PROGRESS_STATES
+
+
+def wps_started_or_completed(raw: Any) -> bool:
+    """Return whether fresh readback proves WPS started or completed."""
+    return wps_in_progress(raw) or (
+        isinstance(raw, str) and raw.strip().casefold() in _WPS_COMPLETED_STATES
+    )
+
+
+def as_wps_active(raw: Any) -> bool:
+    """Map WPS lifecycle readback to the active-window binary sensor."""
+    if wps_in_progress(raw):
+        return True
+    if isinstance(raw, str) and raw.strip().casefold() in _WPS_COMPLETED_STATES:
+        return False
+    return as_bool(raw)
 
 
 def as_datetime(raw: Any) -> datetime:
@@ -203,6 +232,45 @@ def stable_id(item: Mapping[str, Any]) -> str | None:
     return None
 
 
+def manageable_client_row(item: Mapping[str, Any], *, require_fixed_dhcp: bool) -> bool:
+    """Return whether readback proves a firmware-managed client form."""
+    source_kind = item.get("source_kind")
+    if (
+        source_kind not in _WRITABLE_MANAGED_KINDS
+        or item.get("managed_form_supported") is not True
+        or not str(item.get("source_row_id", "")).strip()
+        or item.get("mac") is None
+    ):
+        return False
+    if not require_fixed_dhcp:
+        return True
+    return (
+        isinstance(item.get("fixed_dhcp"), bool)
+        and isinstance(item.get("uses_dhcp"), bool)
+        and isinstance(item.get("uses_rule"), int)
+        and not bool(item["uses_rule"])
+        and (bool(item["uses_dhcp"]) or bool(item["fixed_dhcp"]))
+        and isinstance(item.get("ipv4"), str)
+    )
+
+
+def same_managed_client_row(
+    current: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    *,
+    require_fixed_dhcp: bool,
+) -> bool:
+    """Verify that refreshed state is the same proven managed-device row."""
+    if not manageable_client_row(current, require_fixed_dhcp=require_fixed_dhcp):
+        return False
+    if current.get("source_kind") != expected.get("source_kind") or current.get(
+        "source_row_id"
+    ) != expected.get("source_row_id"):
+        return False
+    expected_mac = expected.get("mac")
+    return expected_mac is None or current.get("mac") == expected_mac
+
+
 def speedport_child_device(
     family: str,
     item: Mapping[str, Any],
@@ -213,6 +281,8 @@ def speedport_child_device(
 
     identifier = stable_id(item)
     if identifier is None:
+        return None
+    if family == "telephone_line" and _looks_like_phone_number(identifier):
         return None
 
     default_names = {

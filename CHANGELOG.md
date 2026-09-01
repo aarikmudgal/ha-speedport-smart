@@ -8,9 +8,56 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-01
+
+### Added
+
+- Evidence-backed router management controls for capabilities exposed by the
+  installed Speedport firmware.
+- Guarded Hybrid bonding, Internet privacy-level, and 5G receiver LED controls
+  for the exact reviewed Smart 4R Typ A firmware, staged for user roundtrip
+  validation.
+- German integration and dashboard translations.
+- Expanded management safety, dashboard, and protocol regression coverage.
+- Adaptive WAN-counter polling that learns the fastest proven cadence, exposes
+  its live mode and state, and backs off safely when the router reports a busy
+  telemetry lease.
+- A bounded, GET-only developer utility for sanitized UPnP/TR-064 service
+  descriptor inventory.
+
 ### Changed
 
-- Nothing yet.
+- Management controls are capability-gated, serialized, verified by state
+  readback, and grouped by function in the native dashboard.
+- Enumerated controls use native Home Assistant select entities with fixed
+  semantic options; the dashboard never receives router endpoint or payload
+  details.
+- Protected-session failures invalidate cached authenticated-family values
+  while preserving current public status, preventing stale protected data.
+- Managed-client and port-forward writes now fail closed unless fresh rows
+  match strict stable identity, complete-form, and rule-fingerprint checks.
+- Per-band Wi-Fi state now follows the firmware `wlan_band` contract: `0` for
+  both bands, `1` for 2.4 GHz only, and `2` for 5 GHz only.
+- DDNS `use_dyndns` is interpreted as enablement, while VPN `vpn_status`
+  represents profile enablement rather than tunnel connectivity.
+- Client `access_possible` is exposed only as read-only Internet-access
+  allowance and is not inverted into an unproven pause control.
+- Write controls now require both a current capability and the exact reviewed
+  Smart 4R Typ A firmware contract; unknown firmware remains read-only.
+- WAN and public-status polling use independent due times, so a failure in one
+  source cannot starve the other. Confirmed cumulative WAN counters retain
+  their last sample while live rates and interface state become unavailable.
+- Fixed controls and telemetry entities discovered after a degraded startup
+  are added without requiring an integration reload.
+- Dynamic child entities use localized names, distinct port-forwarding rules
+  retain their router-provided labels, and invalid legacy client names remain
+  safely read-only.
+
+### Security
+
+- Router discovery and automated validation remain read-only. Commands run
+  only after an explicit Home Assistant user action; unsafe credential,
+  factory-reset, restore, and destructive-delete operations remain excluded.
 
 ## [0.1.1] - 2026-08-31
 
@@ -54,6 +101,7 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Diagnostics redact credentials and sensitive network, telephony, client,
   mobile, and VPN data.
 
-[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aarikmudgal/ha-speedport-smart/releases/tag/v0.1.0

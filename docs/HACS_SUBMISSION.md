@@ -24,10 +24,13 @@ has included it.
       identifies Germany as the target country.
 - [ ] **brand/icon.png** and **brand/icon@2x.png** are valid 256 × 256 and
       512 × 512 square PNG files.
+- [ ] **brand/dark_icon.png** and **brand/dark_icon@2x.png** are valid 256 ×
+      256 and 512 × 512 square PNG files and remain legible on dark themes.
 - [ ] README, license, changelog, security policy, support guidance, code of
       conduct, and contribution guide are current.
-- [ ] CI includes tests, Ruff, mypy, translation parity, Hassfest, and the HACS
-      Action without ignored checks.
+- [ ] CI includes minimum and current Home Assistant tests, Ruff, mypy,
+      English and German translation parity, frontend syntax and behavior
+      tests, Hassfest, and the HACS Action without ignored checks.
 - [ ] Release automation produces a full GitHub release and attaches
       **speedport_smart.zip**.
 
@@ -70,46 +73,57 @@ These settings cannot be proven by files in a local checkout.
 
 ## Brand delivery
 
-The release archive includes **brand/icon.png** and **brand/icon@2x.png** in the
-integration directory. This is the supported delivery method for custom
-integrations starting with Home Assistant 2026.3, where local assets take
-precedence over the Brands CDN.
+The release archive includes the light icons **brand/icon.png** and
+**brand/icon@2x.png**, plus the dark icons **brand/dark_icon.png** and
+**brand/dark_icon@2x.png**. Home Assistant supports bundled brand assets for
+custom integrations starting with Home Assistant 2026.3. Local assets take
+precedence over the Brands CDN on those versions.
 
 The **custom_integrations** folder in **home-assistant/brands** is now legacy,
 so do not open a new Brands pull request for this custom integration. On Home
 Assistant 2025.12 through 2026.2 the integration remains functional, but its
-locally bundled icon may be shown as a generic placeholder. Verify icon
-presentation on the current Home Assistant and HACS versions during the clean
-install smoke test.
+locally bundled icon may be shown as a generic placeholder. Home Assistant's
+brand endpoint also returns a placeholder when an image is unavailable. A
+placeholder on the minimum supported Home Assistant version is therefore not
+an integration failure. Verify the light and dark bundled icons on Home
+Assistant 2026.3 or newer, and check HACS repository presentation separately
+during the clean-install smoke test.
 
 Reference: **https://developers.home-assistant.io/docs/core/integration/brand_images/**
 
-## First stable release
+## Version 0.2.0 release
 
-The current checkout already declares **0.1.0**. Bootstrap the empty GitHub
-repository with its description, topics, Issues, Actions, and workflow-token
-settings before the initial push. The first push of the initial commit to
-**main** is the intended **v0.1.0** release run; do not create a manual tag or
-release first.
+Version **v0.2.0-beta.20.1** completed the feature-branch validation cycle.
+The stable pull request promotes the identical runtime source to **v0.2.0**;
+its changelog section is dated and both source version files declare
+**0.2.0**.
 
-1. Push the initial commit and confirm **main** is the default branch.
-2. Wait for CI, HACS, and Hassfest to pass. The gated release workflow runs
-   only after that successful push workflow.
-3. Confirm GitHub shows a full stable release **v0.1.0**, not only a tag.
-4. Confirm it contains **speedport_smart.zip** and **SHA256SUMS**.
-5. Protect **main** using the now-visible successful checks, and configure tag
-   and immutable-release protections.
-6. Add the repository to HACS as a custom **Integration** and perform a clean
-   install, restart, setup, reload, upgrade, and removal smoke test.
-7. Confirm no HACS Action check uses an ignore.
+1. Push the tested <code>feat/*</code> branch only when it is ready to publish
+   a beta prerelease.
+2. Wait for the minimum Home Assistant, current Home Assistant, frontend,
+   package, Hassfest, and HACS checks to pass.
+3. Confirm the release workflow publishes a full
+   **v0.2.0-beta.RUN.ATTEMPT** prerelease containing **speedport_smart.zip**
+   and **SHA256SUMS**.
+4. Install that beta through HACS and test setup, reload, upgrade, removal,
+   light and dark themes, translations, dashboard behavior, and every exposed
+   router control.
+5. Confirm the stable pull request contains the dated **0.2.0** changelog
+   section and no unvalidated runtime changes after the approved beta.
+6. Merge only after all required checks pass. The successful **main** run must
+   publish the full stable release **v0.2.0** with both release assets.
+7. Install the stable asset through HACS and repeat the clean-install smoke
+   test before updating the default-catalog submission.
 
-If any remote check is red, fix it and publish a newer full release after all
-checks pass. Do not submit the default-catalog request against an older failing
-release.
+If any remote check is red, fix it before publishing or promoting a release.
+Do not update the default-catalog request with claims about unreleased code.
 
 ## Submit to the HACS default catalog
 
 Only the repository owner or a major contributor should submit.
+
+The catalog request may remain open during release promotion. Update it only
+after the stable **v0.2.0** release and its install smoke test are complete.
 
 1. Fork **https://github.com/hacs/default** under a personal account.
 2. Create a fresh branch from its **master** branch.
@@ -142,8 +156,9 @@ HACS scan.
 - [ ] Private vulnerability reporting is enabled and its report form opens.
 - [ ] All remote checks pass without ignores.
 - [ ] Stable release and ZIP asset install cleanly.
-- [ ] Brand presentation is confirmed on the minimum supported Home Assistant
-      version.
+- [ ] A generic brand placeholder is accepted on Home Assistant 2025.12
+      through 2026.2, and light and dark icons are confirmed on Home Assistant
+      2026.3 or newer.
 - [ ] No credentials or private router data exist in commits, Actions logs,
       issues, or release assets.
 - [ ] **hacs/default** submission PR is open and accurately completed.

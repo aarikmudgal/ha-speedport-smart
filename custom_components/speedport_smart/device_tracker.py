@@ -97,15 +97,31 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
         )
 
     @property
-    def is_connected(self) -> bool:
-        """Return whether client is currently connected."""
+    def _connected(self) -> bool | None:
+        """Return only an explicit, recognized router connectivity state."""
         item = self._item
         if item is None:
-            return False
+            return None
+        if "connected" in item:
+            raw = item["connected"]
+        elif "active" in item:
+            raw = item["active"]
+        else:
+            return None
         try:
-            return as_bool(item.get("connected", item.get("active", True)))
+            return as_bool(raw)
         except ValueError:
-            return False
+            return None
+
+    @property
+    def available(self) -> bool:
+        """Remain available only with explicit router presence readback."""
+        return super().available and self._connected is not None
+
+    @property
+    def is_connected(self) -> bool:
+        """Return whether client is currently connected."""
+        return self._connected is True
 
     @property
     def state(self) -> str:
@@ -159,5 +175,6 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
             "last_seen",
             "parental_profile",
             "internet_paused",
+            "internet_access_allowed",
         )
         return {key: item[key] for key in allowed if item.get(key) is not None}

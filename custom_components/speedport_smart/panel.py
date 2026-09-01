@@ -32,7 +32,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 2
+PANEL_SCHEMA_VERSION: Final = 6
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -62,8 +62,15 @@ _WAN_COUNTER_KEYS: Final = frozenset(
         "wan_errors_received",
         "wan_errors_sent",
         "wan_interface",
+        "wan_interface_enabled",
+        "wan_interface_status",
+        "wan_fastest_proven_interval",
+        "wan_last_sample",
         "wan_packets_received",
         "wan_packets_sent",
+        "wan_polling_interval",
+        "wan_polling_mode",
+        "wan_polling_state",
         "wan_upload_rate",
         "wan_upload_utilization",
     }
@@ -100,6 +107,8 @@ _CHILD_SECTIONS: Final = {
 _DISRUPTIVE_CONTROL_KEYS: Final = frozenset(
     {
         "firmware",
+        "hybrid_bonding",
+        "internet_privacy_level_control",
         "optimize_mesh",
         "reboot_router",
         "reconnect_internet",
@@ -109,6 +118,85 @@ _DISRUPTIVE_CONTROL_KEYS: Final = frozenset(
         "wps",
     }
 )
+_TYPED_CONTROL_KEYS: Final = {
+    "select": frozenset(
+        {
+            "internet_privacy_level_control",
+            "receiver_led_mode_control",
+        }
+    ),
+    "text": frozenset({"client_name"}),
+}
+_PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
+    # Internet privacy.
+    "internet_privacy_level": "connection_privacy",
+    # Wi-Fi radios, access policy, WPS, and schedule metadata.
+    "wifi_band_mode": "wireless_radios",
+    "wifi_2_4_encryption_mode": "wireless_2_4",
+    "wifi_2_4_visible": "wireless_2_4",
+    "wifi_5_visible": "wireless_5",
+    "wifi_allow_all_devices": "wireless_access",
+    "wifi_wps_state_code": "wireless_wps",
+    "wifi_wps_enabled": "wireless_wps",
+    "wifi_wps_disabled_by_firmware": "wireless_wps",
+    "guest_wifi_wps_enabled": "wireless_wps",
+    "wifi_schedule_mode": "wireless_schedule",
+    "wifi_schedule_daily_from": "wireless_schedule",
+    "wifi_schedule_daily_to": "wireless_schedule",
+    "wifi_guest_encryption_mode": "wireless_guest",
+    "wifi_office_encryption_mode": "wireless_office",
+    # External mobile receiver status and firmware.
+    "receiver_mode": "mobile_receiver_status",
+    "receiver_led_mode": "mobile_receiver_status",
+    "receiver_external_modem_enabled": "mobile_receiver_status",
+    "receiver_lte_enabled": "mobile_receiver_status",
+    "receiver_firmware_version": "mobile_receiver_firmware",
+    "receiver_latest_firmware": "mobile_receiver_firmware",
+    "receiver_firmware_update_time": "mobile_receiver_firmware",
+    "receiver_firmware_automatic_updates": "mobile_receiver_firmware",
+    "receiver_firmware_update_available": "mobile_receiver_firmware",
+    "receiver_firmware_update_planned": "mobile_receiver_firmware",
+    # USB, tethering, and NAS/storage summaries.
+    "usb_port_enabled": "system_usb",
+    "usb_printer_connected": "system_usb",
+    "usb_tethering_status": "system_usb_tethering",
+    "usb_tethering_enabled": "system_usb_tethering",
+    "usb_tethering_connected": "system_usb_tethering",
+    "usb_storage_devices": "system_nas",
+    "usb_storage_total": "system_nas",
+    "usb_storage_used": "system_nas",
+    "usb_storage_free": "system_nas",
+    "nas_enabled": "system_nas",
+    "nas_secure": "system_nas",
+    "nas_read_only": "system_nas",
+    # Network security configuration summaries.
+    "dns_rebind_exceptions": "system_security_dns",
+    "port_block_rules": "system_security_port_block",
+    "active_port_block_rules": "system_security_port_block",
+    "port_blocking_enabled": "system_security_port_block",
+    "qos_prioritized_clients": "system_security_qos",
+    # DECT, PBX, and VoIP summaries.
+    "dect_repeaters": "telephony_dect",
+    "dect_scan_active": "telephony_dect",
+    "dect_smart_home_enabled": "telephony_dect",
+    "pbx_configured_clients": "telephony_pbx",
+    "pbx_disconnected_clients": "telephony_pbx",
+    "pbx_registered_clients": "telephony_pbx",
+    "pbx_locked_clients": "telephony_pbx",
+    "telephony_voip_policy": "telephony_voip",
+    "telephony_providers": "telephony_voip",
+    "telephony_configured_numbers": "telephony_voip",
+    "telephony_registered_voip_numbers": "telephony_voip",
+    "telephony_inactive_voip_numbers": "telephony_voip",
+    "telephony_warning_voip_numbers": "telephony_voip",
+    "telephony_voip_possible": "telephony_voip",
+    # Router firmware and support status.
+    "firmware_update_time": "system_firmware",
+    "firmware_update_planned": "system_firmware",
+    "firmware_automatic_updates": "system_firmware",
+    "remote_support_active": "system_support",
+    "easy_support_enabled": "system_support",
+}
 
 
 class _ChildDevicePanelData(TypedDict):
@@ -243,43 +331,47 @@ def _entry_panel_data(
     hub = _loaded_hub(entry)
     model: str | None = None
     capabilities: list[str] = []
-    management: dict[str, Any] = {
-        "state": "unavailable",
-        "browser_logout_required": False,
-        "retry_after_seconds": None,
-        "last_successful_update": None,
-    }
-    access_sources = _empty_access_sources()
+    management: dict[str, Any] | None = None
+    access_sources: list[dict[str, Any]] = []
     capability_families: list[dict[str, str]] = []
     if hub is not None:
         model = hub.router_identity.model
-        capabilities = sorted(hub.capabilities)
-        management = _management_panel_data(hub)
-        access_sources, capability_families = _capability_panel_data(hub)
-
-    root_device = next(
-        (
-            device
-            for device in dr.async_entries_for_config_entry(
-                device_registry, entry.entry_id
-            )
-            if device.via_device_id is None
-        ),
-        None,
-    )
+        source_data, family_data = _capability_panel_data(hub)
+        if connection.user.is_admin:
+            capabilities = sorted(hub.capabilities)
+            management = _management_panel_data(hub)
+            access_sources = source_data
+            capability_families = family_data
+        else:
+            access_sources = _permission_scoped_access_sources(source_data, entities)
+            if any(
+                entity["translation_key"] == "management_access" for entity in entities
+            ):
+                management = _management_panel_data(hub)
 
     return {
         "entry_id": entry.entry_id,
         "title": entry.title,
         "model": model,
         "entry_state": entry.state.value,
-        "root_device_id": root_device.id if root_device is not None else None,
         "management": management,
         "access_sources": access_sources,
         "capabilities": capabilities,
         "capability_families": capability_families,
         "entities": entities,
     }
+
+
+def _permission_scoped_access_sources(
+    access_sources: list[dict[str, Any]], entities: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Expose source health only for entity families the user may read."""
+    readable_sources = {str(entity["access_source"]) for entity in entities}
+    return [
+        source
+        for source in access_sources
+        if str(source.get("id", "")) in readable_sources
+    ]
 
 
 def _loaded_hub(entry: ConfigEntry[Any]) -> SpeedportHub | None:
@@ -300,9 +392,18 @@ def _entity_panel_data(
     entity_domain = entity_id.partition(".")[0]
     translation_key = entity_entry.translation_key or entity_id.partition(".")[2]
     child_kind = child_device["kind"] if child_device is not None else None
-    supports_control = entity_domain in {"button", "switch"} or (
-        entity_domain == "update"
-        and bool(entity_entry.supported_features & UpdateEntityFeature.INSTALL)
+    protected_read_only = translation_key in _PROTECTED_READ_ONLY_GROUP_BY_KEY
+    supports_control = not protected_read_only and (
+        entity_domain in {"button", "switch"}
+        or (
+            entity_domain == "update"
+            and bool(entity_entry.supported_features & UpdateEntityFeature.INSTALL)
+        )
+        or (
+            entity_entry.translation_key is not None
+            and entity_entry.translation_key
+            in _TYPED_CONTROL_KEYS.get(entity_domain, ())
+        )
     )
     is_control = supports_control and _can_control_entity(
         connection,
@@ -333,6 +434,10 @@ def _entity_panel_data(
         "mutates_router": is_control and translation_key != "retry_protected_data",
         "disruptive": translation_key in _DISRUPTIVE_CONTROL_KEYS,
     }
+    if capability_group := _PROTECTED_READ_ONLY_GROUP_BY_KEY.get(translation_key):
+        panel_data["capability_group"] = capability_group
+    if entity_entry.name:
+        panel_data["custom_name"] = entity_entry.name
     if child_device is not None:
         panel_data["child_device"] = child_device
     return panel_data
@@ -377,7 +482,7 @@ def _section_for_entity(
         return "connection"
     if key.startswith("dsl_") or key == "dsl_connected":
         return "dsl"
-    if key.startswith(("hybrid_", "mobile_", "lte_", "5g_")):
+    if key.startswith(("hybrid_", "mobile_", "receiver_", "lte_", "5g_")):
         return "mobile"
     if key.startswith(("wifi_", "guest_wifi", "office_wifi", "mesh_", "wps")):
         return "wireless"
@@ -392,6 +497,7 @@ def _section_for_entity(
             "last_call",
             "ip_phone",
             "dect_",
+            "pbx_",
             "phonebook",
         )
     ):
@@ -418,6 +524,8 @@ def _access_source_for_entity(
     key = translation_key.casefold()
     if key in _INTEGRATION_KEYS:
         return "integration"
+    if key in _PROTECTED_READ_ONLY_GROUP_BY_KEY:
+        return "protected_json"
     if is_control:
         return "router_control"
     if child_kind is not None or entity_domain == "device_tracker":
@@ -483,12 +591,14 @@ def _management_panel_data(hub: SpeedportHub) -> dict[str, Any]:
         return {
             "state": "unavailable",
             "browser_logout_required": False,
+            "controls_available": False,
             "retry_after_seconds": None,
             "last_successful_update": None,
         }
     return {
         "state": value.get("state", "unknown"),
         "browser_logout_required": bool(value.get("browser_logout_required", False)),
+        "controls_available": hub.management_controls_available,
         "retry_after_seconds": value.get("retry_after_seconds"),
         "last_successful_update": value.get("last_successful_update"),
     }
@@ -533,7 +643,8 @@ def _capability_panel_data(
         return _empty_access_sources(), []
 
     diagnostics = hub.diagnostics()
-    endpoint_errors = diagnostics.get("endpoint_errors", {})
+    endpoint_errors = hub.endpoint_errors
+    wan_telemetry = hub.wan_counter_telemetry
     polling = diagnostics.get("polling", {})
     fast_available = _poll_group_available(polling, "fast")
     normal_available = _poll_group_available(polling, "normal")
@@ -574,11 +685,25 @@ def _capability_panel_data(
             "id": "wan_counters",
             "label": "Live WAN counters",
             "supported": wan_supported,
+            "polling_available": fast_available,
             "available": (
                 wan_supported
                 and fast_available
                 and "wan_counters" not in endpoint_errors
             ),
+            "effective_interval_seconds": wan_telemetry.get(
+                "effective_interval_seconds"
+            ),
+            "mode": wan_telemetry.get("mode"),
+            "state": wan_telemetry.get("state"),
+            "target_interval_seconds": wan_telemetry.get("target_interval_seconds"),
+            "runtime_floor_seconds": wan_telemetry.get("runtime_floor_seconds"),
+            "last_stable_interval_seconds": wan_telemetry.get(
+                "last_stable_interval_seconds"
+            ),
+            "retrying": wan_telemetry.get("retrying", False),
+            "retry_in_seconds": wan_telemetry.get("retry_in_seconds"),
+            "last_sampled_at": wan_telemetry.get("last_sampled_at"),
         },
     ]
     families = []

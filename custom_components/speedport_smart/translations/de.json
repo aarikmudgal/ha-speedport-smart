@@ -1,0 +1,441 @@
+{
+  "title": "Telekom Speedport Smart",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Mit Telekom Speedport Smart verbinden",
+        "description": "Stelle eine direkte Verbindung zu deinem Router her. Verwende vorher **Abmelden** in jeder geöffneten Speedport-Weboberfläche. Wenn du nur den Tab oder das Fenster schließt, kann die Sitzung aktiv bleiben.",
+        "data": {
+          "host": "Host",
+          "password": "Router-Passwort",
+          "use_https": "HTTPS verwenden",
+          "verify_ssl": "TLS-Zertifikat prüfen"
+        },
+        "data_description": {
+          "host": "Hostname oder IP-Adresse des Routers, normalerweise speedport.ip.",
+          "password": "Für geschützte Router-Daten mit Lesezugriff erforderlich. Das Passwort bleibt in Home Assistant.",
+          "use_https": "Verschlüsselte Router- und ToTR64-Endpunkte verwenden.",
+          "verify_ssl": "Nur aktivieren, wenn Home Assistant dem Router-Zertifikat vertraut."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Telekom Speedport Smart erneut authentifizieren",
+        "description": "Gib das aktuelle Router-Passwort ein.",
+        "data": {
+          "password": "Router-Passwort"
+        }
+      },
+      "reconfigure": {
+        "title": "Telekom Speedport Smart neu konfigurieren",
+        "description": "Ändere die lokalen Verbindungseinstellungen des Routers.",
+        "data": {
+          "host": "Host",
+          "password": "Router-Passwort",
+          "use_https": "HTTPS verwenden",
+          "verify_ssl": "TLS-Zertifikat prüfen"
+        },
+        "data_description": {
+          "host": "Hostname oder IP-Adresse des Routers.",
+          "password": "Unverändert lassen, um das aktuelle Passwort beizubehalten.",
+          "use_https": "Verschlüsselte Router- und ToTR64-Endpunkte verwenden.",
+          "verify_ssl": "Nur aktivieren, wenn Home Assistant dem Router-Zertifikat vertraut."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zum Router nicht möglich.",
+      "invalid_auth": "Der Router hat die Anmeldedaten abgelehnt.",
+      "router_busy": "Eine andere Router-Verwaltungssitzung ist aktiv. Verwende **Abmelden** in der Speedport-Weboberfläche und versuche es erneut. Wenn du nur den Tab oder das Fenster schließt, kann die Sitzung aktiv bleiben.",
+      "unknown": "Unerwarteter Fehler. Prüfe das Home-Assistant-Protokoll."
+    },
+    "abort": {
+      "already_configured": "Dieser Router ist bereits konfiguriert.",
+      "reauth_successful": "Die erneute Authentifizierung wurde abgeschlossen.",
+      "reconfigure_successful": "Die Router-Konfiguration wurde aktualisiert.",
+      "wrong_account": "Der erkannte Router stimmt nicht mit diesem Konfigurationseintrag überein."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Optionen für Telekom Speedport Smart",
+        "description": "Unterstützte Entitäten und Steuerelemente sind standardmäßig aktiviert. Nicht vorhandene Router-Funktionen werden ausgelassen. Bei vorübergehenden Lesefehlern sind die betroffenen Entitäten nicht verfügbar. Steuerelemente werden nur nach einer bewussten Benutzeraktion ausgeführt. Ein Abfrageintervall unterhalb des Aktualisierungstakts des Routers erhöht die Last, ohne die Genauigkeit zu verbessern.",
+        "data": {
+          "enable_controls": "Unterstützte Router-Steuerelemente anzeigen",
+          "fast_interval": "Schnelles Abfrageintervall",
+          "wan_interval": "Erweitertes Intervall der WAN-Zähler",
+          "normal_interval": "Normales Abfrageintervall",
+          "slow_interval": "Langsames Abfrageintervall"
+        },
+        "data_description": {
+          "enable_controls": "Nur implementierte Steuerelemente anzeigen, die dieser Router unterstützt. Sie bleiben inaktiv, bis du sie ausdrücklich verwendest, und werden nie automatisch ausgeführt.",
+          "fast_interval": "Sekunden zwischen browserunabhängigen Live-Status-Aktualisierungen (1–60). Dies steuert nicht die routerempfindlichen WAN-Zähler.",
+          "wan_interval": "0 aktiviert automatisches Lernen: Die Zähler starten mit 5 Sekunden und testen nach stabilen Abfragen sicher 4, 3, 2 und 1 Sekunde. 1–60 setzt nur für Fortgeschrittene einen Zielwert; vorübergehende Belegt-Antworten lösen weiterhin automatisch einen Backoff aus.",
+          "normal_interval": "Sekunden zwischen Aktualisierungen von Status, WLAN, Geräten und Telefonie.",
+          "slow_interval": "Sekunden zwischen Aktualisierungen von Konfiguration, Topologie und Firmware."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "controls_disabled": {
+      "message": "Router-Steuerelemente sind in den Optionen der Integration Telekom Speedport Smart deaktiviert."
+    },
+    "command_unsupported": {
+      "message": "Dieser Router unterstützt die angeforderte Aktion nicht."
+    },
+    "command_failed": {
+      "message": "Der Router konnte die angeforderte Aktion nicht ausführen. Prüfe das Home-Assistant-Protokoll, bevor du es erneut versuchst."
+    },
+    "command_verification_failed": {
+      "message": "Die Router-Aktion wurde gesendet, ihr Ergebniszustand konnte jedoch nicht bestätigt werden. Prüfe den Router-Zustand, bevor du es erneut versuchst."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wan_bytes_received": { "name": "Empfangene WAN-Daten" },
+      "wan_bytes_sent": { "name": "Gesendete WAN-Daten" },
+      "wan_packets_received": { "name": "Empfangene WAN-Pakete" },
+      "wan_packets_sent": { "name": "Gesendete WAN-Pakete" },
+      "wan_errors_received": { "name": "WAN-Empfangsfehler" },
+      "wan_errors_sent": { "name": "WAN-Sendefehler" },
+      "wan_discarded_packets_received": { "name": "Verworfene empfangene WAN-Pakete" },
+      "wan_discarded_packets_sent": { "name": "Verworfene gesendete WAN-Pakete" },
+      "wan_download_rate": { "name": "Downloadrate" },
+      "wan_upload_rate": { "name": "Uploadrate" },
+      "wan_download_utilization": { "name": "Download-Auslastung" },
+      "wan_upload_utilization": { "name": "Upload-Auslastung" },
+      "wan_download_capacity": { "name": "Download-Kapazität" },
+      "wan_upload_capacity": { "name": "Upload-Kapazität" },
+      "internet_uptime": { "name": "Internet-Betriebszeit" },
+      "wan_interface": { "name": "WAN-Schnittstelle" },
+      "wan_interface_status": { "name": "WAN-Schnittstellenstatus" },
+      "wan_polling_mode": {
+        "name": "WAN-Abfragemodus",
+        "state": { "auto": "Automatisch", "manual": "Manuell" }
+      },
+      "wan_polling_interval": { "name": "WAN-Abfrageintervall" },
+      "wan_polling_state": {
+        "name": "WAN-Abfragestatus",
+        "state": {
+          "learning": "Lernend",
+          "stable": "Stabil",
+          "retrying": "Erneuter Versuch",
+          "limited": "Begrenzt"
+        }
+      },
+      "wan_fastest_proven_interval": { "name": "Schnellstes bestätigtes WAN-Intervall" },
+      "wan_last_sample": { "name": "Letzte erfolgreiche WAN-Messung" },
+      "wan_mtu": { "name": "WAN-MTU" },
+      "public_ipv4": { "name": "Öffentliche IPv4-Adresse" },
+      "public_ipv6_prefix": { "name": "Öffentliches IPv6-Präfix" },
+      "internet_ip_stack": { "name": "Internet-IP-Stack" },
+      "internet_privacy_level": {
+        "name": "Internet privacy level",
+        "state": {
+          "off": "Off",
+          "level_1": "Level 1",
+          "level_2": "Level 2"
+        }
+      },
+      "dsl_downstream": { "name": "DSL-Downstream" },
+      "dsl_upstream": { "name": "DSL-Upstream" },
+      "dsl_attainable_downstream": { "name": "Erreichbarer DSL-Downstream" },
+      "dsl_attainable_upstream": { "name": "Erreichbarer DSL-Upstream" },
+      "dsl_snr_downstream": { "name": "DSL-Downstream-SNR" },
+      "dsl_snr_upstream": { "name": "DSL-Upstream-SNR" },
+      "dsl_attenuation_downstream": { "name": "DSL-Downstream-Dämpfung" },
+      "dsl_attenuation_upstream": { "name": "DSL-Upstream-Dämpfung" },
+      "dsl_crc_errors": { "name": "DSL-CRC-Fehler" },
+      "dsl_fec_errors": { "name": "DSL-FEC-Korrekturen" },
+      "dsl_error_seconds": { "name": "DSL-Fehlersekunden" },
+      "dsl_profile": { "name": "DSL-Profil" },
+      "mobile_network_type": { "name": "Mobilfunknetztyp" },
+      "mobile_operator": { "name": "Mobilfunkanbieter" },
+      "mobile_rsrp": { "name": "Mobilfunk-RSRP" },
+      "mobile_rsrq": { "name": "Mobilfunk-RSRQ" },
+      "mobile_sinr": { "name": "Mobilfunk-SINR" },
+      "mobile_rssi": { "name": "Mobilfunk-RSSI" },
+      "mobile_band": { "name": "Mobilfunkband" },
+      "mobile_frequency": { "name": "Mobilfunkfrequenz" },
+      "mobile_cell_id": { "name": "Mobilfunk-Zellen-ID" },
+      "receiver_mode": { "name": "Receiver mode" },
+      "receiver_led_mode": {
+        "name": "Receiver LED mode",
+        "state": {
+          "use_leds": "Use LEDs",
+          "off_after_timeout": "Switch off after timeout",
+          "disabled": "Do not use LEDs"
+        }
+      },
+      "receiver_firmware_version": { "name": "Receiver firmware version" },
+      "receiver_latest_firmware": { "name": "Latest receiver firmware" },
+      "receiver_firmware_update_time": { "name": "Receiver firmware update time" },
+      "lte_tunnel_bytes_received": { "name": "Empfangene LTE-Tunneldaten" },
+      "lte_tunnel_bytes_sent": { "name": "Gesendete LTE-Tunneldaten" },
+      "wifi_2_4_clients": { "name": "Geräte im 2,4-GHz-WLAN" },
+      "wifi_5_clients": { "name": "Geräte im 5-GHz-WLAN" },
+      "wifi_guest_clients": { "name": "Geräte im Gäste-WLAN" },
+      "wifi_2_4_channel": { "name": "2,4-GHz-WLAN-Kanal" },
+      "wifi_5_channel": { "name": "5-GHz-WLAN-Kanal" },
+      "wifi_band_mode": {
+        "name": "Wi-Fi band mode",
+        "state": {
+          "both_bands": "Both bands",
+          "2_4_ghz_only": "2.4 GHz only",
+          "5_ghz_only": "5 GHz only"
+        }
+      },
+      "wifi_wps_state_code": {
+        "name": "WPS state",
+        "state": {
+          "failed": "Failed",
+          "successful": "Successful",
+          "in_progress": "In progress"
+        }
+      },
+      "wifi_2_4_encryption_mode": { "name": "2.4 GHz Wi-Fi encryption mode" },
+      "wifi_guest_encryption_mode": { "name": "Guest Wi-Fi encryption mode" },
+      "wifi_office_encryption_mode": { "name": "Office Wi-Fi encryption mode" },
+      "wifi_schedule_mode": {
+        "name": "Wi-Fi schedule mode",
+        "state": {
+          "disabled": "Disabled",
+          "daily": "Daily",
+          "weekly": "Weekly"
+        }
+      },
+      "wifi_schedule_daily_from": { "name": "Wi-Fi schedule starts" },
+      "wifi_schedule_daily_to": { "name": "Wi-Fi schedule ends" },
+      "mesh_nodes": { "name": "Mesh-Knoten" },
+      "mesh_clients": { "name": "Mesh-Geräte" },
+      "connected_clients": { "name": "Verbundene Geräte" },
+      "dhcp_leases": { "name": "DHCP-Leases" },
+      "lan_linked_ports": { "name": "Verbundene LAN-Ports" },
+      "port_forward_rules": { "name": "Portweiterleitungsregeln" },
+      "upnp_mappings": { "name": "UPnP-Zuordnungen" },
+      "ddns_provider": { "name": "Anbieter für dynamisches DNS" },
+      "ddns_last_update": { "name": "Letzte Aktualisierung von dynamischem DNS" },
+      "vpn_peers": { "name": "VPN-Gegenstellen" },
+      "vpn_connected_peers": { "name": "Verbundene VPN-Gegenstellen" },
+      "vpn_type": { "name": "VPN-Typ" },
+      "parental_profiles": { "name": "Jugendschutzprofile" },
+      "parental_blocked_clients": { "name": "Gesperrte Geräte" },
+      "dns_rebind_exceptions": { "name": "DNS rebind exceptions" },
+      "port_block_rules": { "name": "Port-blocking rules" },
+      "active_port_block_rules": { "name": "Active port-blocking rules" },
+      "qos_prioritized_clients": { "name": "Prioritized clients" },
+      "telephone_numbers_registered": { "name": "Registrierte Rufnummern" },
+      "telephony_voip_policy": {
+        "name": "VoIP security level",
+        "state": {
+          "off": "Off",
+          "level_1": "Level 1",
+          "level_2": "Level 2"
+        }
+      },
+      "telephony_providers": { "name": "Telephony providers" },
+      "telephony_configured_numbers": { "name": "Configured telephone numbers" },
+      "telephony_registered_voip_numbers": { "name": "Registered VoIP numbers" },
+      "telephony_inactive_voip_numbers": { "name": "Inactive VoIP numbers" },
+      "telephony_warning_voip_numbers": { "name": "VoIP numbers with warnings" },
+      "missed_calls": { "name": "Verpasste Anrufe" },
+      "last_call": { "name": "Letzter Anruf" },
+      "ip_phones": { "name": "IP-Telefone" },
+      "pbx_configured_clients": { "name": "Configured telephone-system clients" },
+      "pbx_disconnected_clients": { "name": "Disconnected telephone-system clients" },
+      "pbx_registered_clients": { "name": "Registered telephone-system clients" },
+      "pbx_locked_clients": { "name": "Locked telephone-system clients" },
+      "dect_handsets": { "name": "DECT-Mobilteile" },
+      "dect_repeaters": { "name": "DECT repeaters" },
+      "phonebooks": { "name": "Telefonbücher" },
+      "usb_devices": { "name": "USB-Geräte" },
+      "usb_tethering_status": { "name": "USB tethering status" },
+      "usb_storage_devices": { "name": "USB storage devices" },
+      "usb_storage_total": { "name": "USB storage capacity" },
+      "usb_storage_used": { "name": "USB storage used" },
+      "usb_storage_free": { "name": "USB storage free" },
+      "system_uptime": { "name": "System-Betriebszeit" },
+      "system_temperature": { "name": "Systemtemperatur" },
+      "system_cpu": { "name": "CPU-Auslastung" },
+      "system_memory": { "name": "Speicherauslastung" },
+      "firmware_update_time": { "name": "Firmware update time" },
+      "request_latency": { "name": "Anfragelatenz" },
+      "update_failures": { "name": "Aktualisierungsfehler" },
+      "last_successful_update": { "name": "Letzte erfolgreiche Aktualisierung" },
+      "backhaul": { "name": "Backhaul" },
+      "band": { "name": "Funkband" },
+      "battery_level": { "name": "Akkustand" },
+      "bytes_received": { "name": "Empfangene Daten" },
+      "bytes_sent": { "name": "Gesendete Daten" },
+      "call_state": { "name": "Anrufstatus" },
+      "capacity": { "name": "Speicherkapazität" },
+      "cell_id": { "name": "Zellen-ID" },
+      "download_rate": { "name": "Download-Durchsatz" },
+      "free_space": { "name": "Freier Speicher" },
+      "frequency": { "name": "Frequenz" },
+      "last_seen": { "name": "Zuletzt gesehen" },
+      "link_speed": { "name": "Verbindungsgeschwindigkeit" },
+      "media_type": { "name": "Medientyp" },
+      "network_type": { "name": "Netzwerktyp" },
+      "operator": { "name": "Netzbetreiber" },
+      "radio_band": { "name": "Funkband" },
+      "role": { "name": "Mesh-Rolle" },
+      "rsrp": { "name": "RSRP" },
+      "rsrq": { "name": "RSRQ" },
+      "rssi": { "name": "RSSI" },
+      "signal_quality": { "name": "Signalqualität" },
+      "signal_strength": { "name": "Signalstärke" },
+      "sinr": { "name": "SINR" },
+      "storage_usage": { "name": "Speicherauslastung" },
+      "temperature": { "name": "Temperatur" },
+      "upload_rate": { "name": "Upload-Durchsatz" },
+      "uptime": { "name": "Betriebszeit" },
+      "used_space": { "name": "Belegter Speicher" },
+      "wifi_channel": { "name": "WLAN-Kanal" },
+      "management_access": {
+        "name": "Verwaltungszugriff",
+        "state": {
+          "available": "Verfügbar",
+          "blocked": "Sitzung blockiert",
+          "locked": "Vorübergehend gesperrt",
+          "other_session": "Browser-Sitzung aktiv",
+          "recovering": "Erneuter Versuch",
+          "unavailable": "Nicht verfügbar",
+          "unknown": "Unbekannt"
+        }
+      }
+    },
+    "binary_sensor": {
+      "internet_connected": { "name": "Internet" },
+      "dsl_connected": { "name": "DSL" },
+      "hybrid_connected": { "name": "Hybrid" },
+      "hybrid_enabled": { "name": "Hybrid-Dienst" },
+      "hybrid_dsl_tunnel": { "name": "Hybrid-DSL-Tunnel" },
+      "hybrid_lte_tunnel": { "name": "Hybrid-LTE-Tunnel" },
+      "mobile_connected": { "name": "Mobilfunknetz" },
+      "wifi_2_4_enabled": { "name": "2,4-GHz-WLAN" },
+      "wifi_5_enabled": { "name": "5-GHz-WLAN" },
+      "guest_wifi_enabled": { "name": "Gäste-WLAN" },
+      "office_wifi_enabled": { "name": "Office-WLAN" },
+      "wifi_wps_active": { "name": "WPS" },
+      "wifi_wps_enabled": { "name": "WPS enabled" },
+      "wifi_wps_disabled_by_firmware": { "name": "WPS disabled by firmware" },
+      "guest_wifi_wps_enabled": { "name": "Guest Wi-Fi WPS" },
+      "wifi_allow_all_devices": { "name": "Allow all Wi-Fi devices" },
+      "wifi_2_4_visible": { "name": "2.4 GHz Wi-Fi name visible" },
+      "wifi_5_visible": { "name": "5 GHz Wi-Fi name visible" },
+      "wifi_mac_filter_enabled": { "name": "WLAN-MAC-Filter" },
+      "wifi_schedule_enabled": { "name": "WLAN-Zeitsteuerung" },
+      "mesh_enabled": { "name": "Mesh" },
+      "dhcp_enabled": { "name": "DHCP-Server" },
+      "upnp_enabled": { "name": "UPnP" },
+      "port_forwarding_enabled": { "name": "Portweiterleitung" },
+      "ddns_enabled": { "name": "Dienst für dynamisches DNS" },
+      "ddns_connected": { "name": "Dynamisches DNS" },
+      "vpn_connected": { "name": "VPN" },
+      "vpn_enabled": { "name": "VPN-Dienst" },
+      "parental_controls_enabled": { "name": "Jugendschutz" },
+      "telephony_registered": { "name": "Telefonie" },
+      "active_call": { "name": "Aktiver Anruf" },
+      "dect_enabled": { "name": "DECT" },
+      "dect_scan_active": { "name": "DECT scan" },
+      "dect_smart_home_enabled": { "name": "DECT smart home" },
+      "pbx_enabled": { "name": "Telefonanlage" },
+      "telephony_voip_possible": { "name": "VoIP encryption available" },
+      "firewall_enabled": { "name": "Firewall" },
+      "dns_rebind_protection": { "name": "DNS-Rebind-Schutz" },
+      "remote_management": { "name": "Fernverwaltung" },
+      "usb_connected": { "name": "USB-Gerät" },
+      "usb_port_enabled": { "name": "USB port" },
+      "usb_tethering_enabled": { "name": "USB tethering" },
+      "usb_tethering_connected": { "name": "USB tethering connected" },
+      "usb_printer_connected": { "name": "USB printer connected" },
+      "nas_enabled": { "name": "NAS" },
+      "nas_secure": { "name": "Secure NAS access" },
+      "nas_read_only": { "name": "NAS read-only access" },
+      "port_blocking_enabled": { "name": "Port blocking" },
+      "media_server_enabled": { "name": "Medienserver" },
+      "wan_interface_enabled": { "name": "WAN-Schnittstelle" },
+      "firmware_update_available": { "name": "Firmware-Aktualisierung verfügbar" },
+      "firmware_update_planned": { "name": "Firmware update planned" },
+      "firmware_automatic_updates": { "name": "Automatic firmware updates" },
+      "receiver_external_modem_enabled": { "name": "External receiver enabled" },
+      "receiver_lte_enabled": { "name": "Receiver LTE enabled" },
+      "receiver_firmware_automatic_updates": { "name": "Automatic receiver firmware updates" },
+      "receiver_firmware_update_available": { "name": "Receiver firmware update available" },
+      "receiver_firmware_update_planned": { "name": "Receiver firmware update planned" },
+      "remote_support_active": { "name": "Remote support active" },
+      "easy_support_enabled": { "name": "EasySupport" },
+      "charging": { "name": "Wird geladen" },
+      "connected": { "name": "Verbunden" },
+      "enabled": { "name": "Aktiviert" },
+      "internet_access_allowed": { "name": "Internetzugriff erlaubt" },
+      "internet_paused": { "name": "Internetzugriff pausiert" },
+      "mounted": { "name": "Eingebunden" },
+      "registered": { "name": "Registriert" },
+      "router_problem": { "name": "Router-Problem" }
+    },
+    "switch": {
+      "hybrid_bonding": { "name": "Hybrid-Bündelung" },
+      "wifi": { "name": "WLAN" },
+      "guest_wifi": { "name": "Gäste-WLAN" },
+      "office_wifi": { "name": "Office-WLAN" },
+      "upnp": { "name": "UPnP" },
+      "ddns": { "name": "Dynamisches DNS" },
+      "vpn": { "name": "VPN" },
+      "parental_controls": { "name": "Jugendschutz" },
+      "media_server": { "name": "Medienserver" },
+      "port_forward_rule": { "name": "Portweiterleitungsregel" },
+      "client_internet_access": { "name": "Internetzugriff" },
+      "client_fixed_dhcp": { "name": "Feste DHCP-Reservierung" }
+    },
+    "select": {
+      "internet_privacy_level_control": {
+        "name": "Internet-Datenschutzstufe",
+        "state": {
+          "off": "Aus",
+          "level_1": "Stufe 1",
+          "level_2": "Stufe 2"
+        }
+      },
+      "receiver_led_mode_control": {
+        "name": "Empfänger-LED-Modus",
+        "state": {
+          "use_leds": "LEDs verwenden",
+          "off_after_timeout": "Nach Zeitüberschreitung ausschalten",
+          "disabled": "LEDs nicht verwenden"
+        }
+      }
+    },
+    "text": {
+      "client_name": { "name": "Name" }
+    },
+    "button": {
+      "retry_protected_data": { "name": "Geschützte Daten erneut abrufen (zuerst vom Router abmelden)" },
+      "wps": { "name": "WPS starten" },
+      "reconnect_internet": { "name": "Internet neu verbinden" },
+      "restart_dsl": { "name": "DSL neu starten" },
+      "reboot_router": { "name": "Router neu starten" },
+      "update_ddns": { "name": "Dynamisches DNS aktualisieren" },
+      "restart_vpn": { "name": "VPN neu starten" },
+      "optimize_mesh": { "name": "Mesh optimieren" }
+    },
+    "update": {
+      "firmware": { "name": "Firmware" }
+    }
+  },
+  "issues": {
+    "management_session_blocked": {
+      "title": "Eine Speedport-Websitzung blockiert geschützte Router-Daten",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Von der Speedport-Weboberfläche abmelden",
+            "description": "Verwende zuerst **Abmelden** in der Speedport-Weboberfläche. Wenn du nur den Browser-Tab oder das Fenster schließt, kann die Verwaltungssitzung aktiv bleiben. Wähle anschließend **Senden**, um Telekom Speedport Smart neu zu laden und den Zugriff erneut zu versuchen. Die Browser-Sitzung wird dabei nicht zwangsweise getrennt."
+          }
+        }
+      }
+    }
+  }
+}

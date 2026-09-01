@@ -19,6 +19,7 @@ from custom_components.speedport_smart.platform_helpers import (
     child_device_info,
     collection,
     count_items,
+    speedport_child_device,
     stable_id,
     supported,
     value,
@@ -142,6 +143,17 @@ def test_child_device_requires_stable_identity() -> None:
     assert info["identifiers"] == {(DOMAIN, "mesh:node-1")}
     assert info["via_device"] == (DOMAIN, "router-1")
     assert info["name"] == "Living room"
+
+
+def test_telephone_line_child_rejects_phone_number_identity() -> None:
+    """Defense in depth keeps subscriber numbers out of device identifiers."""
+    assert (
+        speedport_child_device(
+            "telephone_line",
+            {"id": "+49 30 123456", "registered": True},
+        )
+        is None
+    )
 
 
 def test_collection_rejects_scalar_root() -> None:

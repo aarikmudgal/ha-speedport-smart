@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final
+from typing import Any, Final
 from urllib.parse import urlencode, urlsplit
 
 import aiohttp
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
+from ..const import (
+    MANAGED_DEVICE_FORM_FIELDS,
+)
+from ..identity import port_forward_rule_fingerprint, valid_device_name
 from ..models import (
     CapabilityReport,
     DslMetrics,
@@ -34,6 +36,7 @@ from ..models import (
 from .codec import DEFAULT_KEY, decode_payload, encode_payload, is_encrypted_payload
 from .exceptions import (
     SpeedportAuthenticationError,
+    SpeedportCommandRejectedError,
     SpeedportConnectionError,
     SpeedportDecodeError,
     SpeedportError,
@@ -105,6 +108,46 @@ _DSL_PARAMETER_NAMES: Final = (
     f"Device.DSL.Line.{_DSL_LINE_INDEX}.DownstreamAttenuation",
     f"Device.DSL.Line.{_DSL_LINE_INDEX}.UpstreamAttenuation",
 )
+_DEVICE_LIST_ENDPOINT: Final = "data/DeviceList.json"
+_DEVICE_LIST_REFERER: Final = "html/content/network/devices.html"
+_PORT_FORWARD_ENDPOINT: Final = "data/PortuwMain.json"
+_PORT_FORWARD_REFERER: Final = "html/content/internet/portforwarding.html"
+_PORT_FORWARD_GROUPS: Final = frozenset({"addportuw", "port_forward_rules", "portuw"})
+_INTERNET_PRIVACY_ENDPOINT: Final = "data/IPPrivacy.json"
+_INTERNET_PRIVACY_REFERER: Final = "html/content/internet/con_privacy.html"
+_LTE_MODE_ENDPOINT: Final = "data/LTE.json"
+_LTE_MODE_REFERER: Final = "html/content/internet/lte_mode.html"
+_THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
+_BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
+
+
+@dataclass(frozen=True, slots=True)
+class _ManagedDeviceForm:
+    """One firmware-proven managed-device row form."""
+
+    endpoint: str
+    fields: frozenset[str]
+
+
+_MANAGED_DEVICE_FORMS: Final[Mapping[str, _ManagedDeviceForm]] = MappingProxyType(
+    {
+        "addmdevice": _ManagedDeviceForm(
+            "data/ManagedDevice.json", MANAGED_DEVICE_FORM_FIELDS["addmdevice"]
+        ),
+        "addmlandevice": _ManagedDeviceForm(
+            "data/ManagedLANDevice.json",
+            MANAGED_DEVICE_FORM_FIELDS["addmlandevice"],
+        ),
+        "addmwlandevice": _ManagedDeviceForm(
+            "data/ManagedWLAN2Device.json",
+            MANAGED_DEVICE_FORM_FIELDS["addmwlandevice"],
+        ),
+        "addmwlan5device": _ManagedDeviceForm(
+            "data/ManagedWLAN5Device.json",
+            MANAGED_DEVICE_FORM_FIELDS["addmwlan5device"],
+        ),
+    }
+)
 
 
 def _endpoint(
@@ -172,6 +215,13 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "wifi_configuration": (
                 _endpoint(
                     "wifi_configuration",
+                    "data/WLANBasicAss.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_name_enc.html",
+                    evidence_keys=("wlan", "ssid", "enc", "visible"),
+                ),
+                _endpoint(
+                    "wifi_configuration",
                     "data/WLANSettings.json",
                     authenticated=True,
                     referer="html/content/network/wlan_settings.html",
@@ -181,17 +231,17 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "lan": (
                 _endpoint(
                     "lan",
-                    "data/DeviceList.json",
-                    authenticated=True,
-                    referer="html/content/network/devices.html",
-                    evidence_keys=("device", "client", "host", "lan"),
-                ),
-                _endpoint(
-                    "lan",
                     "data/LAN.json",
                     authenticated=True,
                     referer="html/content/network/lan.html",
                     evidence_keys=("lan", "dhcp", "subnet"),
+                ),
+                _endpoint(
+                    "lan",
+                    "data/DeviceList.json",
+                    authenticated=True,
+                    referer="html/content/network/devices.html",
+                    evidence_keys=("device", "client", "host", "lan"),
                 ),
             ),
             "clients": (
@@ -200,13 +250,6 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/DeviceList.json",
                     authenticated=True,
                     referer="html/content/network/devices.html",
-                    evidence_keys=("device", "client", "host"),
-                ),
-                _endpoint(
-                    "clients",
-                    "data/DeviceList.json",
-                    authenticated=True,
-                    referer="html/content/network/home_network.html",
                     evidence_keys=("device", "client", "host"),
                 ),
                 _endpoint(
@@ -229,8 +272,17 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "ip",
                     "data/IPData.json",
                     authenticated=True,
-                    referer="html/content/internet/connection.html",
+                    referer="html/content/internet/con_ipdata.html",
                     evidence_keys=("public_ip", "gateway", "dns", "ipv"),
+                ),
+            ),
+            "connection_privacy": (
+                _endpoint(
+                    "connection_privacy",
+                    "data/IPPrivacy.json",
+                    authenticated=True,
+                    referer="html/content/internet/con_privacy.html",
+                    evidence_keys=("privacy", "lan_privacy_policy"),
                 ),
             ),
             "telephony": (
@@ -247,7 +299,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "system",
                     "data/Router.json",
                     authenticated=True,
-                    referer="html/content/overview/index.html",
+                    referer="html/content/index.html",
                     evidence_keys=("router", "firmware", "serial", "uptime"),
                 ),
             ),
@@ -256,7 +308,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "ip_phones",
                     "data/IPPhoneHandler.json",
                     authenticated=True,
-                    referer="html/content/phone/ip_phone.html",
+                    referer="html/content/phone/phone_internet.html",
                     evidence_keys=("ip_phone", "ipphone", "sip"),
                 ),
             ),
@@ -269,14 +321,25 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("wps",),
                 ),
             ),
-            "port_forwarding": (
+            "wifi_access": (
                 _endpoint(
-                    "port_forwarding",
-                    "data/SecureStatus.json",
+                    "wifi_access",
+                    "data/WLANAccess.json",
                     authenticated=True,
-                    referer="html/content/overview/index.html",
-                    evidence_keys=("internet_ports_active",),
+                    referer="html/content/network/wlan_access.html",
+                    evidence_keys=("wlan", "wps", "access"),
                 ),
+            ),
+            "wifi_environment": (
+                _endpoint(
+                    "wifi_environment",
+                    "data/WLANEnviron.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_environ.html",
+                    evidence_keys=("wlan", "ssid", "channel", "environment"),
+                ),
+            ),
+            "port_forwarding": (
                 _endpoint(
                     "port_forwarding",
                     "data/PortuwMain.json",
@@ -284,14 +347,28 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     referer="html/content/internet/portforwarding.html",
                     evidence_keys=("portuw", "forward", "mapping"),
                 ),
+                _endpoint(
+                    "port_forwarding",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                    evidence_keys=("internet_ports_active",),
+                ),
             ),
             "mobile": (
+                _endpoint(
+                    "mobile",
+                    "data/LTE.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("mobile", "lte", "5g", "ex5g"),
+                ),
                 _endpoint(
                     "mobile",
                     "data/SecureStatus.json",
                     authenticated=True,
                     referer="html/content/overview/index.html",
-                    evidence_keys=("mobile", "lte", "5g", "ex5g", "webnwalk"),
+                    evidence_keys=("mobile", "lte", "5g", "webnwalk"),
                 ),
                 _endpoint(
                     "mobile",
@@ -304,10 +381,17 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "lte": (
                 _endpoint(
                     "lte",
+                    "data/LTE.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("lte", "ex5g_signal_lte", "webnwalk"),
+                ),
+                _endpoint(
+                    "lte",
                     "data/SecureStatus.json",
                     authenticated=True,
                     referer="html/content/overview/index.html",
-                    evidence_keys=("lte", "ex5g_signal_lte", "webnwalk"),
+                    evidence_keys=("lte", "webnwalk"),
                 ),
                 _endpoint(
                     "lte",
@@ -318,6 +402,13 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                 ),
             ),
             "5g": (
+                _endpoint(
+                    "5g",
+                    "data/LTE.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("5g", "ex5g"),
+                ),
                 _endpoint(
                     "5g",
                     "data/SecureStatus.json",
@@ -336,6 +427,13 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "receiver": (
                 _endpoint(
                     "receiver",
+                    "data/LTE.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("receiver", "ex5g", "external_5g"),
+                ),
+                _endpoint(
+                    "receiver",
                     "data/SecureStatus.json",
                     authenticated=True,
                     referer="html/content/overview/index.html",
@@ -345,13 +443,54 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "mesh": (
                 _endpoint(
                     "mesh",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                    evidence_keys=("mesh",),
+                ),
+                _endpoint(
+                    "mesh",
                     "data/Mesh.json",
                     authenticated=True,
                     referer="html/content/network/mesh.html",
                     evidence_keys=("mesh",),
                 ),
             ),
+            "mesh_firmware": (
+                _endpoint(
+                    "mesh_firmware",
+                    "data/FirmwareUpdateMesh.json",
+                    authenticated=True,
+                    referer="html/content/config/check_for_updates_mesh.html",
+                    evidence_keys=("mesh", "firmware", "fwupd", "update"),
+                ),
+            ),
+            "mesh_update": (
+                _endpoint(
+                    "mesh_update",
+                    "data/FwCheckForUpdateMesh.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                    evidence_keys=("mesh", "firmware", "fwupd", "update"),
+                ),
+            ),
+            "mesh_reboot_status": (
+                _endpoint(
+                    "mesh_reboot_status",
+                    "data/RebootMesh.json",
+                    authenticated=True,
+                    referer="html/content/config/problem_handling_mesh.html",
+                    evidence_keys=("mesh", "reboot", "reset", "device"),
+                ),
+            ),
             "dhcp": (
+                _endpoint(
+                    "dhcp",
+                    "data/LAN.json",
+                    authenticated=True,
+                    referer="html/content/network/dhcp.html",
+                    evidence_keys=("dhcp", "lease", "reserved"),
+                ),
                 _endpoint(
                     "dhcp",
                     "data/DeviceList.json",
@@ -359,28 +498,21 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     referer="html/content/network/devices.html",
                     evidence_keys=("dhcp", "lease", "reserved", "device"),
                 ),
-                _endpoint(
-                    "dhcp",
-                    "data/LAN.json",
-                    authenticated=True,
-                    referer="html/content/network/lan.html",
-                    evidence_keys=("dhcp", "lease", "reserved"),
-                ),
             ),
             "nat": (
-                _endpoint(
-                    "nat",
-                    "data/SecureStatus.json",
-                    authenticated=True,
-                    referer="html/content/overview/index.html",
-                    evidence_keys=("internet_ports_active",),
-                ),
                 _endpoint(
                     "nat",
                     "data/PortuwMain.json",
                     authenticated=True,
                     referer="html/content/internet/portforwarding.html",
                     evidence_keys=("portuw", "forward", "mapping", "nat"),
+                ),
+                _endpoint(
+                    "nat",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                    evidence_keys=("internet_ports_active",),
                 ),
                 _endpoint(
                     "nat",
@@ -399,7 +531,23 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("upnp", "upnp_igd"),
                 ),
             ),
+            "port_blocking": (
+                _endpoint(
+                    "port_blocking",
+                    "data/ExtendedRules.json",
+                    authenticated=True,
+                    referer="html/content/internet/portblocking.html",
+                    evidence_keys=("extended", "portblock", "blocked", "rule"),
+                ),
+            ),
             "ddns": (
+                _endpoint(
+                    "ddns",
+                    "data/DynDNS.json",
+                    authenticated=True,
+                    referer="html/content/internet/dyn_dns.html",
+                    evidence_keys=("ddns", "dyndns", "dynamic_dns"),
+                ),
                 _endpoint(
                     "ddns",
                     "data/SecureStatus.json",
@@ -410,20 +558,6 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                 _endpoint(
                     "ddns",
                     "data/DDNS.json",
-                    authenticated=True,
-                    referer="html/content/internet/dynamic_dns.html",
-                    evidence_keys=("ddns", "dyndns", "dynamic_dns"),
-                ),
-                _endpoint(
-                    "ddns",
-                    "data/DynDNS.json",
-                    authenticated=True,
-                    referer="html/content/internet/dynamic_dns.html",
-                    evidence_keys=("ddns", "dyndns", "dynamic_dns"),
-                ),
-                _endpoint(
-                    "ddns",
-                    "data/Router.json",
                     authenticated=True,
                     referer="html/content/internet/dynamic_dns.html",
                     evidence_keys=("ddns", "dyndns", "dynamic_dns"),
@@ -444,6 +578,13 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                 ),
                 _endpoint(
                     "vpn",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+                _endpoint(
+                    "vpn",
                     "data/WireGuard.json",
                     authenticated=True,
                     referer="html/content/internet/wireguard.html",
@@ -454,13 +595,6 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/Wireguard.json",
                     authenticated=True,
                     referer="html/content/internet/wireguard.html",
-                    evidence_keys=("wireguard", "vpn", "peer"),
-                ),
-                _endpoint(
-                    "vpn",
-                    "data/VPN.json",
-                    authenticated=True,
-                    referer="html/content/internet/vpn.html",
                     evidence_keys=("wireguard", "vpn", "peer"),
                 ),
             ),
@@ -501,9 +635,16 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "pbx": (
                 _endpoint(
                     "pbx",
+                    "data/IPPBX.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_ippbx.html",
+                    evidence_keys=("pbx", "ippbx", "ip_phone", "ipphone", "sip"),
+                ),
+                _endpoint(
+                    "pbx",
                     "data/IPPhoneHandler.json",
                     authenticated=True,
-                    referer="html/content/phone/ip_phone.html",
+                    referer="html/content/phone/phone_internet.html",
                     evidence_keys=("pbx", "ip_phone", "ipphone", "sip"),
                 ),
                 _endpoint(
@@ -515,6 +656,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                 ),
             ),
             "dect": (
+                _endpoint(
+                    "dect",
+                    "data/DECTStation.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_mobiles.html",
+                    evidence_keys=("dect", "handset"),
+                ),
+                _endpoint(
+                    "dect",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                    evidence_keys=("dect", "repeater"),
+                ),
                 _endpoint(
                     "dect",
                     "data/Phone.json",
@@ -530,12 +685,21 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("dect", "handset"),
                 ),
             ),
+            "dect_settings": (
+                _endpoint(
+                    "dect_settings",
+                    "data/DECTSettings.json",
+                    authenticated=True,
+                    referer="html/content/config/problem_handling_dect.html",
+                    evidence_keys=("dect", "handset", "base"),
+                ),
+            ),
             "analog": (
                 _endpoint(
                     "analog",
                     "data/PhonePlugs.json",
                     authenticated=True,
-                    referer="html/content/phone/phone_devices.html",
+                    referer="html/content/phone/phone_analog.html",
                     evidence_keys=("analog", "tae", "phone_plug", "phoneplug"),
                 ),
             ),
@@ -544,7 +708,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "phonebook",
                     "data/PhoneBook.json",
                     authenticated=True,
-                    referer="html/content/phone/phonebook.html",
+                    referer="html/content/phone/phone_book.html",
                     evidence_keys=("phonebook", "contact", "directory"),
                 ),
             ),
@@ -578,12 +742,30 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("firewall", "blocked_connection", "rebind"),
                 ),
             ),
+            "dns_rebind": (
+                _endpoint(
+                    "dns_rebind",
+                    "data/DNSExcept.json",
+                    authenticated=True,
+                    referer="html/content/network/dns_rebind.html",
+                    evidence_keys=("dns", "rebind", "except"),
+                ),
+            ),
+            "qos": (
+                _endpoint(
+                    "qos",
+                    "data/QOS.json",
+                    authenticated=True,
+                    referer="html/content/network/qos.html",
+                    evidence_keys=("qos", "priority", "prio"),
+                ),
+            ),
             "usb": (
                 _endpoint(
                     "usb",
                     "data/NASDevice.json",
                     authenticated=True,
-                    referer="html/content/network/nas_device.html",
+                    referer="html/content/network/nas_overview.html",
                     evidence_keys=("usb", "nas", "storage", "printer"),
                 ),
                 _endpoint(
@@ -592,6 +774,24 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/network/nas_mediacenter.html",
                     evidence_keys=("media", "nas", "usb", "storage"),
+                ),
+            ),
+            "usb_tethering": (
+                _endpoint(
+                    "usb_tethering",
+                    "data/INetTeth.json",
+                    authenticated=True,
+                    referer="html/content/internet/usb_tethering.html",
+                    evidence_keys=("tether", "inet_teth"),
+                ),
+            ),
+            "nas": (
+                _endpoint(
+                    "nas",
+                    "data/NASDevice.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_overview.html",
+                    evidence_keys=("nas", "usb", "storage", "folder", "share"),
                 ),
             ),
             "logs": (
@@ -612,20 +812,47 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("status", "uptime", "firmware", "version"),
                 ),
             ),
-            "firmware": (
+            "system_services": (
                 _endpoint(
-                    "firmware",
-                    "data/SecureStatus.json",
+                    "system_services",
+                    "data/ActiveServices.json",
                     authenticated=True,
-                    referer="html/content/overview/index.html",
-                    evidence_keys=("firmware", "update", "version"),
+                    referer="html/content/config/system_services.html",
+                    evidence_keys=("service", "active_service"),
                 ),
+            ),
+            "energy": (
+                _endpoint(
+                    "energy",
+                    "data/Energy.json",
+                    authenticated=True,
+                    referer="html/content/config/energy.html",
+                    evidence_keys=("energy", "power", "eco", "led"),
+                ),
+            ),
+            "easy_support": (
+                _endpoint(
+                    "easy_support",
+                    "data/EasySupport.json",
+                    authenticated=True,
+                    referer="html/content/config/easy_support.html",
+                    evidence_keys=("easy_support", "easysupport", "acs"),
+                ),
+            ),
+            "firmware": (
                 _endpoint(
                     "firmware",
                     "data/FirmwareUpdate.json",
                     authenticated=True,
                     referer="html/content/config/check_for_updates.html",
                     evidence_keys=("firmware", "fwupd", "update", "version"),
+                ),
+                _endpoint(
+                    "firmware",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                    evidence_keys=("firmware", "update", "version"),
                 ),
                 _endpoint(
                     "firmware",
@@ -686,6 +913,7 @@ class SpeedportClient:
         self._lock = asyncio.Lock()
         self._authenticated = False
         self._login_key: bytes | None = None
+        self._session_cleanup_key: bytes | None = None
         self._encrypted_mode: bool | None = None
         self._closed = False
         self._router_info: RouterInfo | None = None
@@ -699,9 +927,7 @@ class SpeedportClient:
         self._wan_interface: WanInterface | None = None
         self._wan_optional_counter_faults: set[int] = set()
         self._dsl_parameter_names: tuple[str, ...] | None = None
-        self._last_management_error: (
-            SpeedportSessionBusyError | SpeedportLoginLockedError | None
-        ) = None
+        self._last_management_error: SpeedportError | None = None
 
         scheme = "https" if self._use_https else "http"
         default_json_port = 443 if self._use_https else 80
@@ -728,7 +954,7 @@ class SpeedportClient:
     @property
     def last_management_error(
         self,
-    ) -> SpeedportSessionBusyError | SpeedportLoginLockedError | None:
+    ) -> SpeedportError | None:
         """Return the latest typed management gate without logging owner details."""
         return self._last_management_error
 
@@ -802,7 +1028,7 @@ class SpeedportClient:
                     referer=referer,
                 )
 
-    async def post_json(
+    async def _post_reviewed_command(
         self,
         endpoint: str,
         data: Mapping[str, str | int | bool],
@@ -810,19 +1036,21 @@ class SpeedportClient:
         authenticated: bool = True,
         referer: str | None = None,
     ) -> dict[str, Any]:
-        """Post to known router endpoint through same serialized owner."""
+        """Post one exact reviewed command through the serialized owner."""
         self._ensure_open()
         async with self._lock:
-            return await self._post_json_unlocked(
+            result = await self._post_json_unlocked(
                 endpoint,
                 data,
                 authenticated=authenticated,
                 referer=referer,
             )
+            _require_command_acknowledgement(result)
+            return result
 
     async def reconnect(self) -> dict[str, Any]:
         """Request Internet reconnection through confirmed endpoint."""
-        return await self.post_json(
+        return await self._post_reviewed_command(
             "data/Connect.json",
             {"req_connect": "reconnect"},
             referer="html/content/internet/con_ipdata.html",
@@ -834,7 +1062,7 @@ class SpeedportClient:
 
     async def reboot(self) -> dict[str, Any]:
         """Request router reboot through confirmed endpoint."""
-        return await self.post_json(
+        return await self._post_reviewed_command(
             "data/Reboot.json",
             {"reboot_device": "true"},
             referer="html/content/config/restart.html",
@@ -846,7 +1074,7 @@ class SpeedportClient:
 
     async def wps(self) -> dict[str, Any]:
         """Start WPS through confirmed WLANAccess endpoint."""
-        return await self.post_json(
+        return await self._post_reviewed_command(
             "data/WLANAccess.json",
             {"wlan_add": "on", "wps_key": "connect"},
             referer="html/content/network/wlan_wps.html",
@@ -858,7 +1086,8 @@ class SpeedportClient:
 
     async def execute_wifi_set_enabled(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed global Wi-Fi state field."""
-        return await self.post_json(
+        _require_boolean(enabled, description="Global Wi-Fi state")
+        return await self._post_reviewed_command(
             "data/Modules.json",
             {"use_wlan": "1" if enabled else "0"},
             referer="html/content/overview/index.html",
@@ -866,7 +1095,8 @@ class SpeedportClient:
 
     async def set_guest_wifi(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed guest Wi-Fi state field."""
-        return await self.post_json(
+        _require_boolean(enabled, description="Guest Wi-Fi state")
+        return await self._post_reviewed_command(
             "data/Modules.json",
             {"wlan_guest_active": "1" if enabled else "0"},
             referer="html/content/overview/index.html",
@@ -878,27 +1108,216 @@ class SpeedportClient:
 
     async def set_office_wifi(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed office Wi-Fi state field."""
-        return await self.post_json(
+        _require_boolean(enabled, description="Office Wi-Fi state")
+        return await self._post_reviewed_command(
             "data/Modules.json",
             {"wlan_office_active": "1" if enabled else "0"},
             referer="html/content/overview/index.html",
         )
 
-    async def set_port_forward_rule(
-        self, *, rule_id: str, enabled: bool
-    ) -> dict[str, Any]:
-        """Toggle one existing PortuwMain rule by stable router ID."""
-        return await self.post_json(
-            "data/PortuwMain.json",
-            {"id": rule_id, "portuw_active": "1" if enabled else "0"},
-            referer="html/content/internet/portforwarding.html",
+    async def set_internet_privacy_level(self, level: int) -> dict[str, Any]:
+        """Set the firmware-proven Internet privacy level."""
+        if not isinstance(level, int) or isinstance(level, bool):
+            raise SpeedportProtocolError("Internet privacy level must be an integer")
+        return await self._set_guarded_scalar(
+            endpoint=_INTERNET_PRIVACY_ENDPOINT,
+            referer=_INTERNET_PRIVACY_REFERER,
+            field="lan_privacy_policy",
+            desired_value=str(level),
+            allowed_values=_THREE_STATE_VALUES,
         )
 
+    async def set_receiver_led_mode(self, mode: int) -> dict[str, Any]:
+        """Set the firmware-proven external receiver LED mode."""
+        if not isinstance(mode, int) or isinstance(mode, bool):
+            raise SpeedportProtocolError("Receiver LED mode must be an integer")
+        return await self._set_guarded_scalar(
+            endpoint=_LTE_MODE_ENDPOINT,
+            referer=_LTE_MODE_REFERER,
+            field="ex5g_led_mode",
+            desired_value=str(mode),
+            allowed_values=_THREE_STATE_VALUES,
+        )
+
+    async def set_hybrid_bonding(self, *, enabled: bool) -> dict[str, Any]:
+        """Set the firmware-proven hybrid bonding state."""
+        _require_boolean(enabled, description="Hybrid bonding state")
+        return await self._set_guarded_scalar(
+            endpoint=_LTE_MODE_ENDPOINT,
+            referer=_LTE_MODE_REFERER,
+            field="use_bonding",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
+        )
+
+    async def _set_guarded_scalar(
+        self,
+        *,
+        endpoint: str,
+        referer: str,
+        field: str,
+        desired_value: str,
+        allowed_values: frozenset[str],
+    ) -> dict[str, Any]:
+        """Fresh-read and submit one exact allowlisted scalar field."""
+        if desired_value not in allowed_values:
+            raise SpeedportProtocolError("Requested scalar state is not allowlisted")
+        self._ensure_open()
+        async with self._lock:
+            readback = await self._get_json_unlocked(
+                endpoint,
+                authenticated=True,
+                referer=referer,
+            )
+            current_value = _require_guarded_scalar_value(
+                readback,
+                field=field,
+                allowed_values=allowed_values,
+            )
+            if current_value == desired_value:
+                return {"status": "unchanged"}
+            result = await self._post_json_unlocked(
+                endpoint,
+                {field: desired_value},
+                authenticated=True,
+                referer=referer,
+            )
+            _require_command_acknowledgement(result)
+            return result
+
+    async def rename_client(
+        self,
+        *,
+        source_kind: str,
+        row_id: str,
+        stable_mac: str | None,
+        name: str,
+    ) -> dict[str, Any]:
+        """Rename one proven managed-device row without altering other fields."""
+        if not valid_device_name(name):
+            raise SpeedportProtocolError(
+                "Device name must contain 1-28 letters, numbers, or hyphens"
+            )
+        return await self._update_managed_device_row(
+            source_kind=source_kind,
+            row_id=row_id,
+            stable_mac=stable_mac,
+            update={"mdevice_name": name},
+        )
+
+    async def set_client_fixed_dhcp(
+        self,
+        *,
+        source_kind: str,
+        row_id: str,
+        stable_mac: str | None,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        """Toggle only the firmware-proven fixed-DHCP flag on one fresh row."""
+        _require_boolean(enabled, description="Fixed DHCP state")
+        return await self._update_managed_device_row(
+            source_kind=source_kind,
+            row_id=row_id,
+            stable_mac=stable_mac,
+            update={"mdevice_fix_dhcp": "1" if enabled else "0"},
+            require_fixed_dhcp=True,
+        )
+
+    async def _update_managed_device_row(
+        self,
+        *,
+        source_kind: str,
+        row_id: str,
+        stable_mac: str | None,
+        update: Mapping[str, str],
+        require_fixed_dhcp: bool = False,
+    ) -> dict[str, Any]:
+        """Fresh-read, preserve and submit exactly one allowlisted firmware row."""
+        self._ensure_open()
+        normalized_kind = source_kind.strip().casefold()
+        form = _MANAGED_DEVICE_FORMS.get(normalized_kind)
+        if form is None:
+            raise SpeedportUnsupportedError(
+                "Managed-device row kind is not safely writable"
+            )
+        if not update or not set(update) <= {"mdevice_name", "mdevice_fix_dhcp"}:
+            raise SpeedportUnsupportedError("Managed-device update is not allowlisted")
+
+        async with self._lock:
+            readback = await self._get_json_unlocked(
+                _DEVICE_LIST_ENDPOINT,
+                authenticated=True,
+                referer=_DEVICE_LIST_REFERER,
+            )
+            row = _select_managed_device_row(
+                readback,
+                normalized_kind,
+                form,
+                row_id=row_id,
+                stable_mac=stable_mac,
+            )
+            if require_fixed_dhcp:
+                _validate_fixed_dhcp_row(row)
+            payload = {field: row[field] for field in form.fields}
+            payload.update(update)
+            result = await self._post_json_unlocked(
+                form.endpoint,
+                payload,
+                authenticated=True,
+                referer=_DEVICE_LIST_REFERER,
+            )
+            _require_command_acknowledgement(result)
+            return result
+
+    async def set_port_forward_rule(
+        self,
+        *,
+        rule_id: str,
+        enabled: bool,
+        expected_name: str | None,
+        expected_fingerprint: str,
+    ) -> dict[str, Any]:
+        """Fresh-read and toggle exactly one existing PortuwMain rule."""
+        _require_boolean(enabled, description="Port-forward rule state")
+        self._ensure_open()
+        async with self._lock:
+            readback = await self._get_json_unlocked(
+                _PORT_FORWARD_ENDPOINT,
+                authenticated=True,
+                referer=_PORT_FORWARD_REFERER,
+            )
+            current = _select_port_forward_rule(
+                readback,
+                rule_id=rule_id,
+                expected_name=expected_name,
+                expected_fingerprint=expected_fingerprint,
+            )
+            if current is enabled:
+                return {"status": "unchanged"}
+            result = await self._post_json_unlocked(
+                _PORT_FORWARD_ENDPOINT,
+                {"id": rule_id, "portuw_active": "1" if enabled else "0"},
+                authenticated=True,
+                referer=_PORT_FORWARD_REFERER,
+            )
+            _require_command_acknowledgement(result)
+            return result
+
     async def execute_port_mapping_set_enabled(
-        self, *, rule_id: str, enabled: bool
+        self,
+        *,
+        rule_id: str,
+        enabled: bool,
+        expected_name: str | None,
+        expected_fingerprint: str,
     ) -> dict[str, Any]:
         """Compatibility name for existing port-rule toggle."""
-        return await self.set_port_forward_rule(rule_id=rule_id, enabled=enabled)
+        return await self.set_port_forward_rule(
+            rule_id=rule_id,
+            enabled=enabled,
+            expected_name=expected_name,
+            expected_fingerprint=expected_fingerprint,
+        )
 
     async def get_feature_data(self, family: str) -> dict[str, Any]:
         """Fetch previously confirmed semantic feature endpoint."""
@@ -941,27 +1360,40 @@ class SpeedportClient:
                 self._wan_interface = select_active_wan_interface(interfaces)
             return interfaces
 
-    async def get_wan_counters(self) -> WanCounters:
-        """Read aggregate active WAN counters."""
+    async def get_wan_counters(self, *, busy_retries: int | None = None) -> WanCounters:
+        """Read WAN counters with an optional per-call busy retry policy."""
         self._ensure_open()
         async with self._lock:
             await self._logout_unlocked()
             if self._wan_interface is not None:
                 try:
-                    return await self._read_wan_counters_unlocked(self._wan_interface)
+                    return await self._read_wan_counters_unlocked(
+                        self._wan_interface,
+                        busy_retries=busy_retries,
+                    )
                 except SpeedportSessionBusyError:
                     raise
                 except SpeedportProtocolError:
                     self._wan_interface = None
-            interfaces = await self._discover_wan_interfaces_unlocked()
+            interfaces = await self._discover_wan_interfaces_unlocked(
+                busy_retries=busy_retries
+            )
             try:
                 interface = select_active_wan_interface(interfaces)
             except ValueError as exc:
                 raise SpeedportUnsupportedError(str(exc)) from exc
             self._wan_interface = interface
-            return await self._read_wan_counters_unlocked(interface)
+            return await self._read_wan_counters_unlocked(
+                interface,
+                busy_retries=busy_retries,
+            )
 
-    async def _read_wan_counters_unlocked(self, interface: WanInterface) -> WanCounters:
+    async def _read_wan_counters_unlocked(
+        self,
+        interface: WanInterface,
+        *,
+        busy_retries: int | None = None,
+    ) -> WanCounters:
         prefix = f"Device.IP.Interface.{interface.index}.Stats"
         suffixes = (
             _WAN_BYTE_COUNTER_SUFFIXES
@@ -970,7 +1402,9 @@ class SpeedportClient:
         )
         names = tuple(f"{prefix}.{suffix}" for suffix in suffixes)
         try:
-            values = await self._get_parameter_values_unlocked(names)
+            values = await self._get_parameter_values_unlocked(
+                names, busy_retries=busy_retries
+            )
         except SpeedportSessionBusyError:
             raise
         except SpeedportUnsupportedError:
@@ -979,7 +1413,9 @@ class SpeedportClient:
             byte_names = tuple(
                 f"{prefix}.{suffix}" for suffix in _WAN_BYTE_COUNTER_SUFFIXES
             )
-            values = await self._get_parameter_values_unlocked(byte_names)
+            values = await self._get_parameter_values_unlocked(
+                byte_names, busy_retries=busy_retries
+            )
             self._wan_optional_counter_faults.add(interface.index)
         received = _parameter_int(values, f"{prefix}.BytesReceived")
         sent = _parameter_int(values, f"{prefix}.BytesSent")
@@ -1057,6 +1493,7 @@ class SpeedportClient:
         confirmed_endpoint_families: set[str] = set()
 
         async def probe_endpoint_phase(*, authenticated: bool) -> None:
+            nonlocal authenticated_ok
             for family, candidates in self._endpoint_candidates.items():
                 if family in confirmed_endpoint_families:
                     continue
@@ -1080,8 +1517,18 @@ class SpeedportClient:
                             )
                         except SpeedportUnsupportedError as exc:
                             endpoint_results[cache_key] = (None, exc)
+                        except SpeedportError as exc:
+                            if not (authenticated and allow_protected_degraded):
+                                raise
+                            authenticated_ok = False
+                            endpoint_results[cache_key] = (None, exc)
+                            failures["authentication"] = _failure_text(exc)
+                            self._last_management_error = exc
+                            return
                         else:
                             endpoint_results[cache_key] = (fetched_data, None)
+                            if authenticated:
+                                authenticated_ok = True
                     endpoint_data, error = endpoint_results[cache_key]
                     if (
                         error is None
@@ -1134,7 +1581,6 @@ class SpeedportClient:
             if self._password:
                 try:
                     await self.login()
-                    authenticated_ok = True
                 except (
                     SpeedportSessionBusyError,
                     SpeedportLoginLockedError,
@@ -1143,9 +1589,21 @@ class SpeedportClient:
                     self._last_management_error = exc
                     if not allow_protected_degraded:
                         raise
+                except SpeedportInvalidCredentialsError:
+                    raise
+                except SpeedportError as exc:
+                    if not allow_protected_degraded:
+                        raise
+                    failures["authentication"] = _failure_text(exc)
+                    self._last_management_error = exc
                 else:
                     self._last_management_error = None
                     await probe_endpoint_phase(authenticated=True)
+                    if not authenticated_ok:
+                        failures.setdefault(
+                            "authentication",
+                            "No authenticated endpoint read succeeded",
+                        )
 
             self._selected_endpoints = selected
             self._capabilities = CapabilityReport(
@@ -1194,6 +1652,8 @@ class SpeedportClient:
     async def _login_unlocked(self) -> None:
         if self._authenticated:
             return
+        if self._session_cleanup_key is not None:
+            await self._logout_unlocked()
         if not self._password:
             raise SpeedportAuthenticationError("Router password is required")
         if self._encrypted_mode is None:
@@ -1224,20 +1684,29 @@ class SpeedportClient:
                 "Router returned invalid login challenge"
             )
         password_hash = sha256(f"{challenge}:{self._password}".encode()).hexdigest()
+        # A proof request may be accepted even when its response cannot be
+        # decoded or the connection drops. Retain only this router-issued key
+        # so logout/close can release the tentative session without ever
+        # sending a blind logout.
+        self._session_cleanup_key = challenge_key
         result = await self._post_json_unlocked(
             "data/Login.json",
             {"showpw": "0", "password": password_hash},
             authenticated=False,
             referer=None,
             ensure_auth=False,
+            request_key=challenge_key,
+            response_key=challenge_key,
         )
         try:
             _raise_login_gate(result)
         except (SpeedportSessionBusyError, SpeedportLoginLockedError) as err:
+            self._clear_session_state()
             self._last_management_error = err
             raise
         login_state = str(result.get("login", result.get("status", ""))).casefold()
         if login_state not in {"success", "ok", "true", "1"}:
+            self._clear_session_state()
             raise SpeedportInvalidCredentialsError("Router rejected login credentials")
         self._login_key = challenge_key
         self._authenticated = True
@@ -1282,17 +1751,26 @@ class SpeedportClient:
         authenticated: bool,
         referer: str | None,
         ensure_auth: bool = True,
+        resolve_http_token: bool = True,
+        request_key: bytes | None = None,
+        response_key: bytes | None = None,
     ) -> dict[str, Any]:
         if authenticated and ensure_auth:
             await self._ensure_authenticated_unlocked()
         path = _validate_endpoint(endpoint)
         fields = dict(data)
-        if referer:
+        if referer and resolve_http_token and "httoken" not in fields:
             token = await self._get_http_token_unlocked(referer)
             if token:
                 fields["httoken"] = token
         plain_body = urlencode(fields)
-        key = self._login_key if authenticated else DEFAULT_KEY
+        key: bytes | None
+        if request_key is not None:
+            key = request_key
+        elif authenticated:
+            key = self._login_key
+        else:
+            key = DEFAULT_KEY
         if authenticated and key is None:
             raise SpeedportAuthenticationError("Authenticated session has no key")
         body = (
@@ -1309,7 +1787,8 @@ class SpeedportClient:
             self._invalidate_authentication()
             raise SpeedportAuthenticationError("Router session expired")
         try:
-            return _decode_response(text, self._login_key)
+            decode_key = response_key if response_key is not None else self._login_key
+            return _decode_response(text, decode_key)
         except SpeedportDecodeError as exc:
             if authenticated:
                 self._invalidate_authentication()
@@ -1336,7 +1815,8 @@ class SpeedportClient:
 
     async def _logout_unlocked(self) -> None:
         """Release our web login while retaining credentials for later reuse."""
-        if not self._authenticated:
+        cleanup_key = self._session_cleanup_key
+        if cleanup_key is None:
             return
         try:
             primary_rejected = False
@@ -1344,9 +1824,11 @@ class SpeedportClient:
                 result = await self._post_json_unlocked(
                     "data/Login.json",
                     {"logout": "byby"},
-                    authenticated=True,
+                    authenticated=False,
                     referer=_LOGOUT_REFERER,
                     ensure_auth=False,
+                    request_key=cleanup_key,
+                    response_key=cleanup_key,
                 )
                 primary_rejected = _logout_response_rejected(result)
             except SpeedportError:
@@ -1359,21 +1841,32 @@ class SpeedportClient:
                         authenticated=False,
                         referer=None,
                         ensure_auth=False,
+                        request_key=cleanup_key,
+                        response_key=cleanup_key,
                     )
         finally:
-            self._invalidate_authentication()
+            self._clear_session_state()
             await asyncio.sleep(_LOGOUT_SETTLE_SECONDS)
 
     async def _get_parameter_values_unlocked(
-        self, names: Sequence[str]
+        self,
+        names: Sequence[str],
+        *,
+        busy_retries: int | None = None,
     ) -> dict[str, ParameterValue]:
+        max_busy_retries = (
+            self._max_busy_retries if busy_retries is None else busy_retries
+        )
+        if max_busy_retries < 0:
+            msg = "busy_retries cannot be negative"
+            raise ValueError(msg)
         body = build_get_parameter_values(names)
         headers = {
             "Content-Type": "text/xml; charset=utf-8",
             "SOAPAction": SOAP_ACTION,
             "User-Agent": "Home Assistant Telekom Speedport Smart",
         }
-        for attempt in range(self._max_busy_retries + 1):
+        for attempt in range(max_busy_retries + 1):
             text = await self._request_text_unlocked(
                 "POST",
                 self._tr064_url,
@@ -1384,17 +1877,20 @@ class SpeedportClient:
             try:
                 return parse_get_parameter_values(text)
             except SpeedportSessionBusyError:
-                if attempt >= self._max_busy_retries:
+                if attempt >= max_busy_retries:
                     raise
                 await asyncio.sleep(self._busy_backoff * (2**attempt))
         raise SpeedportSessionBusyError("ToTR64 session remained busy")
 
-    async def _discover_wan_interfaces_unlocked(self) -> tuple[WanInterface, ...]:
+    async def _discover_wan_interfaces_unlocked(
+        self, *, busy_retries: int | None = None
+    ) -> tuple[WanInterface, ...]:
         parameters: dict[str, ParameterValue]
         interface_count: int | None = None
         try:
             count_values = await self._get_parameter_values_unlocked(
-                ("Device.IP.InterfaceNumberOfEntries",)
+                ("Device.IP.InterfaceNumberOfEntries",),
+                busy_retries=busy_retries,
             )
             count_value = count_values.get("Device.IP.InterfaceNumberOfEntries")
             if count_value is not None:
@@ -1415,13 +1911,19 @@ class SpeedportClient:
                 for suffix in interface_suffixes
             )
             try:
-                parameters = await self._get_parameter_values_unlocked(names)
+                parameters = await self._get_parameter_values_unlocked(
+                    names, busy_retries=busy_retries
+                )
             except SpeedportSessionBusyError:
                 raise
             except SpeedportProtocolError:
-                parameters = await self._discover_interface_parameters_unlocked()
+                parameters = await self._discover_interface_parameters_unlocked(
+                    busy_retries=busy_retries
+                )
         else:
-            parameters = await self._discover_interface_parameters_unlocked()
+            parameters = await self._discover_interface_parameters_unlocked(
+                busy_retries=busy_retries
+            )
 
         grouped: dict[int, dict[str, ParameterValue]] = {}
         for name, parameter in parameters.items():
@@ -1441,10 +1943,14 @@ class SpeedportClient:
 
     async def _discover_interface_parameters_unlocked(
         self,
+        *,
+        busy_retries: int | None = None,
     ) -> dict[str, ParameterValue]:
         """Scan standard interface aliases when secured count is unavailable."""
         try:
-            return await self._get_parameter_values_unlocked(("Device.IP.Interface.",))
+            return await self._get_parameter_values_unlocked(
+                ("Device.IP.Interface.",), busy_retries=busy_retries
+            )
         except SpeedportSessionBusyError:
             raise
         except SpeedportProtocolError:
@@ -1455,7 +1961,9 @@ class SpeedportClient:
             prefix = f"Device.IP.Interface.{index}"
             alias_name = f"{prefix}.Alias"
             try:
-                alias = await self._get_parameter_values_unlocked((alias_name,))
+                alias = await self._get_parameter_values_unlocked(
+                    (alias_name,), busy_retries=busy_retries
+                )
             except SpeedportSessionBusyError:
                 raise
             except SpeedportProtocolError:
@@ -1469,7 +1977,11 @@ class SpeedportClient:
             )
             names = tuple(f"{prefix}.{suffix}" for suffix in detail_suffixes)
             try:
-                parameters.update(await self._get_parameter_values_unlocked(names))
+                parameters.update(
+                    await self._get_parameter_values_unlocked(
+                        names, busy_retries=busy_retries
+                    )
+                )
             except SpeedportSessionBusyError:
                 raise
             except SpeedportProtocolError:
@@ -1478,7 +1990,9 @@ class SpeedportClient:
                 )
                 try:
                     parameters.update(
-                        await self._get_parameter_values_unlocked(fallback_names)
+                        await self._get_parameter_values_unlocked(
+                            fallback_names, busy_retries=busy_retries
+                        )
                     )
                     continue
                 except SpeedportSessionBusyError:
@@ -1488,7 +2002,9 @@ class SpeedportClient:
                 for name in fallback_names:
                     try:
                         parameters.update(
-                            await self._get_parameter_values_unlocked((name,))
+                            await self._get_parameter_values_unlocked(
+                                (name,), busy_retries=busy_retries
+                            )
                         )
                     except SpeedportSessionBusyError:
                         raise
@@ -1554,12 +2070,271 @@ class SpeedportClient:
         return headers
 
     def _invalidate_authentication(self) -> None:
+        """Invalidate reads while preserving proof-bound cleanup ownership."""
         self._authenticated = False
         self._login_key = None
+
+    def _clear_session_state(self) -> None:
+        """Forget both active authentication and any tentative owned session."""
+        self._invalidate_authentication()
+        self._session_cleanup_key = None
 
     def _ensure_open(self) -> None:
         if self._closed:
             raise SpeedportProtocolError("Speedport client is closed")
+
+
+def _require_boolean(value: object, *, description: str) -> None:
+    """Reject truthy substitutes before any Boolean router mutation."""
+    if not isinstance(value, bool):
+        raise SpeedportProtocolError(f"{description} must be a boolean")
+
+
+def _require_guarded_scalar_value(
+    payload: Mapping[str, Any],
+    *,
+    field: str,
+    allowed_values: frozenset[str],
+) -> str:
+    """Return one exact allowlisted scalar or fail closed before mutation."""
+    matches = [
+        (raw_key, value)
+        for raw_key, value in payload.items()
+        if isinstance(raw_key, str) and raw_key.strip().casefold() == field.casefold()
+    ]
+    if len(matches) != 1 or matches[0][0] != field:
+        raise SpeedportUnsupportedError("Guarded scalar state is missing or ambiguous")
+    value = matches[0][1]
+    if not isinstance(value, str) or value not in allowed_values:
+        raise SpeedportUnsupportedError(
+            "Guarded scalar state has an unsupported representation"
+        )
+    return value
+
+
+def _select_managed_device_row(
+    payload: Mapping[str, Any],
+    source_kind: str,
+    form: _ManagedDeviceForm,
+    *,
+    row_id: str,
+    stable_mac: str | None,
+) -> dict[str, str | int | bool]:
+    """Select one unambiguous full form row from a fresh DeviceList payload."""
+    matching_groups = [
+        value
+        for key, value in payload.items()
+        if str(key).strip().casefold() == source_kind
+    ]
+    if len(matching_groups) != 1:
+        raise SpeedportUnsupportedError(
+            "Managed-device source row is missing or ambiguous"
+        )
+
+    expected_id = row_id.strip().casefold()
+    if not expected_id:
+        raise SpeedportUnsupportedError("Managed-device row has no stable ID")
+    expected_mac = _mac_token(value=stable_mac) if stable_mac is not None else ""
+    if not expected_mac:
+        raise SpeedportUnsupportedError("Managed-device row has no stable MAC address")
+    matches: list[dict[str, str | int | bool]] = []
+    for candidate in _managed_form_rows(matching_groups[0]):
+        row = _canonical_form_row(candidate)
+        if row is None or str(row.get("id", "")).strip().casefold() != expected_id:
+            continue
+        if not form.fields <= row.keys():
+            raise SpeedportUnsupportedError(
+                "Managed-device row does not expose the complete firmware form"
+            )
+        unknown_form_fields = set(row) - form.fields
+        if unknown_form_fields:
+            raise SpeedportUnsupportedError(
+                "Managed-device row contains unproven firmware fields"
+            )
+        row_mac = row.get("mdevice_mac")
+        if (
+            row_mac is None
+            or row_mac == ""
+            or _mac_token(value=row_mac) != expected_mac
+        ):
+            continue
+        matches.append({field: row[field] for field in form.fields})
+
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError(
+            "Managed-device source row is missing, duplicated, or changed identity"
+        )
+    return matches[0]
+
+
+def _select_port_forward_rule(
+    payload: Mapping[str, Any],
+    *,
+    rule_id: str,
+    expected_name: str | None,
+    expected_fingerprint: str,
+) -> bool:
+    """Select one unchanged rule identity with an explicit fresh active state."""
+    expected_id = rule_id.strip().casefold()
+    if not expected_id:
+        raise SpeedportUnsupportedError("Port-forward rule has no stable ID")
+    if not isinstance(expected_fingerprint, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", expected_fingerprint
+    ):
+        raise SpeedportUnsupportedError(
+            "Port-forward rule has no stable identity fingerprint"
+        )
+    matches: list[bool] = []
+    for raw_key, value in payload.items():
+        if str(raw_key).strip().casefold() not in _PORT_FORWARD_GROUPS:
+            continue
+        for candidate in _managed_form_rows(value):
+            row = {str(key).strip().casefold(): item for key, item in candidate.items()}
+            identifier = next(
+                (row[key] for key in ("id", "rule_id", "portuw_id") if key in row),
+                None,
+            )
+            if str(identifier).strip().casefold() != expected_id:
+                continue
+            name = next(
+                (
+                    row[key]
+                    for key in ("name", "rule_name", "portuw_name")
+                    if key in row
+                ),
+                None,
+            )
+            if expected_name is not None and (
+                name is None or str(name).strip() != expected_name
+            ):
+                continue
+            if port_forward_rule_fingerprint(row) != expected_fingerprint:
+                continue
+            active = next(
+                (
+                    _as_bool(row[key])
+                    for key in ("active", "enabled", "portuw_active")
+                    if key in row
+                ),
+                None,
+            )
+            if active is None:
+                raise SpeedportUnsupportedError(
+                    "Port-forward rule has no explicit current state"
+                )
+            matches.append(active)
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError(
+            "Port-forward rule is missing, duplicated, or changed identity"
+        )
+    return matches[0]
+
+
+def _managed_form_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
+    """Expand one template collection without inventing row identities."""
+    if isinstance(value, Mapping):
+        sequence_columns = {
+            str(key): tuple(items)
+            for key, items in value.items()
+            if isinstance(items, Sequence)
+            and not isinstance(items, (str, bytes, bytearray))
+        }
+        if not sequence_columns:
+            return (value,)
+        lengths = {len(items) for items in sequence_columns.values()}
+        if len(lengths) != 1:
+            return ()
+        scalar_columns = {
+            str(key): item for key, item in value.items() if key not in sequence_columns
+        }
+        length = lengths.pop()
+        return tuple(
+            {
+                **scalar_columns,
+                **{key: items[index] for key, items in sequence_columns.items()},
+            }
+            for index in range(length)
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(item for item in value if isinstance(item, Mapping))
+    return ()
+
+
+def _canonical_form_row(
+    row: Mapping[str, Any],
+) -> dict[str, str | int | bool] | None:
+    """Case-normalize safe scalar form values and reject duplicate keys."""
+    canonical: dict[str, str | int | bool] = {}
+    for raw_key, value in row.items():
+        key = str(raw_key).strip().casefold()
+        if (
+            key in canonical
+            or isinstance(value, bool)
+            or not isinstance(value, (str, int))
+        ):
+            return None
+        canonical[key] = value
+    return canonical
+
+
+def _validate_fixed_dhcp_row(row: Mapping[str, str | int | bool]) -> None:
+    """Enforce firmware UI prerequisites without changing address metadata."""
+    use_rule = _form_boolean(value=row["mdevice_use_rule"])
+    uses_dhcp = _form_boolean(value=row["mdevice_use_dhcp"])
+    fixed_dhcp = _form_boolean(value=row["mdevice_fix_dhcp"])
+    if use_rule is None or uses_dhcp is None or fixed_dhcp is None:
+        raise SpeedportUnsupportedError(
+            "Managed-device row contains an unknown checkbox value"
+        )
+    if use_rule is not False:
+        raise SpeedportUnsupportedError(
+            "Fixed DHCP cannot change while an access rule owns this row"
+        )
+    if not (uses_dhcp or fixed_dhcp):
+        raise SpeedportUnsupportedError(
+            "Managed-device row does not expose fixed-DHCP control"
+        )
+    try:
+        ipaddress.IPv4Address(str(row["mdevice_ipv4"]).strip())
+    except ipaddress.AddressValueError as err:
+        raise SpeedportUnsupportedError(
+            "Managed-device row has no valid current IPv4 address"
+        ) from err
+
+
+def _form_boolean(*, value: str | int | bool) -> bool | None:
+    """Interpret only explicit firmware checkbox values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if value in {0, 1}:
+            return bool(value)
+        return None
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "on", "yes"}:
+        return True
+    if normalized in {"0", "false", "off", "no"}:
+        return False
+    return None
+
+
+def _require_command_acknowledgement(response: Mapping[str, Any]) -> None:
+    """Fail closed unless firmware explicitly accepts a state-changing POST."""
+    status = response.get("status")
+    accepted = status is True or status == 1
+    if isinstance(status, str):
+        accepted = status.strip().casefold() in {"1", "ok", "success", "true"}
+    if not accepted:
+        raise SpeedportCommandRejectedError(
+            "Router command response did not contain a successful acknowledgement"
+        )
+
+
+def _mac_token(*, value: str | int | bool) -> str:
+    """Compare MAC spellings without changing the preserved row value."""
+    return "".join(
+        character for character in str(value).casefold() if character.isalnum()
+    )
 
 
 def _normalize_host(host: str) -> tuple[str, bool, int | None]:
