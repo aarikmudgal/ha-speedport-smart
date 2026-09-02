@@ -14,6 +14,7 @@ from custom_components.speedport_smart.hub import SpeedportHub
 from custom_components.speedport_smart.management import (
     COMMAND_WRITE_CONTRACTS,
     ManagementCommandContract,
+    ManagementCommandDecision,
     ManagementConfirmation,
     ManagementExecutionSurface,
     ManagementRisk,
@@ -118,6 +119,48 @@ _EXPECTED_ENTITY_COMMANDS = {
     ("text", "client_name"): "rename_client",
 }
 
+_EXPECTED_FEATURES = {
+    "reboot": "system_reboot",
+    "reconnect": "internet_reconnect",
+    "rename_client": "network_client_rename",
+    "set_client_fixed_dhcp": "network_client_fixed_dhcp",
+    "set_guest_wifi": "network_wifi_guest",
+    "set_hybrid_bonding": "internet_hybrid_bonding",
+    "set_internet_privacy_level": "internet_privacy",
+    "set_office_wifi": "network_wifi_office",
+    "set_port_forward_rule": "internet_port_forward_toggle",
+    "set_receiver_led_mode": "internet_receiver_led",
+    "wifi_set_enabled": "network_wifi_main",
+    "wps": "network_wifi_wps_start",
+}
+
+_EXPECTED_EXECUTION = {
+    "reboot": ("reboot", frozenset()),
+    "reconnect": ("reconnect", frozenset()),
+    "rename_client": (
+        "rename_client",
+        frozenset({"source_kind", "row_id", "stable_mac", "name"}),
+    ),
+    "set_client_fixed_dhcp": (
+        "set_client_fixed_dhcp",
+        frozenset({"source_kind", "row_id", "stable_mac", "enabled"}),
+    ),
+    "set_guest_wifi": ("set_guest_wifi", frozenset({"enabled"})),
+    "set_hybrid_bonding": ("set_hybrid_bonding", frozenset({"enabled"})),
+    "set_internet_privacy_level": (
+        "set_internet_privacy_level",
+        frozenset({"level"}),
+    ),
+    "set_office_wifi": ("set_office_wifi", frozenset({"enabled"})),
+    "set_port_forward_rule": (
+        "set_port_forward_rule",
+        frozenset({"rule_id", "enabled", "expected_name", "expected_fingerprint"}),
+    ),
+    "set_receiver_led_mode": ("set_receiver_led_mode", frozenset({"mode"})),
+    "wifi_set_enabled": ("execute_wifi_set_enabled", frozenset({"enabled"})),
+    "wps": ("wps", frozenset()),
+}
+
 
 def test_registry_covers_only_existing_commands_and_aliases() -> None:
     """Every existing command and alias resolves to its canonical contract."""
@@ -145,6 +188,10 @@ def test_registry_covers_only_existing_commands_and_aliases() -> None:
         assert contract.risk is risk
         assert contract.confirmation is confirmation
         assert contract.execution_surface is ManagementExecutionSurface.NATIVE_ENTITY
+        assert contract.feature_id == _EXPECTED_FEATURES[canonical]
+        assert (contract.handler, contract.parameter_names) == _EXPECTED_EXECUTION[
+            canonical
+        ]
         for alias in aliases:
             assert get_command_write_contract(alias) is contract
 
@@ -169,6 +216,36 @@ def test_safety_metadata_vocabulary_is_stable_and_complete() -> None:
         "native_entity",
         "admin_action",
     }
+
+
+def test_command_decision_keeps_exposure_and_session_availability_separate() -> None:
+    """A temporary browser session conflict cannot erase supported controls."""
+    supported_but_busy = ManagementCommandDecision(
+        configured=True,
+        authenticated_capability=True,
+        contract_known=True,
+        surface_allowed=True,
+        firmware_supported=True,
+        capability_supported=True,
+        handler_available=True,
+        session_available=False,
+    )
+
+    assert supported_but_busy.exposed is True
+    assert supported_but_busy.executable is False
+    assert (
+        ManagementCommandDecision(
+            configured=False,
+            authenticated_capability=True,
+            contract_known=True,
+            surface_allowed=True,
+            firmware_supported=True,
+            capability_supported=True,
+            handler_available=True,
+            session_available=True,
+        ).exposed
+        is False
+    )
 
 
 def test_entity_controls_resolve_only_to_reviewed_write_contracts() -> None:
@@ -242,6 +319,33 @@ def test_destructive_commands_cannot_use_native_entity_surface() -> None:
         execution_surface=ManagementExecutionSurface.ADMIN_ACTION,
     )
     assert contract.execution_surface is ManagementExecutionSurface.ADMIN_ACTION
+
+
+@pytest.mark.parametrize(
+    "feature_id",
+    ["", "1wifi", "Network_Wifi", "network-wifi", "wifi settings", "wïfi"],
+)
+def test_management_feature_ids_are_stable_semantic_identifiers(
+    feature_id: str,
+) -> None:
+    """Panel placement IDs cannot depend on display text or punctuation."""
+    target = RouterWriteContract(
+        model="Speedport Smart 4R Typ A",
+        firmware="010152.5.0.001.0",
+    )
+    with pytest.raises(
+        ValueError,
+        match="Management feature IDs must be lowercase semantic identifiers",
+    ):
+        ManagementCommandContract(
+            command="example",
+            capability="system",
+            supported_routers=frozenset({target}),
+            risk=ManagementRisk.NORMAL,
+            confirmation=ManagementConfirmation.NONE,
+            execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+            feature_id=feature_id,
+        )
 
 
 @pytest.mark.parametrize(
@@ -353,6 +457,7 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             risk=ManagementRisk.LOCKOUT,
             confirmation=ManagementConfirmation.TYPED,
             execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+            handler="execute_wifi_set_enabled",
         ),
         "reboot": ManagementCommandContract(
             command="reboot",
@@ -361,6 +466,7 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             risk=ManagementRisk.DISRUPTIVE,
             confirmation=ManagementConfirmation.CONFIRM,
             execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+            handler="reboot",
         ),
     }
     monkeypatch.setattr(
@@ -381,3 +487,12 @@ def test_hub_uses_the_requested_commands_firmware_contract(
 
     assert hub.supports_command("wifi_set_enabled")
     assert not hub.supports_command("reboot")
+
+    wifi_decision = hub.command_decision("wifi_set_enabled")
+    reboot_decision = hub.command_decision("reboot")
+    assert wifi_decision.exposed is True
+    assert wifi_decision.contract_known is True
+    assert wifi_decision.firmware_supported is True
+    assert reboot_decision.exposed is False
+    assert reboot_decision.contract_known is True
+    assert reboot_decision.firmware_supported is False

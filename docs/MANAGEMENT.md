@@ -30,26 +30,33 @@ controls are staged for an explicit user roundtrip; they retain strict runtime
 acknowledgement and readback gates and never retry a rejected or ambiguous
 request.
 
-Read coverage is independent of write eligibility. A missing write contract
-never suppresses a safe, non-secret value that the router returns. Readable
-settings and measurements will be normalized and exposed as read-only entities
-or an administrator-only live view according to their privacy and persistence
-requirements. Passwords, keys, recovery material, and raw private records are
-never copied into entity state, diagnostics, logs, or dashboard metadata.
+Read coverage is independent of write eligibility. A missing write contract does
+not by itself suppress an independently reviewed read field, but returned data
+is exposed only after an explicit normalizer and presentation contract exists.
+Unknown fields and inventory-only families remain absent even when a candidate
+endpoint returns them. Reviewed settings and measurements are exposed as
+read-only entities or through the bounded administrator-only cached view
+according to their privacy and persistence requirements. Passwords, keys,
+recovery material, and raw private records are never copied into entity state,
+diagnostics, logs, or dashboard metadata.
 
 Version 0.3 development uses one immutable safety policy for both backend
-contracts and dashboard controls. Each reviewed command has a normal,
-sensitive, disruptive, lockout, or destructive risk tier plus a none, confirm,
-or typed dashboard-confirmation presentation. The dashboard receives only
-those semantic labels, never router endpoints or request fields, and revalidates
-the current policy and target state immediately before invoking the native Home
-Assistant service. This dialog is user-experience protection, not backend
-authorization: native entities remain callable through Home Assistant services
-and automations. Destructive commands are therefore forbidden from native
-entity exposure. Before the first destructive command is added, its admin-only
-action surface must require a single-use backend grant bound to the exact
-command, target, parameters, current state, and documented recovery
-prerequisites. Unknown control-shaped entities fail closed as read only.
+contracts and dashboard controls. Each reviewed command binds a semantic feature
+ID, one exact client handler and parameter-name set, a model/firmware and
+capability boundary, a native or future admin execution surface, a normal,
+sensitive, disruptive, lockout, or destructive risk tier, and a none, confirm,
+or typed dashboard-confirmation presentation. Support, current session
+availability, Home Assistant entity permission, and presentation confirmation
+remain separate gates. The dashboard receives only semantic metadata, never
+router endpoints or request fields, and revalidates the current policy and target
+state immediately before invoking the native Home Assistant service. This dialog
+is user-experience protection, not backend authorization: native entities remain
+callable through Home Assistant services and automations. Destructive commands
+are therefore forbidden from native entity exposure. Before the first
+destructive command is added, its admin-only action surface must require a
+single-use backend grant bound to the exact command, target, parameters, current
+state, and documented recovery prerequisites. No such executor exists today.
+Unknown control-shaped entities fail closed as read only.
 
 ## Implemented stable-baseline controls
 
@@ -114,7 +121,7 @@ Read-only fields do not imply a matching write. In particular:
 | LAN and DHCP | Clients, presence, signal, links, DHCP state, leases, pool/lease summaries, IPv4/IPv6 state, aggregate linked ports, per-port LAN 1-4 link and negotiated speed, and client access allowance when returned |
 | NAT, DNS, traffic prioritization, and security | Port-forward counts plus bounded rule name, state, target, and TCP/UDP mapping summaries; port-block state/counts plus bounded rule-group, ID, state, and validated port-list rows, aggregating distinct extended and extra groups without merging colliding IDs; DNS-rebind state/count plus bounded exception-domain rows; traffic-priority count plus exact slot flags without inferred client identity; firewall, remote-management, and router-side HTTPS state when returned |
 | Mesh and Powerline | Mesh topology and node metrics; bounded Powerline ID, name, parent, manufacturer, MAC, firmware, mode, and upload/download link-rate rows in the administrator-only cached view |
-| Telephony and DECT | Registration, provider/line summaries, calls, paging state, handsets, PBX/IP-phone counts and rows, DECT repeater count and bounded membership rows, and phonebook count plus the returned entry-count aggregate when present |
+| Telephony and DECT | Registration, provider/line summaries, missed-call count and latest call timestamp without call identities or records, paging state, handsets, PBX/IP-phone counts and rows, DECT repeater count and bounded membership rows, and phonebook count plus the returned entry-count aggregate when present; analog-socket fields remain absent pending an exact read contract |
 | USB and NAS | Device state, mount state, aggregate capacity/free space, media/temperature, NAS safe flags, and bounded storage-device/share rows when returned; the private share name/folder identifier can be path-like and remains administrator-only, while users and credentials are excluded |
 | DDNS, VPN, and parental controls | DDNS enablement and status plus bounded domain/update-server identity in the administrator-only cached view; VPN profile enablement, connection, type, peer counts and bounded peer rows; and parental profile state when returned |
 | Setup, SmartHome, system, energy, and update | Initial-setup/password prerequisite flags, SmartHome linked state, operating mode, uptime, health, temperature, device firmware, and update metadata when exposed |

@@ -535,6 +535,50 @@ def test_every_reviewed_control_retains_semantics_without_control_permission(
     )
 
 
+@pytest.mark.parametrize(
+    ("domain", "translation_key", "feature_id"),
+    [
+        (
+            "button",
+            "capture_read_only_inventory",
+            "home_assistant_capability_inventory",
+        ),
+        ("button", "reboot_router", "system_reboot"),
+        ("button", "reconnect_internet", "internet_reconnect"),
+        ("button", "retry_protected_data", "home_assistant_session_recovery"),
+        ("button", "wps", "network_wifi_wps_start"),
+        ("select", "internet_privacy_level_control", "internet_privacy"),
+        ("select", "receiver_led_mode_control", "internet_receiver_led"),
+        ("switch", "client_fixed_dhcp", "network_client_fixed_dhcp"),
+        ("switch", "guest_wifi", "network_wifi_guest"),
+        ("switch", "hybrid_bonding", "internet_hybrid_bonding"),
+        ("switch", "office_wifi", "network_wifi_office"),
+        ("switch", "port_forward_rule", "internet_port_forward_toggle"),
+        ("switch", "wifi", "network_wifi_main"),
+        ("text", "client_name", "network_client_rename"),
+    ],
+)
+def test_every_reviewed_control_has_one_backend_feature_id(
+    domain: str,
+    translation_key: str,
+    feature_id: str,
+) -> None:
+    """Administration placement follows backend semantics, not display names."""
+    connection = MagicMock()
+    connection.user.permissions.access_all_entities.return_value = True
+    entry = SimpleNamespace(
+        entity_id=f"{domain}.speedport_{translation_key}",
+        translation_key=translation_key,
+        entity_category="config",
+        supported_features=0,
+        name=None,
+    )
+
+    metadata = _entity_panel_data(entry, None, connection)
+
+    assert metadata["management_feature"] == feature_id
+
+
 def test_panel_metadata_allowlists_only_reviewed_select_controls() -> None:
     """Expose exact typed selects without leaking router transport details."""
     connection = MagicMock()

@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=13";
+import { keepDialogFocus } from "./accessibility.js?schema=14";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=13";
+} from "./controls.js?schema=14";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=13";
+} from "./entity-state.js?schema=14";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=13";
+} from "./render-state.js?schema=14";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=13";
+} from "./translations.js?schema=14";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 13;
+const PANEL_SCHEMA_VERSION = 14;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -558,6 +558,11 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["connection_internet", "bandwidth_interface"],
           capabilities: ["internet"],
         }),
+        fixedAdminFeature("internet_ip_information", {
+          contract: "read_only",
+          entityGroups: ["connection_addressing"],
+          capabilities: ["internet"],
+        }),
         fixedAdminFeature("internet_dns_servers", {
           capabilities: ["internet", "dns"],
         }),
@@ -825,6 +830,10 @@ export const ADMIN_IA = Object.freeze([
           readSections: ["clients"],
           capabilities: ["clients"],
         }),
+        fixedAdminFeature("network_client_manual_add", {
+          entityGroups: ["clients_devices"],
+          capabilities: ["clients"],
+        }),
       ],
     }),
     fixedAdminSubsection({
@@ -936,6 +945,11 @@ export const ADMIN_IA = Object.freeze([
           ],
           capabilities: ["wifi"],
         }),
+        fixedAdminFeature("network_wifi_guest_access_pass", {
+          contract: "read_only",
+          entityGroups: ["wireless_guest"],
+          capabilities: ["wifi", "guest_wifi"],
+        }),
         fixedAdminFeature("network_wifi_allowlist", {
           entityGroups: ["wireless_access"],
           capabilities: ["wifi"],
@@ -950,6 +964,11 @@ export const ADMIN_IA = Object.freeze([
       icon: "mdi:ip-network",
       entityGroups: ["clients_lan", "clients_dhcp"],
       features: [
+        fixedAdminFeature("network_lan_identity", {
+          contract: "read_only",
+          entityGroups: ["clients_lan"],
+          capabilities: ["lan"],
+        }),
         fixedAdminFeature("network_lan_dhcp", {
           entityGroups: ["clients_lan", "clients_dhcp"],
           capabilities: ["lan", "clients"],
@@ -1108,6 +1127,10 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("system_front_led_schedule", {
           entityGroups: ["system_services"],
           capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_energy_settings", {
+          entityGroups: ["wireless_general", "wireless_radios"],
+          capabilities: ["system", "wifi"],
         }),
         fixedAdminFeature("system_information_services", {
           entityGroups: ["system_health", "system_services"],
@@ -1674,36 +1697,61 @@ export function capabilityGroupFor(meta) {
   return `${section}_other`;
 }
 
-const ADMIN_CONTROL_PLACEMENT = new Map();
+const ADMIN_CONTROL_FEATURE = new Map();
 const ADMIN_ENTITY_GROUP_PLACEMENT = new Map();
+const ADMIN_FEATURE_PLACEMENT = new Map();
 const ADMIN_FEATURE_ENTITY_GROUPS = new Set();
+const ADMIN_READ_SECTION_OWNER = new Map();
 for (const area of ADMIN_IA) {
   for (const subsection of area.subsections) {
     const placement = Object.freeze({
       areaId: area.id,
       subsectionId: subsection.id,
     });
-    for (const control of subsection.controls) {
-      ADMIN_CONTROL_PLACEMENT.set(control, placement);
-    }
     for (const group of subsection.entityGroups) {
       ADMIN_ENTITY_GROUP_PLACEMENT.set(group, placement);
     }
     for (const feature of subsection.features) {
+      ADMIN_FEATURE_PLACEMENT.set(feature.id, placement);
+      for (const control of feature.controls) {
+        ADMIN_CONTROL_FEATURE.set(control, feature.id);
+      }
       for (const group of feature.entityGroups) {
         ADMIN_FEATURE_ENTITY_GROUPS.add(group);
       }
+      for (const readSection of feature.readSections) {
+        // A cached collection may support several related capabilities. Render it
+        // once under the first feature that claims it in the reviewed manifest;
+        // later features still use it as status evidence without duplicating data.
+        if (!ADMIN_READ_SECTION_OWNER.has(readSection)) {
+          ADMIN_READ_SECTION_OWNER.set(readSection, feature.id);
+        }
+      }
     }
   }
+}
+
+function adminFeatureForControl(meta) {
+  if (!isSemanticControl(meta)) return undefined;
+  if (
+    typeof meta.management_feature === "string" &&
+    meta.management_feature.length > 0
+  ) {
+    return ADMIN_FEATURE_PLACEMENT.has(meta.management_feature)
+      ? meta.management_feature
+      : undefined;
+  }
+  return ADMIN_CONTROL_FEATURE.get(
+    `${String(meta.domain || "")}:${String(meta.translation_key || "")}`,
+  );
 }
 
 /** Return the reviewed Administration placement for an entity, if any. */
 export function adminPlacementFor(meta) {
   if (!meta) return undefined;
   if (isSemanticControl(meta)) {
-    return ADMIN_CONTROL_PLACEMENT.get(
-      `${String(meta.domain || "")}:${String(meta.translation_key || "")}`,
-    );
+    const featureId = adminFeatureForControl(meta);
+    return featureId ? ADMIN_FEATURE_PLACEMENT.get(featureId) : undefined;
   }
   if (meta.child_device?.kind === "powerline_node") {
     return { areaId: "network", subsectionId: "network_mesh" };
@@ -3556,9 +3604,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     const supportedControls = entities.filter(
       (entity) =>
         isSemanticControl(entity) &&
-        feature.controls.includes(
-          `${String(entity.domain || "")}:${String(entity.translation_key || "")}`,
-        ),
+        adminFeatureForControl(entity) === feature.id,
     );
     const controls = supportedControls.filter((entity) => entity.control === true);
     const reports = entities.filter(
@@ -3616,6 +3662,8 @@ export class SpeedportSmartPanel extends HTMLElement {
     sections,
     capabilities,
     sourceAvailable,
+    accessSourceStates,
+    { canReadAdmin = false } = {},
   ) {
     if (features.length === 0) return "";
     const cards = features
@@ -3636,17 +3684,65 @@ export class SpeedportSmartPanel extends HTMLElement {
         const destructive = feature.destructive
           ? `<span class="admin-feature-warning"><ha-icon icon="mdi:alert-octagon-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.feature.destructive"))}</span>`
           : "";
+        const featureControls = entities.filter(
+          (entity) =>
+            isSemanticControl(entity) &&
+            adminFeatureForControl(entity) === feature.id,
+        );
+        const controlMarkup = featureControls.length
+          ? this._renderAdministrationEntities(
+              featureControls,
+              accessSourceStates,
+            )
+          : "";
+        const readMarkup = canReadAdmin
+          ? feature.readSections
+              .filter(
+                (sectionId) =>
+                  ADMIN_READ_SECTION_OWNER.get(sectionId) === feature.id,
+              )
+              .map((sectionId) =>
+                this._renderAdminReadSection(
+                  sectionId,
+                  sections.get(sectionId),
+                  { sourceAvailable },
+                ),
+              )
+              .join("")
+          : "";
+        const ownedMarkup =
+          controlMarkup || readMarkup
+            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${controlMarkup}${readMarkup}</div>`
+            : "";
+        const headingId = `speedport-admin-feature-${feature.id}`.replace(
+          /[^a-z0-9_-]/gi,
+          "-",
+        );
+        const featureHeader = `
+          <span class="admin-feature-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(presentation.icon)}"></ha-icon></span>
+          <span class="admin-feature-copy">
+            <strong id="${escapeHtml(headingId)}">${escapeHtml(this._t(feature.titleKey))}</strong>
+            <span class="admin-feature-badges">
+              <span class="admin-feature-status">${escapeHtml(status)}</span>
+              <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}"${contractHint}>${escapeHtml(contract)}</span>
+              ${destructive}
+            </span>
+          </span>
+        `;
+        if (ownedMarkup) {
+          return `
+            <details class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.destructive ? "destructive-candidate" : ""} has-owned-content" data-admin-feature="${escapeHtml(feature.id)}" data-detail-id="admin-feature:${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
+              <summary class="admin-feature-summary">
+                ${featureHeader}
+                <ha-icon class="admin-feature-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
+              </summary>
+              ${ownedMarkup}
+            </details>
+          `;
+        }
         return `
-          <article class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.destructive ? "destructive-candidate" : ""}">
-            <span class="admin-feature-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(presentation.icon)}"></ha-icon></span>
-            <div class="admin-feature-copy">
-              <strong>${escapeHtml(this._t(feature.titleKey))}</strong>
-              <div class="admin-feature-badges">
-                <span class="admin-feature-status">${escapeHtml(status)}</span>
-                <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}"${contractHint}>${escapeHtml(contract)}</span>
-                ${destructive}
-              </div>
-            </div>
+          <article class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.destructive ? "destructive-candidate" : ""}" data-admin-feature="${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
+            ${featureHeader}
           </article>
         `;
       })
@@ -3718,21 +3814,15 @@ export class SpeedportSmartPanel extends HTMLElement {
               placement.subsectionId === subsection.id
             );
           });
-          const reads =
-            this._hass?.user?.is_admin === true
-              ? subsection.readSections
-              : [];
+          const overviewEntities = entities.filter(
+            (entity) => !isSemanticControl(entity),
+          );
           const risk = highestAdminRisk(entities);
           const featureCount = subsection.features.length;
-          const readMarkup = reads
-            .map((read) => {
-              return this._renderAdminReadSection(
-                read.id,
-                sections.get(read.id),
-                { sourceAvailable },
-              );
-            })
-            .join("");
+          const overviewMarkup = this._renderAdministrationEntities(
+            overviewEntities,
+            accessSourceStates,
+          );
           return `
             <details class="administration-subsection" data-detail-id="admin-subsection:${escapeHtml(subsection.id)}">
               <summary>
@@ -3745,9 +3835,20 @@ export class SpeedportSmartPanel extends HTMLElement {
                 <ha-icon class="administration-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
               </summary>
               <div class="administration-subsection-content">
-                ${this._renderAdminFeatureCatalog(subsection.features, runtimeEntities, sections, capabilities, adminReadAvailable)}
-                ${this._renderAdministrationEntities(entities, accessSourceStates)}
-                ${readMarkup}
+                ${this._renderAdminFeatureCatalog(
+                  subsection.features,
+                  runtimeEntities,
+                  sections,
+                  capabilities,
+                  adminReadAvailable,
+                  accessSourceStates,
+                  { canReadAdmin: this._hass?.user?.is_admin === true },
+                )}
+                ${
+                  overviewMarkup
+                    ? `<section class="administration-subsection-overview" aria-label="${escapeHtml(this._t(subsection.titleKey))}">${overviewMarkup}</section>`
+                    : ""
+                }
               </div>
             </details>
           `;
@@ -4610,15 +4711,33 @@ export class SpeedportSmartPanel extends HTMLElement {
           padding-top: 14px;
         }
         .admin-feature-card {
-          display: grid;
-          grid-template-columns: auto minmax(0, 1fr);
-          align-items: start;
-          gap: 11px;
           min-width: 0;
           padding: 12px;
           border: 1px solid var(--sp-border);
           border-radius: 13px;
           background: var(--sp-surface);
+        }
+        .admin-feature-card:not(details),
+        .admin-feature-summary {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: start;
+          gap: 11px;
+        }
+        .admin-feature-summary {
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          cursor: pointer;
+          list-style: none;
+        }
+        .admin-feature-summary::-webkit-details-marker { display: none; }
+        .admin-feature-chevron {
+          align-self: center;
+          color: var(--sp-muted);
+          transition: transform .16s ease;
+          --mdc-icon-size: 20px;
+        }
+        .admin-feature-card[open] > .admin-feature-summary .admin-feature-chevron {
+          transform: rotate(180deg);
         }
         .admin-feature-card.status-control_available {
           border-color: color-mix(in srgb, var(--sp-success) 40%, var(--sp-border));
@@ -4630,6 +4749,9 @@ export class SpeedportSmartPanel extends HTMLElement {
         .admin-feature-card.status-not_observed { opacity: .76; }
         .admin-feature-card.destructive-candidate {
           border-color: color-mix(in srgb, var(--sp-error) 30%, var(--sp-border));
+        }
+        .admin-feature-card.has-owned-content {
+          grid-column: 1 / -1;
         }
         .admin-feature-icon {
           display: grid;
@@ -4650,6 +4772,23 @@ export class SpeedportSmartPanel extends HTMLElement {
           overflow-wrap: anywhere;
           font-size: 13px;
           line-height: 1.35;
+        }
+        .admin-feature-owned {
+          display: grid;
+          gap: 12px;
+          min-width: 0;
+          margin-top: 12px;
+          padding-top: 12px;
+          border-top: 1px solid var(--sp-border);
+        }
+        .admin-feature-owned > .administration-entity-grid {
+          padding-top: 0;
+        }
+        .admin-feature-owned > .admin-read-section {
+          margin-top: 0;
+        }
+        .administration-subsection-overview {
+          min-width: 0;
         }
         .admin-feature-badges {
           display: flex;

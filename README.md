@@ -242,6 +242,10 @@ a management command, or reload the integration. Endpoints that may trigger a
 Wi-Fi scan, update check, or other router activity are deliberately excluded.
 Log out of every Speedport web interface before starting it.
 
+An observed candidate remains evidence only. Capturing its value-free shape does
+not add a runtime capability, normalize its fields, create an entity, or enable
+a router control.
+
 The resulting diagnostics contain only bounded endpoint metadata and
 value-free field paths and shapes. They also report whether the scan completed,
 was partial, or failed, plus safe attempted/succeeded/unsupported/failure and
@@ -252,8 +256,10 @@ diagnostics file before sharing it.
 
 Controls are shown only when the router reports a matching capability and the
 integration has a specific implementation for that command. Supported controls
-are enabled by default so users can access their router's full confirmed
-capability set. They remain idle during setup, polling, discovery, retry,
+are enabled by default so users can access the complete reviewed control set
+available for their exact model and firmware. Other reported or statically
+discovered capabilities remain read only unless they have their own reviewed
+write contract. Controls remain idle during setup, polling, discovery, retry,
 reload, and diagnostics.
 
 For the reviewed Speedport Smart 4R Typ A firmware, version 0.2.0 also

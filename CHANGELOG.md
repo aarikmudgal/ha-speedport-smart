@@ -10,6 +10,10 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Added
 
+- An immutable conformance registry for all fixed native read entities, binding
+  each sensor and binary sensor to its normalized path and capability gates.
+- Exact semantic Administration ownership for every reviewed control and
+  administrator-only cached read section, with accessible expandable groups.
 - Central immutable risk, dashboard-confirmation, and execution-surface metadata
   for every reviewed router command. Destructive commands cannot be exposed as
   native entities and must use a future admin-only backend grant flow.
@@ -37,6 +41,10 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Temporary router-session contention no longer changes whether a reviewed
+  control is supported; current execution availability remains a separate gate.
+- Administration controls and shared cached collections render under one
+  deterministic feature owner instead of appearing in multiple sections.
 - Wi-Fi generation is no longer mistaken for a radio band, and firmware link
   speeds are no longer presented as live traffic throughput.
 - Unproven router-global parental-time and phonebook-entry entities are withheld

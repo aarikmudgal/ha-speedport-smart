@@ -29,7 +29,11 @@ from .api import (
 from .const import DOMAIN, RATE_WINDOW_SECONDS
 from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinator
 from .diagnostics import safe_error_class_name
-from .management import ManagementExecutionSurface, get_command_write_contract
+from .management import (
+    ManagementCommandDecision,
+    ManagementExecutionSurface,
+    get_command_write_contract,
+)
 from .normalizers import normalize_feature_payload, normalize_status_payload
 
 if TYPE_CHECKING:
@@ -534,19 +538,36 @@ class SpeedportHub:
 
     def supports_command(self, command: str) -> bool:
         """Return whether a native entity may expose an implemented command."""
+        return self.command_decision(command).exposed
+
+    def command_decision(self, command: str) -> ManagementCommandDecision:
+        """Explain command support without collapsing independent safety gates."""
         contract = get_command_write_contract(command)
-        handler = getattr(self.client, command, None) or getattr(
-            self.client, f"execute_{command}", None
+        handler_name = contract.handler if contract is not None else None
+        handler = (
+            getattr(self.client, handler_name, None)
+            if handler_name is not None
+            else None
         )
         identity = self.router_identity
-        return (
-            self.controls_enabled
-            and self.has_capability("authenticated_json")
-            and contract is not None
-            and contract.execution_surface is ManagementExecutionSurface.NATIVE_ENTITY
-            and contract.supports(identity.model, identity.firmware)
-            and self.has_capability(contract.capability)
-            and callable(handler)
+        return ManagementCommandDecision(
+            configured=self.controls_enabled,
+            authenticated_capability=self.has_capability("authenticated_json"),
+            contract_known=contract is not None,
+            surface_allowed=(
+                contract is not None
+                and contract.execution_surface
+                is ManagementExecutionSurface.NATIVE_ENTITY
+            ),
+            firmware_supported=(
+                contract is not None
+                and contract.supports(identity.model, identity.firmware)
+            ),
+            capability_supported=(
+                contract is not None and self.has_capability(contract.capability)
+            ),
+            handler_available=callable(handler),
+            session_available=self.management_controls_available,
         )
 
     def get(
@@ -1575,12 +1596,25 @@ class SpeedportHub:
                 translation_key="command_unsupported",
             )
 
-        handler = getattr(self.client, command, None)
-        if handler is None:
-            handler = getattr(self.client, f"execute_{command}", None)
+        contract = get_command_write_contract(command)
+        handler = (
+            getattr(self.client, contract.handler, None)
+            if contract is not None and contract.handler is not None
+            else None
+        )
         if not callable(handler):
             raise HomeAssistantError(
                 "This router does not support the requested action.",
+                translation_domain=DOMAIN,
+                translation_key="command_unsupported",
+            )
+        if (
+            contract is not None
+            and contract.parameter_names is not None
+            and frozenset(parameters) != contract.parameter_names
+        ):
+            raise HomeAssistantError(
+                "The requested action parameters do not match its reviewed contract.",
                 translation_domain=DOMAIN,
                 translation_key="command_unsupported",
             )

@@ -271,6 +271,62 @@ test("all reviewed permission-denied controls retain exact placement and zero ac
   }
 });
 
+test("backend management feature owns controls before the legacy semantic fallback", () => {
+  const fixture = panelFixture();
+  const semanticControl = {
+    ...CONTROL_META,
+    disruptive: false,
+    entity_id: "button.speedport_semantic_reconnect",
+    management_feature: "internet_reconnect",
+    risk: "normal",
+  };
+  fixture.panel._hass.states[semanticControl.entity_id] = {
+    attributes: { friendly_name: "Semantic reconnect" },
+    state: "unknown",
+  };
+
+  assert.deepEqual(adminPlacementFor(semanticControl), {
+    areaId: "internet",
+    subsectionId: "internet_connection",
+  });
+  assert.deepEqual(adminPlacementFor(CONTROL_META), {
+    areaId: "system",
+    subsectionId: "system_maintenance",
+  });
+  assert.equal(
+    adminPlacementFor({
+      ...CONTROL_META,
+      management_feature: "unreviewed_feature",
+    }),
+    undefined,
+  );
+
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", [semanticControl]),
+    [semanticControl],
+    [],
+    {},
+  );
+  const featureStart = html.indexOf(
+    'data-admin-feature="internet_reconnect"',
+  );
+  const controlStart = html.indexOf(
+    `data-control="${semanticControl.entity_id}"`,
+  );
+  const nextFeature = html.indexOf('data-admin-feature="', featureStart + 1);
+  assert.notEqual(featureStart, -1);
+  assert.ok(controlStart > featureStart);
+  assert.ok(nextFeature === -1 || controlStart < nextFeature);
+  assert.match(
+    html,
+    /<details class="admin-feature-card[^>]*data-admin-feature="internet_reconnect"[^>]*data-detail-id="admin-feature:internet_reconnect"/,
+  );
+  assert.match(
+    html,
+    /<details class="admin-feature-card[^>]*aria-labelledby="speedport-admin-feature-internet_reconnect"[\s\S]*?<summary class="admin-feature-summary">[\s\S]*?<strong id="speedport-admin-feature-internet_reconnect">/,
+  );
+});
+
 test("capability catalog explains permission-denied controls", () => {
   const fixture = panelFixture();
   const rebootFeature = ADMIN_IA.flatMap((area) => area.subsections)
@@ -530,7 +586,7 @@ test("Administration catalog covers every reviewed management family without gen
   const featureIds = features.map((feature) => feature.id);
 
   assert.equal(subsections.length, 27);
-  assert.equal(features.length, 73);
+  assert.equal(features.length, 78);
   assert.equal(new Set(featureIds).size, featureIds.length);
   assert.deepEqual(
     [...new Set(features.map((feature) => feature.contract))].sort(),
@@ -565,6 +621,221 @@ test("Administration catalog covers every reviewed management family without gen
   assert.equal(inventory.contract, "read_only");
   assert.equal(inventory.destructive, false);
   assert.deepEqual(inventory.controls, ["button:capture_read_only_inventory"]);
+});
+
+test("manual capability gaps are explicit safe cards without invented controls", () => {
+  const records = new Map(
+    ADMIN_IA.flatMap((area) =>
+      area.subsections.flatMap((subsection) =>
+        subsection.features.map((feature) => [
+          feature.id,
+          { areaId: area.id, feature, subsectionId: subsection.id },
+        ]),
+      ),
+    ),
+  );
+  const expected = {
+    internet_ip_information: {
+      areaId: "internet",
+      contract: "read_only",
+      entityGroups: ["connection_addressing"],
+      subsectionId: "internet_connection",
+    },
+    network_client_manual_add: {
+      areaId: "network",
+      contract: "blocked",
+      entityGroups: ["clients_devices"],
+      subsectionId: "network_devices",
+    },
+    network_lan_identity: {
+      areaId: "network",
+      contract: "read_only",
+      entityGroups: ["clients_lan"],
+      subsectionId: "network_lan",
+    },
+    network_wifi_guest_access_pass: {
+      areaId: "network",
+      contract: "read_only",
+      entityGroups: ["wireless_guest"],
+      subsectionId: "network_wifi_access",
+    },
+    system_energy_settings: {
+      areaId: "system",
+      contract: "blocked",
+      entityGroups: ["wireless_general", "wireless_radios"],
+      subsectionId: "system_information",
+    },
+  };
+
+  for (const [featureId, shape] of Object.entries(expected)) {
+    const record = records.get(featureId);
+    assert.ok(record, featureId);
+    assert.equal(record.areaId, shape.areaId, featureId);
+    assert.equal(record.subsectionId, shape.subsectionId, featureId);
+    assert.equal(record.feature.contract, shape.contract, featureId);
+    assert.deepEqual(record.feature.entityGroups, shape.entityGroups, featureId);
+    assert.deepEqual(record.feature.controls, [], featureId);
+    assert.deepEqual(record.feature.readSections, [], featureId);
+    assert.equal(record.feature.destructive, false, featureId);
+  }
+
+  const fixture = panelFixture();
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", []),
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  for (const featureId of Object.keys(expected)) {
+    const marker = `data-admin-feature="${featureId}"`;
+    assert.equal(html.split(marker).length - 1, 1, featureId);
+    assert.match(
+      html,
+      new RegExp(
+        `<article class="admin-feature-card[^>]*data-admin-feature="${featureId}"`,
+      ),
+    );
+  }
+  assert.doesNotMatch(html, /data-control=/);
+
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      capability_group: "wireless_general",
+      control: false,
+      domain: "binary_sensor",
+      entity_id: "binary_sensor.speedport_wifi_enabled",
+      section: "wireless",
+      translation_key: "wifi_enabled",
+    }),
+    { areaId: "network", subsectionId: "network_wifi" },
+  );
+});
+
+test("reviewed controls and cached reads render once under deterministic feature owners", () => {
+  const featureRecords = ADMIN_IA.flatMap((area) =>
+    area.subsections.flatMap((subsection) =>
+      subsection.features.map((feature) => ({
+        areaId: area.id,
+        feature,
+        subsectionId: subsection.id,
+      })),
+    ),
+  );
+  const controlOwners = new Map();
+  const readReferences = new Map();
+  for (const { feature } of featureRecords) {
+    for (const control of feature.controls) {
+      assert.equal(controlOwners.has(control), false, control);
+      controlOwners.set(control, feature.id);
+    }
+    for (const sectionId of feature.readSections) {
+      if (!readReferences.has(sectionId)) readReferences.set(sectionId, []);
+      readReferences.get(sectionId).push(feature.id);
+    }
+  }
+
+  const sharedReadOwners = Object.fromEntries(
+    [...readReferences]
+      .filter(([, owners]) => owners.length > 1)
+      .map(([sectionId, owners]) => [sectionId, owners[0]])
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+  assert.deepEqual(sharedReadOwners, {
+    clients: "network_client_rename",
+    mesh_nodes: "network_mesh_powerline_management",
+    port_forward_rules: "internet_port_forward_toggle",
+    receivers: "internet_receiver_led",
+    storage_devices: "network_usb_printer_media",
+    telephone_lines: "telephony_provider_registration",
+  });
+
+  const controls = [...controlOwners].map(([control, featureId]) => {
+    const [domain, translationKey] = control.split(":");
+    return {
+      access_source: "router_control",
+      confirmation: "confirm",
+      control: true,
+      control_supported: true,
+      disruptive: false,
+      domain,
+      entity_id: `${domain}.speedport_${translationKey}`,
+      management_feature: featureId,
+      risk: "normal",
+      section: "controls",
+      translation_key: translationKey,
+    };
+  });
+  const fixture = panelFixture();
+  for (const meta of controls) {
+    const options =
+      meta.translation_key === "internet_privacy_level_control"
+        ? ["off", "level_1", "level_2"]
+        : meta.translation_key === "receiver_led_mode_control"
+          ? ["use_leds", "off_after_timeout", "disabled"]
+          : undefined;
+    fixture.panel._hass.states[meta.entity_id] = {
+      attributes: {
+        friendly_name: meta.translation_key,
+        ...(options ? { options } : {}),
+      },
+      state:
+        meta.domain === "switch"
+          ? "off"
+          : meta.domain === "select"
+            ? options[0]
+            : meta.domain === "text"
+              ? "Router client"
+              : "unknown",
+    };
+  }
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", controls),
+    controls,
+    [],
+    { protected_json: { available: true } },
+  );
+  const featureWindow = (featureId) => {
+    const marker = `data-admin-feature="${featureId}"`;
+    const start = html.indexOf(marker);
+    assert.notEqual(start, -1, featureId);
+    const following = html.slice(start + marker.length);
+    const next = following.search(/data-admin-feature="[^"]+"/);
+    return next === -1
+      ? html.slice(start)
+      : html.slice(start, start + marker.length + next);
+  };
+
+  for (const meta of controls) {
+    const marker = `data-control="${meta.entity_id}"`;
+    assert.equal(html.split(marker).length - 1, 1, meta.entity_id);
+    assert.match(featureWindow(meta.management_feature), new RegExp(marker));
+    assert.match(
+      featureWindow(meta.management_feature),
+      new RegExp(
+        `data-detail-id="admin-feature:${meta.management_feature}"`,
+      ),
+    );
+  }
+  for (const sectionId of ADMIN_READ_SECTION_ORDER) {
+    const marker = `data-detail-id="admin-read:${sectionId}"`;
+    assert.equal(html.split(marker).length - 1, 1, sectionId);
+    const owner = readReferences.get(sectionId)?.[0];
+    assert.ok(owner, sectionId);
+    assert.match(featureWindow(owner), new RegExp(marker));
+    assert.match(
+      featureWindow(owner),
+      new RegExp(`data-detail-id="admin-feature:${owner}"`),
+    );
+  }
+  assert.match(
+    html,
+    /<article class="admin-feature-card[^>]*data-admin-feature="internet_provider_configuration"/,
+  );
+  assert.doesNotMatch(
+    html,
+    /<details class="admin-feature-card[^>]*data-admin-feature="internet_provider_configuration"/,
+  );
 });
 
 test("feature status comes only from current entities, collections, and capabilities", () => {
@@ -754,13 +1025,12 @@ test("complete capability catalog remains visible and noninteractive without liv
     [],
     { protected_json: { available: true } },
   );
-  const featureCards =
-    html.match(/<article class="admin-feature-card[\s\S]*?<\/article>/g) || [];
-  const inventoryCard = featureCards.find((card) =>
-    card.includes("Read-only router capability inventory"),
-  );
+  const featureMarkers = html.match(/data-admin-feature="[^"]+"/g) || [];
+  const inventoryCard = html.match(
+    /<article class="admin-feature-card[^>]*data-admin-feature="home_assistant_capability_inventory"[\s\S]*?<\/article>/,
+  )?.[0];
 
-  assert.equal(featureCards.length, 73);
+  assert.equal(featureMarkers.length, 78);
   assert.ok(inventoryCard);
   assert.match(inventoryCard, /Read-only by design/);
   assert.doesNotMatch(inventoryCard, /destructive-candidate/);
@@ -791,11 +1061,7 @@ test("complete capability catalog remains visible and noninteractive without liv
     /safe local write and readback flow has not yet been verified/,
   );
   assert.match(html, /Recovery-critical candidate/);
-  assert.ok(
-    featureCards.every(
-      (card) => !card.includes("<button") && !card.includes("data-control"),
-    ),
-  );
+  assert.doesNotMatch(html, /data-control=/);
 });
 
 test("Administration renders integration polling and endpoint health cards", () => {

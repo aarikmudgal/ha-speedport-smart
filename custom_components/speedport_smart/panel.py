@@ -37,7 +37,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 13
+PANEL_SCHEMA_VERSION: Final = 14
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -175,6 +175,10 @@ _NON_MUTATING_BUTTON_KEYS: Final = frozenset(
         "retry_protected_data",
     }
 )
+_NON_MUTATING_BUTTON_FEATURES: Final = {
+    "capture_read_only_inventory": "home_assistant_capability_inventory",
+    "retry_protected_data": "home_assistant_session_recovery",
+}
 _CHILD_SECTIONS: Final = {
     "client": "clients",
     "dect_handset": "telephony",
@@ -544,6 +548,11 @@ def _entity_panel_data(
     supports_control = not protected_read_only and (
         is_non_mutating_control or write_contract is not None
     )
+    management_feature = (
+        write_contract.feature_id
+        if write_contract is not None
+        else _NON_MUTATING_BUTTON_FEATURES.get(translation_key)
+    )
     can_control = supports_control and _can_control_entity(
         connection,
         entity_id,
@@ -571,6 +580,7 @@ def _entity_panel_data(
         "access_source": access_source,
         "control": can_control,
         "control_supported": supports_control,
+        "management_feature": management_feature,
         "mutates_router": supports_control and write_contract is not None,
         "risk": write_contract.risk.value if write_contract is not None else "normal",
         "confirmation": (

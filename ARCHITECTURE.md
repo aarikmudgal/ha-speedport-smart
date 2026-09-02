@@ -23,8 +23,9 @@ that every model and firmware exposes the same endpoints.
 
 Home Assistant config entries own normal setup, reload, reauthentication,
 reconfiguration, and unload behavior. Platforms expose sensors, binary sensors,
-device trackers, switches, buttons, and update entities backed by the shared
-runtime. Text entities expose only bounded, firmware-proven editable values.
+device trackers, switches, selects, buttons, text controls, and update entities
+backed by the shared runtime. Text entities expose only bounded,
+firmware-reviewed editable values.
 
 ## Protocol and session ownership
 
@@ -109,6 +110,13 @@ This lets a provisional WAN capability that was busy during setup add its fixed
 entities after the first successful sample without requiring an integration
 reload.
 
+Every fixed native scalar sensor and binary sensor is also classified by an
+immutable read-contract registry containing its entity key, normalized data
+path, platform, and capability gates. The registry makes accidental native read
+surface growth visible in review; it does not normalize router data, create an
+entity, perform I/O, or authorize a write. Collection entities and the bounded
+administrator projection retain their own explicit reviewed schemas.
+
 Feature families include internet/WAN, DSL, Hybrid/mobile, Wi-Fi/Mesh, clients,
 LAN/DHCP/NAT, telephony, system/firmware, security, DDNS/VPN, parental controls,
 USB, and integration diagnostics. Their presence is firmware-dependent and is
@@ -146,9 +154,20 @@ Command descriptors are separate from read-only polling. A control is created
 only when all of these conditions hold:
 
 - the integration option permits controls
-- the firmware capability is present
-- a specific semantic command handler exists
+- authenticated JSON management is supported
+- an immutable native-entity command contract exists
+- the router model and firmware exactly match that contract
+- the contract's semantic capability is present
+- the contract names an available client handler
 - the source state required to verify the result is available
+
+The command decision retains those support reasons independently. Current
+management-session state, retry backoff, and the firmware write-block latch gate
+execution availability without changing whether the control is supported. Home
+Assistant entity permissions remain a separate authorization boundary. Each
+contract also binds one semantic feature ID, the exact client handler, and the
+accepted parameter-name set; missing or extra parameters fail closed before
+router I/O.
 
 Stateful commands execute through the shared arbiter, then refresh their owning
 poll group to verify returned state. Reboot and Internet reconnect are explicit
@@ -171,11 +190,20 @@ The integration registers one Home Assistant custom panel at
 integration package. It is not a Lovelace resource and requires no separate
 HACS frontend repository.
 
-The backend WebSocket command returns permission-filtered entity metadata,
-router identity, capability families, and management status without performing
-router I/O. Live states come from Home Assistant's state model. The frontend
-groups them by functional hierarchy and child device, follows Home Assistant
-theme variables, and adapts to mobile layouts.
+The primary backend WebSocket command returns permission-filtered entity
+metadata, router identity, capability families, and management status without
+performing router I/O. Live states come from Home Assistant's state model. A
+separate administrator-only read command returns bounded, explicitly allowlisted
+scalar fields from the loaded hub's normalized cache; it also performs no router
+I/O and cannot execute an action. The frontend groups these sources by
+functional hierarchy and child device, follows Home Assistant theme variables,
+and adapts to mobile layouts.
+
+The Administration catalog also lists static firmware candidates and planned
+features. Those entries are evidence and navigation metadata only: they do not
+create a capability, normalized field, entity, command contract, or generic
+mutation endpoint. The current backend has no admin-action executor; destructive,
+secret, structured-record, upload, and restore operations remain unavailable.
 
 Static-route and WebSocket registration are process-scoped because Home
 Assistant has no supported unregister API for them. Config-entry reloads leave
