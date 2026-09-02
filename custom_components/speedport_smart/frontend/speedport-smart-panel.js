@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=16";
+import { keepDialogFocus } from "./accessibility.js?schema=17";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=16";
+} from "./controls.js?schema=17";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=16";
+} from "./entity-state.js?schema=17";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=16";
+} from "./render-state.js?schema=17";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=16";
+} from "./translations.js?schema=17";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 16;
+const PANEL_SCHEMA_VERSION = 17;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -212,6 +212,7 @@ export const ADMIN_READ_SECTION_ORDER = Object.freeze([
   "storage_devices",
   "nas_shares",
   "powerline_nodes",
+  "lan_ipv6_technical",
   "ddns_identity",
   "wifi_2_4_identity",
   "wifi_5_identity",
@@ -428,6 +429,11 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "download_link_speed_bps",
       "upload_link_speed_bps",
     ],
+  },
+  lan_ipv6_technical: {
+    titleKey: "admin.section.lan_ipv6_technical",
+    icon: "mdi:ip-network-outline",
+    fields: ["ipv6_pext_flag", "ipv6_arec_flag"],
   },
   wifi_2_4_identity: {
     titleKey: "admin.section.wifi_2_4_identity",
@@ -1032,10 +1038,14 @@ export const ADMIN_IA = Object.freeze([
       id: "network_lan",
       icon: "mdi:ip-network",
       entityGroups: ["clients_lan", "clients_dhcp"],
+      readSections: [
+        { id: "lan_ipv6_technical", capabilities: ["lan"] },
+      ],
       features: [
         fixedAdminFeature("network_lan_identity", {
           contract: "read_only",
           entityGroups: ["clients_lan"],
+          readSections: ["lan_ipv6_technical"],
           capabilities: ["lan"],
         }),
         fixedAdminFeature("network_lan_dhcp", {

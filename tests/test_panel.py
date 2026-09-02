@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
@@ -42,6 +42,7 @@ _EXPECTED_PUBLIC_STATUS_KEYS = {
     "initial_setup_completed",
     "internet_bng_configured",
     "internet_connected",
+    "internet_connected_since",
     "internet_error_code",
     "internet_privacy_level",
     "internet_provider_family",
@@ -247,6 +248,30 @@ _PROTECTED_BINARY_KEYS = {
     "router_https_enabled",
     "settings_write_blocked",
 }
+
+
+async def test_panel_registration_uses_current_schema_cache_key() -> None:
+    """The panel URL and config force stale frontend modules onto schema 17."""
+    hass = MagicMock()
+    hass.data = {}
+    hass.http.async_register_static_paths = AsyncMock()
+
+    with (
+        patch.object(panel_module.websocket_api, "async_register_command"),
+        patch.object(
+            panel_module.panel_custom,
+            "async_register_panel",
+            AsyncMock(),
+        ) as register_panel,
+    ):
+        await panel_module.async_register_panel(hass)
+
+    assert panel_module.PANEL_SCHEMA_VERSION == 17
+    register_panel.assert_awaited_once()
+    assert register_panel.await_args.kwargs["module_url"] == (
+        "/speedport_smart_frontend/speedport-smart-panel.js?schema=17"
+    )
+    assert register_panel.await_args.kwargs["config"] == {"schema_version": 17}
 
 
 def test_powerline_child_entities_use_the_lan_section() -> None:

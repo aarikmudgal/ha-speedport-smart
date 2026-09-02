@@ -116,6 +116,25 @@ async def test_wan_sensor_values_and_reset_semantics(
     assert utilization.native_value == 41.6
 
 
+async def test_internet_connected_since_is_diagnostic_timestamp(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Explicit-offset connection time becomes an aware timestamp sensor."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._merge_data(  # noqa: SLF001 - platform contract fixture
+        {"internet": {"connected_since": "2026-09-02T08:15:30+02:00"}}
+    )
+    description = _description(SENSOR_DESCRIPTIONS, "internet_connected_since")
+    sensor = SpeedportSensor(hub, description)
+
+    assert sensor.native_value == datetime.fromisoformat("2026-09-02T08:15:30+02:00")
+    assert description.device_class is SensorDeviceClass.TIMESTAMP
+    assert description.entity_category is EntityCategory.DIAGNOSTIC
+
+
 async def test_setup_adds_only_exposed_paths(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,

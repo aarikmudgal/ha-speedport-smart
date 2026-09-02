@@ -10,6 +10,12 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Added
 
+- Two exact `LAN.json` IPv6 firmware flags in the administrator-only technical
+  view. Their undocumented semantics are not guessed, and they do not create
+  native entities or controls.
+- A distinct diagnostic timestamp for the firmware-reported Internet
+  connection start, while preserving the independent online-duration sensor.
+  Ambiguous timestamps without an explicit UTC offset remain unavailable.
 - An immutable conformance registry for all fixed native read entities, binding
   each sensor and binary sensor to its normalized path and capability gates.
 - Exact semantic Administration ownership for every reviewed control and

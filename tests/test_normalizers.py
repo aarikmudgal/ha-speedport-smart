@@ -4,7 +4,71 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.speedport_smart.normalizers import normalize_feature_payload
+from custom_components.speedport_smart.models import normalize_status
+from custom_components.speedport_smart.normalizers import (
+    normalize_feature_payload,
+    normalize_status_payload,
+)
+
+
+def test_internet_connected_since_is_distinct_from_uptime_duration() -> None:
+    """Firmware connection timestamp and duration remain independent reads."""
+    normalized, capabilities = normalize_status_payload(
+        normalize_status(
+            {
+                "inet_uptime": "2026-09-02T08:15:30+02:00",
+                "days_online": "2",
+                "time_online": "03:04:05",
+            }
+        )
+    )
+    internet = normalized["internet"]
+
+    assert internet["connected_since"] == "2026-09-02T08:15:30+02:00"
+    assert internet["uptime_seconds"] == 183_845
+    assert "internet" in capabilities
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-09-02T08:15:30",
+        "02.09.2026 08:15:30",
+        "09/02/2026 08:15:30",
+        "2026-09-02",
+        "2026-09-02T08:15:30+25:00",
+        "2026-09-02T08:15:30+02:60",
+        "2026-09-02T08:15:30-24:00",
+        1_788_332_130,
+        True,
+        "",
+    ],
+)
+def test_internet_connected_since_rejects_timezone_or_locale_ambiguity(
+    value: object,
+) -> None:
+    """A timestamp without an explicit valid UTC offset remains absent."""
+    assert normalize_feature_payload("internet", {"inet_uptime": value}) == {}
+
+
+def test_internet_connected_since_accepts_explicit_utc_designator() -> None:
+    """ISO UTC designator is normalized to Home Assistant's aware form."""
+    internet = normalize_feature_payload(
+        "internet",
+        {"inet_uptime": "2026-09-02T06:15:30Z"},
+    )["internet"]
+
+    assert internet["connected_since"] == "2026-09-02T06:15:30+00:00"
+
+
+def test_internet_uptime_duration_does_not_fabricate_connection_timestamp() -> None:
+    """Duration-only firmware state never depends on the current clock."""
+    internet = normalize_feature_payload(
+        "internet",
+        {"days_online": "1", "time_online": "00:01:30"},
+    )["internet"]
+
+    assert internet == {"uptime_seconds": 86_490}
 
 
 def test_router_diagnostics_cannot_inject_integration_owned_failure_metadata() -> None:
@@ -317,6 +381,8 @@ def test_lan_and_dhcp_exact_octets_create_bounded_read_only_state() -> None:
         "lan_dhcp_to": "200",
         "lan_ip_v6": "PRIVATE-IPV6",
         "lan_ip_v6_range": "PRIVATE-RANGE",
+        "lan_ip_v6_pext": "1",
+        "lan_ip_v6_arec": "0",
         "lan_dhcp_validtime": "3",
     }
 
@@ -327,6 +393,8 @@ def test_lan_and_dhcp_exact_octets_create_bounded_read_only_state() -> None:
             "ipv6_enabled": True,
             "ula_address": "PRIVATE-IPV6",
             "usable_ipv6_range": "PRIVATE-RANGE",
+            "ipv6_pext_flag": True,
+            "ipv6_arec_flag": False,
         },
         "dhcp": {
             "enabled": True,
@@ -339,6 +407,20 @@ def test_lan_and_dhcp_exact_octets_create_bounded_read_only_state() -> None:
     assert normalize_feature_payload("lan", raw) == expected
     assert normalize_feature_payload("dhcp", raw) == expected
     assert "PRIVATE-IPV6" in repr(expected)
+
+
+@pytest.mark.parametrize("value", ["", "2", "true", -1, 0.0, 1.0, object()])
+def test_lan_undocumented_ipv6_flags_reject_non_firmware_booleans(
+    value: object,
+) -> None:
+    """Undocumented LAN flags stay absent unless firmware sends exact 0 or 1."""
+    lan = normalize_feature_payload(
+        "lan",
+        {"lan_ip_v6_pext": value, "lan_ip_v6_arec": value},
+    ).get("lan", {})
+
+    assert "ipv6_pext_flag" not in lan
+    assert "ipv6_arec_flag" not in lan
 
 
 def test_lan_zero_padded_zero_rate_is_disconnected() -> None:

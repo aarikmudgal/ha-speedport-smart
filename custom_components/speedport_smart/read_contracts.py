@@ -112,6 +112,7 @@ _DECLARED_NATIVE_SCALAR_READ_CONTRACTS: Final = (
             "wan_download_capacity": "internet.download_capacity_bps",
             "wan_upload_capacity": "internet.upload_capacity_bps",
             "internet_uptime": "internet.uptime_seconds",
+            "internet_connected_since": "internet.connected_since",
             "wan_mtu": "internet.mtu",
             "public_ipv4": "internet.ipv4_address",
             "public_ipv6_prefix": "internet.ipv6_prefix",

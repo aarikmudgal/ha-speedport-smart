@@ -334,6 +334,13 @@ def _normalize_known_flat(raw: Mapping[str, Any]) -> NormalizedData:
     uptime_seconds = _online_uptime_seconds(view)
     if uptime_seconds is not None:
         internet["uptime_seconds"] = uptime_seconds
+    connected_since = _first(
+        view,
+        ("inet_uptime",),
+        _internet_connected_since,
+    )
+    if connected_since is not None:
+        internet["connected_since"] = connected_since
     _merge_root(result, "internet", internet)
     _merge_root(result, "dsl", _dsl_fields(view, include_generic=False))
     _merge_root(result, "hybrid", _hybrid_fields(view, include_generic=False))
@@ -979,6 +986,12 @@ def _lan_fields(view: Mapping[str, Any]) -> NormalizedData:
     usable_ipv6_range = _first(view, ("lan_ip_v6_range",), _private_address)
     if usable_ipv6_range is not None:
         lan["usable_ipv6_range"] = usable_ipv6_range
+    ipv6_pext_flag = _first(view, ("lan_ip_v6_pext",), _binary_option)
+    if ipv6_pext_flag is not None:
+        lan["ipv6_pext_flag"] = ipv6_pext_flag
+    ipv6_arec_flag = _first(view, ("lan_ip_v6_arec",), _binary_option)
+    if ipv6_arec_flag is not None:
+        lan["ipv6_arec_flag"] = ipv6_arec_flag
     return lan
 
 
@@ -3258,6 +3271,37 @@ def _online_uptime_seconds(view: Mapping[str, Any]) -> int | None:
     return max(days or 0, 0) * 86_400 + max(clock or 0, 0)
 
 
+def _internet_connected_since(value: Any) -> str | None:
+    """Return firmware connection timestamp only with an explicit UTC offset."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    match = re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?"
+        r"(?:Z|[+-](?P<offset_hour>\d{2}):(?P<offset_minute>\d{2}))",
+        text,
+    )
+    if match is None:
+        # The router UI localizes timestamps for display. Without a transmitted
+        # offset, interpreting a locale-shaped or naive value would invent the
+        # router timezone. Keep the field absent instead.
+        return None
+    offset_hour = match.group("offset_hour")
+    offset_minute = match.group("offset_minute")
+    if offset_hour is not None and (
+        int(offset_hour) > _MAX_CLOCK_HOUR
+        or int(offset_minute or "0") > _MAX_CLOCK_MINUTE
+    ):
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.isoformat()
+
+
 def _call_timestamp(view: Mapping[str, Any]) -> datetime | None:
     combined = _first(
         view,
@@ -3372,6 +3416,19 @@ def _boolean(value: Any) -> bool | None:
         "unregistered",
     }:
         return False
+    return None
+
+
+def _binary_option(value: Any) -> bool | None:
+    """Decode firmware option fields whose contract is exactly 0 or 1."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized in {"0", "1"}:
+            return normalized == "1"
     return None
 
 

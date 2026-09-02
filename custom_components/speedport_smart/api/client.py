@@ -316,6 +316,8 @@ _OBSERVED_SCHEMA_SAFE_FIELDS: Final = _OBSERVED_SCHEMA_SAFE_SINGLE_FIELDS | froz
         "lan4_link_status",
         "lan_dhcp_validtime",
         "lan_ip_v6",
+        "lan_ip_v6_arec",
+        "lan_ip_v6_pext",
         "lan_ip_v6_range",
         "lan_ip_v6_used",
         "lte_status",

@@ -791,6 +791,16 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
+        key="internet_connected_since",
+        translation_key="internet_connected_since",
+        data_path="internet.connected_since",
+        capability="internet",
+        coordinator_group=NORMAL,
+        transform=as_datetime,
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
         key="wan_interface",
         translation_key="wan_interface",
         data_path="wan.interface.name",

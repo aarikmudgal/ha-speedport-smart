@@ -46,13 +46,13 @@ def _platform_contracts() -> dict[NativeReadContractId, NativeScalarReadContract
 def test_native_scalar_read_registry_matches_platform_surface_exactly() -> None:
     """Every fixed native read must be classified, with no stale contracts."""
     assert dict(NATIVE_SCALAR_READ_CONTRACTS) == _platform_contracts()
-    assert len(NATIVE_SCALAR_READ_CONTRACTS) == 231
+    assert len(NATIVE_SCALAR_READ_CONTRACTS) == 232
     assert (
         sum(
             contract.platform is NativeReadPlatform.SENSOR
             for contract in NATIVE_SCALAR_READ_CONTRACTS.values()
         )
-        == 153
+        == 154
     )
     assert (
         sum(

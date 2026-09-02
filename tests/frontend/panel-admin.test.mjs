@@ -403,6 +403,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
     ddns_identity: "internet",
     dns_rebind_exceptions: "network",
     ip_phones: "telephony",
+    lan_ipv6_technical: "network",
     mesh_nodes: "network",
     nas_shares: "network",
     pbx_clients: "telephony",
@@ -931,6 +932,7 @@ test("manual capability gaps are explicit safe cards without invented controls",
       areaId: "network",
       contract: "read_only",
       entityGroups: ["clients_lan"],
+      readSections: ["lan_ipv6_technical"],
       subsectionId: "network_lan",
     },
     network_wifi_guest_access_pass: {
@@ -955,7 +957,11 @@ test("manual capability gaps are explicit safe cards without invented controls",
     assert.equal(record.feature.contract, shape.contract, featureId);
     assert.deepEqual(record.feature.entityGroups, shape.entityGroups, featureId);
     assert.deepEqual(record.feature.controls, [], featureId);
-    assert.deepEqual(record.feature.readSections, [], featureId);
+    assert.deepEqual(
+      record.feature.readSections,
+      shape.readSections || [],
+      featureId,
+    );
     assert.equal(record.feature.destructive, false, featureId);
   }
 
@@ -967,12 +973,13 @@ test("manual capability gaps are explicit safe cards without invented controls",
     { protected_json: { available: true } },
   );
   for (const featureId of Object.keys(expected)) {
+    const tag = expected[featureId].readSections?.length ? "details" : "article";
     const marker = `data-admin-feature="${featureId}"`;
     assert.equal(html.split(marker).length - 1, 1, featureId);
     assert.match(
       html,
       new RegExp(
-        `<article class="admin-feature-card[^>]*data-admin-feature="${featureId}"`,
+        `<${tag} class="admin-feature-card[^>]*data-admin-feature="${featureId}"`,
       ),
     );
   }
@@ -1984,6 +1991,47 @@ test("administrator payload validation keeps only fixed sections and fields", ()
   }
 });
 
+test("LAN IPv6 technical flags stay exact read-only administrator data", () => {
+  const normalized = normalizeAdminReadPayload(
+    adminPayload("entry-a", [
+      {
+        id: "lan_ipv6_technical",
+        source: "protected_json",
+        rows: [
+          {
+            ipv6_pext_flag: true,
+            ipv6_arec_flag: false,
+            semantic_guess: "must not survive",
+          },
+        ],
+        truncated: false,
+      },
+    ]),
+    "entry-a",
+  );
+
+  assert.deepEqual(normalized.sections[0].rows, [
+    { ipv6_pext_flag: true, ipv6_arec_flag: false },
+  ]);
+
+  const fixture = panelFixture();
+  fixture.panel._adminReadEntry = "entry-a";
+  fixture.panel._adminRead = normalized;
+  const html = fixture.panel._renderAdministration(
+    { ...router("entry-a"), capabilities: ["lan"] },
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  assert.match(html, /LAN IPv6 firmware flags/);
+  assert.match(html, /lan_ip_v6_pext \(undocumented\)/);
+  assert.match(html, /lan_ip_v6_arec \(undocumented\)/);
+  assert.match(html, /<dd>Yes<\/dd>/);
+  assert.match(html, /<dd>No<\/dd>/);
+  assert.doesNotMatch(html, /semantic_guess|must not survive/);
+  assert.doesNotMatch(html, /data-control=.*lan_ip_v6/);
+});
+
 test("only Home Assistant administrators call the cached-read endpoint", async () => {
   const allowed = panelFixture({ admin: true });
   await allowed.panel._loadAdminRead("entry-a");
@@ -2627,7 +2675,7 @@ test("successful Dashboard action does not request administrator cache", async (
 });
 
 test("every administrator field, section, and feature has English and German labels", () => {
-  assert.equal(ADMIN_READ_SECTION_ORDER.length, 23);
+  assert.equal(ADMIN_READ_SECTION_ORDER.length, 24);
   for (const section of ADMIN_READ_SECTION_ORDER) {
     const key = `admin.section.${section}`;
     assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.en, key), key);

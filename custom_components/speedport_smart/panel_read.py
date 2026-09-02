@@ -267,6 +267,11 @@ _COLLECTIONS: Final = (
 
 _RECORDS: Final = (
     _RecordSpec(
+        section_id="lan_ipv6_technical",
+        path=("lan",),
+        fields=("ipv6_pext_flag", "ipv6_arec_flag"),
+    ),
+    _RecordSpec(
         section_id="ddns_identity",
         path=("ddns",),
         fields=("domain", "update_server"),

@@ -2844,6 +2844,32 @@ def test_new_inventory_schemas_retain_shapes_but_no_router_values() -> None:
     assert "nas_user_name" not in rendered
 
 
+def test_lan_inventory_retains_only_shapes_for_undocumented_ipv6_flags() -> None:
+    """Technical LAN option fields remain value-free in discovery metadata."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    candidate = next(
+        item
+        for item in DEFAULT_FEATURE_CANDIDATES["lan"]
+        if item.endpoint == "data/LAN.json"
+    )
+
+    client._observe_candidate_data(  # noqa: SLF001 - value-free policy regression
+        "lan",
+        candidate,
+        {"lan_ip_v6_pext": "PRIVATE-1", "lan_ip_v6_arec": "PRIVATE-0"},
+    )
+
+    schema = client.observed_candidate_schema["lan"][0]["schema"]
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in schema  # type: ignore[union-attr]
+    } == {
+        ("lan_ip_v6_arec", "string"),
+        ("lan_ip_v6_pext", "string"),
+    }
+    assert "PRIVATE" not in repr(schema)
+
+
 def test_unreviewed_endpoint_capability_defaults_are_fail_closed() -> None:
     """An omitted safety policy cannot schedule or inventory a new endpoint."""
     candidate = EndpointCapability("unknown", "data/Unknown.json")

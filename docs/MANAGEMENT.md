@@ -116,7 +116,7 @@ Read-only fields do not imply a matching write. In particular:
 
 | Area | Current read-only coverage |
 | --- | --- |
-| Internet, WAN, DSL, and Hybrid | Connection state, addressing, uptime, DSL metrics, WAN totals, packets, errors, live rate, and utilization |
+| Internet, WAN, DSL, and Hybrid | Connection state, addressing, firmware-reported connection-start timestamp, independent uptime duration, DSL metrics, WAN totals, packets, errors, live rate, and utilization |
 | Wi-Fi | Correct global and per-band state, channels, client counts, guest and office state, and Mesh topology; bounded 2.4 GHz, 5 GHz, guest, and office SSIDs in the administrator-only cached view, with keys excluded |
 | LAN and DHCP | Clients, presence, signal, links, DHCP state, leases, pool/lease summaries, IPv4/IPv6 state, aggregate linked ports, per-port LAN 1-4 link and negotiated speed, and client access allowance when returned |
 | NAT, DNS, traffic prioritization, and security | Port-forward counts plus bounded rule name, state, target, and TCP/UDP mapping summaries; port-block state/counts plus bounded rule-group, ID, state, and validated port-list rows, aggregating distinct extended and extra groups without merging colliding IDs; DNS-rebind state/count plus bounded exception-domain rows; traffic-priority count plus exact slot flags without inferred client identity; firewall, remote-management, and router-side HTTPS state when returned |

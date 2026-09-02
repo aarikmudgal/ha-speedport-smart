@@ -248,6 +248,31 @@ def test_admin_read_payload_accepts_recursively_immutable_hub_data() -> None:
     assert data["clients"]["items"] == (client,)
 
 
+def test_admin_read_payload_exposes_only_reviewed_lan_ipv6_firmware_flags() -> None:
+    """Undocumented LAN flags stay technical, bounded, and administrator-only."""
+    data = {
+        "lan": {
+            "ipv6_pext_flag": True,
+            "ipv6_arec_flag": False,
+            "ula_address": "must-not-leak-through-this-section",
+        }
+    }
+
+    result = admin_read_payload(data, entry_id="entry-1")
+
+    assert result["sections"] == [
+        {
+            "id": "lan_ipv6_technical",
+            "source": "protected_json",
+            "rows": [
+                {"ipv6_pext_flag": True, "ipv6_arec_flag": False},
+            ],
+            "truncated": False,
+        }
+    ]
+    assert "must-not-leak-through-this-section" not in json.dumps(result)
+
+
 def test_admin_read_payload_projects_new_management_collections() -> None:
     """New collections remain fixed, admin-only, and secret-free."""
     data = {

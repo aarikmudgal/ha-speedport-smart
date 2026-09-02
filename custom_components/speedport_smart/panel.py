@@ -37,7 +37,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 16
+PANEL_SCHEMA_VERSION: Final = 17
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -64,6 +64,7 @@ _PUBLIC_STATUS_KEYS: Final = frozenset(
         "initial_setup_completed",
         "internet_bng_configured",
         "internet_connected",
+        "internet_connected_since",
         "internet_error_code",
         "internet_privacy_level",
         "internet_provider_family",

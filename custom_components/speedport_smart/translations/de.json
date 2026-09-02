@@ -108,6 +108,7 @@
       "wan_download_capacity": { "name": "Download-Kapazität" },
       "wan_upload_capacity": { "name": "Upload-Kapazität" },
       "internet_uptime": { "name": "Internet-Betriebszeit" },
+      "internet_connected_since": { "name": "Internet verbunden seit" },
       "wan_interface": { "name": "WAN-Schnittstelle" },
       "wan_interface_status": { "name": "WAN-Schnittstellenstatus" },
       "wan_polling_mode": {

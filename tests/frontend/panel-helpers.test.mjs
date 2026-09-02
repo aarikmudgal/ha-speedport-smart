@@ -49,6 +49,7 @@ test("dashboard fallback hierarchy keeps related router features together", () =
     ["mobile", "mobile_lte_signal", "mobile_signal"],
     ["mobile", "mobile_nr_band", "mobile_radio"],
     ["mobile", "mobile_lte_band", "mobile_radio"],
+    ["connection", "internet_connected_since", "connection_internet"],
     ["system", "router_https_enabled", "system_security"],
   ];
 

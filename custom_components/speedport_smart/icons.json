@@ -1,6 +1,9 @@
 {
   "entity": {
     "sensor": {
+      "internet_connected_since": {
+        "default": "mdi:clock-start"
+      },
       "wan_polling_mode": {
         "default": "mdi:tune-variant"
       },

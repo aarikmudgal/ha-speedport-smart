@@ -330,6 +330,8 @@ its recorder settings.
   [Architecture](ARCHITECTURE.md).
 - Firmware feature coverage and remaining proof requirements are tracked in
   [Management capability matrix](docs/MANAGEMENT_CAPABILITY_MATRIX.md).
+- Normalized data ownership and publication lineage are documented in the
+  [Read-surface registry](docs/READ_SURFACE_REGISTRY.md).
 - Changes are recorded in [Changelog](CHANGELOG.md).
 
 ## License and trademark notice
