@@ -97,6 +97,34 @@ def test_control_discovery_requires_exact_scalar_proof(
     assert not _has_capability_evidence({f"not_{field}": valid}, candidate)
 
 
+@pytest.mark.parametrize("value", ["0", "1", "2", "On", "Timer", "Off"])
+def test_receiver_led_discovery_accepts_exact_firmware_values(value: str) -> None:
+    """Discovery recognizes both exact Smart 4R LED read representations."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["receiver_led"][0]
+
+    assert _has_capability_evidence({"ex5g_led_mode": value}, candidate)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ex5g_led_mode": "timer"},
+        {"ex5g_led_mode": "Always"},
+        {"EX5G_LED_MODE": "Timer"},
+        {"ex5g_led_mode": "Timer", "EX5G_LED_MODE": "Timer"},
+        {"receiver": {"ex5g_led_mode": "Timer"}},
+        {"ex5g_led_mode": ["Timer"]},
+    ],
+)
+def test_receiver_led_discovery_rejects_unproven_evidence(
+    payload: dict[str, object],
+) -> None:
+    """Discovery fails closed for unknown, ambiguous, or nested LED evidence."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["receiver_led"][0]
+
+    assert not _has_capability_evidence(payload, candidate)
+
+
 async def test_controls_require_exact_read_proofs_before_availability(
     hass: Any,
     mock_speedport_client: MagicMock,

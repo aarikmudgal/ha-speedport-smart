@@ -14,7 +14,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
 
-from .const import MANAGED_DEVICE_FORM_FIELDS, MANAGED_DEVICE_SOURCE_KINDS
+from .const import (
+    MANAGED_DEVICE_FORM_FIELDS,
+    MANAGED_DEVICE_SOURCE_KINDS,
+    RECEIVER_LED_MODE_CODES,
+)
 from .identity import port_forward_rule_fingerprint
 
 if TYPE_CHECKING:
@@ -3980,8 +3984,11 @@ def _mesh_wifi_enabled(value: Any) -> bool | None:
 
 
 def _led_mode(value: Any) -> int | None:
-    number = _integer(value)
-    return number if number in {0, 1, 2} else None
+    if isinstance(value, str):
+        return RECEIVER_LED_MODE_CODES.get(value)
+    if isinstance(value, int) and not isinstance(value, bool) and value in {0, 1, 2}:
+        return value
+    return None
 
 
 def _clock_time(value: Any) -> str | None:

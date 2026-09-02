@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -19,6 +19,7 @@ import aiohttp
 
 from ..const import (
     MANAGED_DEVICE_FORM_FIELDS,
+    RECEIVER_LED_MODE_CODES,
 )
 from ..identity import port_forward_rule_fingerprint, valid_device_name
 from ..models import (
@@ -118,6 +119,19 @@ _INTERNET_PRIVACY_ENDPOINT: Final = "data/IPPrivacy.json"
 _INTERNET_PRIVACY_REFERER: Final = "html/content/internet/con_privacy.html"
 _LTE_MODE_ENDPOINT: Final = "data/LTE.json"
 _LTE_MODE_REFERER: Final = "html/content/internet/lte_mode.html"
+_WPS_ENDPOINT: Final = "data/WLANAccess.json"
+_WPS_STATUS_ENDPOINT: Final = "data/WPSStatus.json"
+_WPS_REFERER: Final = "html/content/network/wlan_wps.html"
+_WIFI_ACCESS_REFERER: Final = "html/content/network/wlan_access.html"
+_QUERY_TOKEN_VALUE = re.compile(r"^[0-9]{1,32}$")
+_QUERY_TOKEN_READS: Final = frozenset(
+    {
+        (_INTERNET_PRIVACY_ENDPOINT, _INTERNET_PRIVACY_REFERER),
+        (_LTE_MODE_ENDPOINT, _LTE_MODE_REFERER),
+        (_WPS_ENDPOINT, _WPS_REFERER),
+        (_WPS_ENDPOINT, _WIFI_ACCESS_REFERER),
+    }
+)
 _IP_PBX_CLIENTS_ENDPOINT: Final = "data/IPClients.json"
 _IP_PBX_CLIENTS_REFERER: Final = "html/content/phone/phone_ippbx.html"
 _PHONEBOOK_ENDPOINT: Final = "data/PhoneBook.json"
@@ -683,27 +697,27 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "wps": (
                 _endpoint(
                     "wps",
-                    "data/WLANAccess.json",
+                    _WPS_ENDPOINT,
                     authenticated=True,
-                    referer="html/content/network/wlan_wps.html",
+                    referer=_WPS_REFERER,
                     evidence_keys=("use_wps",),
                 ),
             ),
             "wps_status": (
                 _endpoint(
                     "wps_status",
-                    "data/WPSStatus.json",
+                    _WPS_STATUS_ENDPOINT,
                     authenticated=True,
-                    referer="html/content/network/wlan_wps.html",
+                    referer=_WPS_REFERER,
                     evidence_keys=("wlan_wps_state",),
                 ),
             ),
             "wifi_access": (
                 _endpoint(
                     "wifi_access",
-                    "data/WLANAccess.json",
+                    _WPS_ENDPOINT,
                     authenticated=True,
-                    referer="html/content/network/wlan_access.html",
+                    referer=_WIFI_ACCESS_REFERER,
                     evidence_keys=("wlan", "wps", "access"),
                 ),
             ),
@@ -1837,9 +1851,9 @@ class SpeedportClient:
     async def wps(self) -> dict[str, Any]:
         """Start WPS through confirmed WLANAccess endpoint."""
         return await self._post_reviewed_command(
-            "data/WLANAccess.json",
+            _WPS_ENDPOINT,
             {"wlan_add": "on", "wps_key": "connect"},
-            referer="html/content/network/wlan_wps.html",
+            referer=_WPS_REFERER,
         )
 
     async def execute_wps_start(self) -> dict[str, Any]:
@@ -1905,6 +1919,7 @@ class SpeedportClient:
             field="ex5g_led_mode",
             desired_value=str(mode),
             allowed_values=_THREE_STATE_VALUES,
+            current_value_reader=_require_receiver_led_mode_value,
         )
 
     async def set_hybrid_bonding(self, *, enabled: bool) -> dict[str, Any]:
@@ -1926,6 +1941,7 @@ class SpeedportClient:
         field: str,
         desired_value: str,
         allowed_values: frozenset[str],
+        current_value_reader: Callable[[Mapping[str, Any]], str] | None = None,
     ) -> dict[str, Any]:
         """Fresh-read and submit one exact allowlisted scalar field."""
         if desired_value not in allowed_values:
@@ -1937,10 +1953,14 @@ class SpeedportClient:
                 authenticated=True,
                 referer=referer,
             )
-            current_value = _require_guarded_scalar_value(
-                readback,
-                field=field,
-                allowed_values=allowed_values,
+            current_value = (
+                current_value_reader(readback)
+                if current_value_reader is not None
+                else _require_guarded_scalar_value(
+                    readback,
+                    field=field,
+                    allowed_values=allowed_values,
+                )
             )
             if current_value == desired_value:
                 return {"status": "unchanged"}
@@ -2413,6 +2433,23 @@ class SpeedportClient:
                                 authenticated=candidate.authenticated,
                                 referer=candidate.referer,
                             )
+                            if (
+                                authenticated
+                                and not fetched_data
+                                and (
+                                    candidate.endpoint,
+                                    candidate.referer,
+                                )
+                                in _QUERY_TOKEN_READS
+                            ):
+                                # A freshly tokenized page read should be stable,
+                                # but one bounded retry prevents a transient empty
+                                # response from suppressing the control until reload.
+                                fetched_data = await self.get_json(
+                                    candidate.endpoint,
+                                    authenticated=True,
+                                    referer=candidate.referer,
+                                )
                         except SpeedportUnsupportedError as exc:
                             endpoint_results[cache_key] = (None, exc)
                         except SpeedportError as exc:
@@ -2630,8 +2667,23 @@ class SpeedportClient:
         if authenticated:
             await self._ensure_authenticated_unlocked()
         path = _validate_endpoint(endpoint)
+        query: dict[str, str | int] = {}
+        if authenticated and referer and (path, referer) in _QUERY_TOKEN_READS:
+            # Smart 4 page-scoped JSON endpoints return an empty document unless
+            # the page's current HTTP token is supplied as the `_tn` query value.
+            # Fetching the referer and then issuing this GET mirrors the router UI
+            # without changing router state.
+            token = await self._get_http_token_unlocked(referer)
+            if token is None or _QUERY_TOKEN_VALUE.fullmatch(token) is None:
+                raise SpeedportUnsupportedError(
+                    "Router page token is unavailable for protected read"
+                )
+            query["_tn"] = token
+        nonce = time.time_ns()
+        query["_time"] = nonce // 1_000_000
+        query["_rand"] = nonce % 1001
         separator = "&" if "?" in path else "?"
-        url = f"{self._base_url}/{path}{separator}_time={time.time_ns() // 1_000_000}"
+        url = f"{self._base_url}/{path}{separator}{urlencode(query)}"
         headers = self._json_headers(referer)
         text = await self._request_text_unlocked("GET", url, headers=headers)
         if _looks_like_login_page(text):
@@ -2712,6 +2764,9 @@ class SpeedportClient:
             f"{self._base_url}/{path}",
             headers=self._json_headers(None),
         )
+        if _looks_like_login_page(text):
+            self._invalidate_authentication()
+            raise SpeedportAuthenticationError("Router session expired")
         for pattern in _HTTP_TOKEN_PATTERNS:
             if match := pattern.search(text):
                 return match.group(1)
@@ -3018,6 +3073,16 @@ def _require_guarded_scalar_value(
             "Guarded scalar state has an unsupported representation"
         )
     return value
+
+
+def _require_receiver_led_mode_value(payload: Mapping[str, Any]) -> str:
+    """Return the exact receiver LED readback as its write-side decimal code."""
+    raw_value = _require_guarded_scalar_value(
+        payload,
+        field="ex5g_led_mode",
+        allowed_values=frozenset(RECEIVER_LED_MODE_CODES),
+    )
+    return str(RECEIVER_LED_MODE_CODES[raw_value])
 
 
 def _select_managed_device_row(
@@ -3624,9 +3689,14 @@ def _has_capability_evidence(
         return True
     if not data:
         return False
+    if capability.family == "receiver_led":
+        try:
+            _require_receiver_led_mode_value(data)
+        except SpeedportUnsupportedError:
+            return False
+        return True
     exact_scalar = {
         "connection_privacy": ("lan_privacy_policy", _THREE_STATE_VALUES),
-        "receiver_led": ("ex5g_led_mode", _THREE_STATE_VALUES),
         "wps": ("use_wps", _BINARY_STATE_VALUES),
         "wps_status": ("wlan_wps_state", _WPS_STATE_VALUES),
     }.get(capability.family)

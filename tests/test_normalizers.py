@@ -906,6 +906,41 @@ def test_mobile_and_receiver_management_fields_are_constrained() -> None:
         assert private_value not in rendered
 
 
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("0", 0),
+        ("1", 1),
+        ("2", 2),
+        ("On", 0),
+        ("Timer", 1),
+        ("Off", 2),
+        (0, 0),
+        (1, 1),
+        (2, 2),
+    ],
+)
+def test_receiver_led_mode_normalizes_exact_firmware_values(
+    raw_value: object,
+    expected: int,
+) -> None:
+    """Both firmware read representations normalize to one stable mode code."""
+    assert normalize_feature_payload("receiver_led", {"ex5g_led_mode": raw_value}) == {
+        "receiver": {"led_mode": expected}
+    }
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    ["on", "timer", "off", "Always", "3", "Timer1", 1.0, True, None],
+)
+def test_receiver_led_mode_rejects_unproven_representations(
+    raw_value: object,
+) -> None:
+    """Unproven aliases and coercible lookalikes remain absent."""
+    assert normalize_feature_payload("receiver_led", {"ex5g_led_mode": raw_value}) == {}
+
+
 def test_mobile_status_preserves_both_radio_bearers_without_eid() -> None:
     """Exact mobile status codes and both bearer readings remain independent."""
     normalized = normalize_feature_payload(

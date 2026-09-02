@@ -69,6 +69,15 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Page-scoped Internet privacy, WPS configuration, Wi-Fi access, and 5G
+  receiver reads now include the firmware's current HTTP page token. A
+  decoded-empty startup response receives one bounded retry per reviewed
+  endpoint, while unrelated reads retain their existing request cadence. The
+  separate WPS transaction-status poll remains tokenless as required by the
+  firmware.
+- The 5G receiver LED control now accepts the firmware's exact semantic
+  readback values (`On`, `Timer`, and `Off`) and maps them to the existing
+  numeric command contract without widening accepted fields or values.
 - Internet privacy and 5G receiver LED controls now use their exact firmware
   fields and capability families, so valid current-state readback no longer
   leaves the controls unavailable.

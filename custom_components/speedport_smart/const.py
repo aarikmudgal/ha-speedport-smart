@@ -86,6 +86,19 @@ MANAGED_DEVICE_FORM_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
     }
 )
 
+# LTE.json returns these exact symbolic values on Smart 4R firmware, while the
+# matching page submits the equivalent decimal strings when the mode changes.
+RECEIVER_LED_MODE_CODES: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "On": 0,
+        "Timer": 1,
+        "Off": 2,
+    }
+)
+
 TR064_SOAP_ACTION: Final = (
     "urn:telekom-de:device:TO_InternetGatewayDevice:2#GetParameterValues"
 )

@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, call, patch
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
@@ -173,6 +173,190 @@ def _busy_fault() -> str:
         "<FaultString>Session busy</FaultString></cwmp:Fault></detail>"
         "</s:Fault></s:Body></s:Envelope>"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "referer", "body", "expected"),
+    [
+        (
+            "data/IPPrivacy.json",
+            "html/content/internet/con_privacy.html",
+            '{"lan_privacy_policy":"2"}',
+            {"lan_privacy_policy": "2"},
+        ),
+        (
+            "data/LTE.json",
+            "html/content/internet/lte_mode.html",
+            '{"ex5g_led_mode":"1"}',
+            {"ex5g_led_mode": "1"},
+        ),
+        (
+            "data/WLANAccess.json",
+            "html/content/network/wlan_wps.html",
+            '{"use_wps":"1","disabled_wps":"0"}',
+            {"use_wps": "1", "disabled_wps": "0"},
+        ),
+        (
+            "data/WLANAccess.json",
+            "html/content/network/wlan_access.html",
+            '{"wlan_allow_all":"0"}',
+            {"wlan_allow_all": "0"},
+        ),
+    ],
+)
+async def test_authenticated_json_get_uses_page_token(
+    endpoint: str,
+    referer: str,
+    body: str,
+    expected: dict[str, str],
+) -> None:
+    """Reviewed page-scoped reads include the current token as `_tn`."""
+    session = _FakeSession()
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload(body))
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    result = await client.get_json(
+        endpoint,
+        authenticated=True,
+        referer=referer,
+    )
+
+    assert result == expected
+    assert len(session.requests) == 2
+    assert session.requests[0][1] == f"http://speedport.ip/{referer}"
+    endpoint_request = session.requests[1]
+    parsed = urlsplit(endpoint_request[1])
+    assert parsed.path == f"/{endpoint}"
+    query = parse_qs(parsed.query)
+    assert set(query) == {"_tn", "_time", "_rand"}
+    assert query["_tn"] == ["123456"]
+    assert endpoint_request[2]["headers"]["Referer"] == (
+        f"http://speedport.ip/{referer}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page",
+    [
+        "<html><body>no token</body></html>",
+        '<input name="httoken" value="not-decimal">',
+        f'<input name="httoken" value="{"1" * 33}">',
+    ],
+)
+async def test_page_token_read_fails_closed_before_endpoint_get(page: str) -> None:
+    """Missing or invalid page tokens never degrade to an unscoped read."""
+    session = _FakeSession()
+    session.add(page)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    with pytest.raises(SpeedportUnsupportedError):
+        await client.get_json(
+            "data/IPPrivacy.json",
+            authenticated=True,
+            referer="html/content/internet/con_privacy.html",
+        )
+
+    assert len(session.requests) == 1
+    assert session.requests[0][1].endswith("/html/content/internet/con_privacy.html")
+
+
+@pytest.mark.asyncio
+async def test_page_token_read_classifies_login_page_as_expired_session() -> None:
+    """An expired token-page session gets one auth recovery and one retry."""
+    session = _FakeSession()
+    session.add('<html><a href="login/index.html">Login</a></html>')
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"ex5g_led_mode":"Timer"}'))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._session_cleanup_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    async def _logout() -> None:
+        client._clear_session_state()  # noqa: SLF001
+
+    async def _login() -> None:
+        client._authenticated = True  # noqa: SLF001
+        client._login_key = DEFAULT_KEY  # noqa: SLF001
+        client._session_cleanup_key = DEFAULT_KEY  # noqa: SLF001
+
+    logout = AsyncMock(side_effect=_logout)
+    login = AsyncMock(side_effect=_login)
+    with (
+        patch.object(client, "_logout_unlocked", logout),
+        patch.object(client, "_login_unlocked", login),
+    ):
+        result = await client.get_json(
+            "data/LTE.json",
+            authenticated=True,
+            referer="html/content/internet/lte_mode.html",
+        )
+
+    assert result == {"ex5g_led_mode": "Timer"}
+    logout.assert_awaited_once_with()
+    login.assert_awaited_once_with()
+    assert client.is_authenticated
+    assert client._session_cleanup_key == DEFAULT_KEY  # noqa: SLF001
+    assert len(session.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_global_authenticated_json_get_does_not_fetch_page_token() -> None:
+    """Shared protected endpoints keep their existing one-request read path."""
+    session = _FakeSession()
+    session.add(encode_payload('{"secure":"value"}'))
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    result = await client.get_json(
+        "data/SecureStatus.json",
+        authenticated=True,
+        referer="html/content/overview/index.html",
+    )
+
+    assert result == {"secure": "value"}
+    assert len(session.requests) == 1
+    query = parse_qs(urlsplit(session.requests[0][1]).query)
+    assert set(query) == {"_time", "_rand"}
+
+
+@pytest.mark.asyncio
+async def test_wps_status_poll_does_not_fetch_page_token() -> None:
+    """The transaction endpoint stays tokenless, matching the firmware poller."""
+    session = _FakeSession()
+    session.add(encode_payload("{}"))
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    result = await client.get_json(
+        "data/WPSStatus.json",
+        authenticated=True,
+        referer="html/content/network/wlan_wps.html",
+    )
+
+    assert result == {}
+    assert len(session.requests) == 1
+    parsed = urlsplit(session.requests[0][1])
+    assert parsed.path == "/data/WPSStatus.json"
+    assert set(parse_qs(parsed.query)) == {"_time", "_rand"}
 
 
 def _unsupported_parameter_fault() -> str:
@@ -928,6 +1112,74 @@ async def test_guarded_scalar_control_noops_after_fresh_matching_state(
         result = await getattr(client, method)(**kwargs)
 
     assert result == {"status": "unchanged"}
+    post_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("read_value", "requested_mode", "expected_status", "expected_post"),
+    [
+        ("On", 2, "ok", "2"),
+        ("Timer", 1, "unchanged", None),
+        ("Off", 0, "ok", "0"),
+    ],
+)
+async def test_receiver_led_control_canonicalizes_exact_symbolic_readback(
+    read_value: str,
+    requested_mode: int,
+    expected_status: str,
+    expected_post: str | None,
+) -> None:
+    """Symbolic firmware reads compare safely while writes stay numeric."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    post_json = AsyncMock(return_value={"status": "ok"})
+    with (
+        patch.object(
+            client,
+            "_get_json_unlocked",
+            AsyncMock(return_value={"ex5g_led_mode": read_value}),
+        ),
+        patch.object(client, "_post_json_unlocked", post_json),
+    ):
+        result = await client.set_receiver_led_mode(requested_mode)
+
+    assert result == {"status": expected_status}
+    if expected_post is None:
+        post_json.assert_not_awaited()
+    else:
+        post_json.assert_awaited_once_with(
+            "data/LTE.json",
+            {"ex5g_led_mode": expected_post},
+            authenticated=True,
+            referer="html/content/internet/lte_mode.html",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "readback",
+    [
+        {"ex5g_led_mode": "timer"},
+        {"ex5g_led_mode": "Always"},
+        {"EX5G_LED_MODE": "Timer"},
+        {"ex5g_led_mode": "Timer", "EX5G_LED_MODE": "Timer"},
+        {"receiver": {"ex5g_led_mode": "Timer"}},
+        {"ex5g_led_mode": ["Timer"]},
+    ],
+)
+async def test_receiver_led_control_rejects_unproven_fresh_readback(
+    readback: dict[str, object],
+) -> None:
+    """Unknown, ambiguous, or non-root LED state blocks every write."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    post_json = AsyncMock()
+    with (
+        patch.object(client, "_get_json_unlocked", AsyncMock(return_value=readback)),
+        patch.object(client, "_post_json_unlocked", post_json),
+        pytest.raises(SpeedportUnsupportedError),
+    ):
+        await client.set_receiver_led_mode(1)
+
     post_json.assert_not_awaited()
 
 
@@ -3252,6 +3504,152 @@ async def test_probe_keeps_summary_and_independent_detail_families(
         assert detail_families <= set(report.failures)
     assert report.authenticated_json is True
     assert get.await_count == 7
+
+
+@pytest.mark.asyncio
+async def test_probe_retries_one_empty_page_token_control_read() -> None:
+    """One transient empty exact response cannot suppress a control until reload."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["connection_privacy"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"connection_privacy": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(
+        side_effect=({}, {"lan_privacy_policy": "2"}),
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert report.feature_endpoints["connection_privacy"] == candidate
+    assert "connection_privacy" not in report.failures
+    assert get_json.await_args_list == [
+        call(
+            "data/IPPrivacy.json",
+            authenticated=True,
+            referer="html/content/internet/con_privacy.html",
+        ),
+        call(
+            "data/IPPrivacy.json",
+            authenticated=True,
+            referer="html/content/internet/con_privacy.html",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_probe_stops_after_one_empty_page_token_retry() -> None:
+    """A persistently empty reviewed response gets only one bounded retry."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["connection_privacy"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"connection_privacy": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(return_value={})
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert "connection_privacy" not in report.feature_endpoints
+    assert "connection_privacy" in report.failures
+    assert get_json.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_shares_one_empty_retry_across_endpoint_families() -> None:
+    """Families sharing one endpoint cannot multiply its bounded retry."""
+    candidates = {
+        family: (DEFAULT_FEATURE_CANDIDATES[family][0],)
+        for family in ("mobile", "receiver_led")
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(return_value={})
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert {"mobile", "receiver_led"}.isdisjoint(report.feature_endpoints)
+    assert get_json.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_does_not_retry_empty_unreviewed_read() -> None:
+    """Decoded-empty retries never widen beyond reviewed tokenized endpoints."""
+    candidate = EndpointCapability(
+        "unreviewed",
+        "data/Unreviewed.json",
+        authenticated=True,
+        referer="html/content/config/unreviewed.html",
+        evidence_keys=("unreviewed",),
+        automatic_probe=True,
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"unreviewed": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(return_value={})
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert "unreviewed" not in report.feature_endpoints
+    assert "unreviewed" in report.failures
+    get_json.assert_awaited_once_with(
+        "data/Unreviewed.json",
+        authenticated=True,
+        referer="html/content/config/unreviewed.html",
+    )
 
 
 @pytest.mark.asyncio
