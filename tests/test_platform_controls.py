@@ -128,7 +128,7 @@ async def test_select_setup_requires_reviewed_identity_capabilities_and_readback
     _add_exact_feature_families(
         hub,
         "connection_privacy",
-        "receiver",
+        "receiver_led",
     )
     hub._merge_data(  # noqa: SLF001
         {
@@ -264,7 +264,7 @@ async def test_select_rejects_mismatched_post_command_readback_and_backoff(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    _add_exact_feature_families(hub, "receiver")
+    _add_exact_feature_families(hub, "receiver_led")
     description = _description(SELECT_DESCRIPTIONS, "receiver_led_mode_control")
     hub._merge_data({"receiver": {"led_mode": 0}})  # noqa: SLF001
     entity = SpeedportCommandSelect(hub, description)
@@ -298,9 +298,14 @@ async def test_switch_and_button_use_serialized_commands(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    _add_exact_feature_families(hub, "wps", "wps_status")
     hub._merge_data(  # noqa: SLF001 - platform contract fixture
         {
-            "wifi": {"enabled": True, "wps_status": "idle"},
+            "wifi": {
+                "enabled": True,
+                "wps_start_available": True,
+                "wps_status": "idle",
+            },
         }
     )
     hub.async_execute = AsyncMock()
@@ -357,7 +362,7 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    _add_exact_feature_families(hub, "clients", "wps")
+    _add_exact_feature_families(hub, "clients", "wps", "wps_status")
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -373,7 +378,11 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     }
     hub._merge_data(  # noqa: SLF001
         {
-            "wifi": {"enabled": True, "wps_status": "idle"},
+            "wifi": {
+                "enabled": True,
+                "wps_start_available": True,
+                "wps_status": "idle",
+            },
             "clients": {"items": [client]},
         }
     )
@@ -438,7 +447,10 @@ async def test_wps_requires_fresh_started_state(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._merge_data({"wifi": {"wps_status": "idle"}})  # noqa: SLF001
+    _add_exact_feature_families(hub, "wps", "wps_status")
+    hub._merge_data(  # noqa: SLF001
+        {"wifi": {"wps_start_available": True, "wps_status": "idle"}}
+    )
     hub.async_execute = AsyncMock(return_value={"status": "ok"})
     wps = SpeedportCommandButton(hub, _description(BUTTON_DESCRIPTIONS, "wps"))
 
@@ -461,7 +473,10 @@ async def test_wps_terminal_state_does_not_block_a_new_pairing_window(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._merge_data({"wifi": {"wps_status": "configured"}})  # noqa: SLF001
+    _add_exact_feature_families(hub, "wps", "wps_status")
+    hub._merge_data(  # noqa: SLF001
+        {"wifi": {"wps_start_available": True, "wps_status": "configured"}}
+    )
 
     async def execute(_command: str, **_parameters: Any) -> None:
         hub._merge_data({"wifi": {"wps_status": "success"}})  # noqa: SLF001
@@ -1016,10 +1031,11 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
         "internet",
         "nat",
         "port_forwarding",
-        "receiver",
+        "receiver_led",
         "system",
         "wifi",
         "wps",
+        "wps_status",
     )
     hub._merge_data(  # noqa: SLF001
         {
@@ -1027,6 +1043,7 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
                 "enabled": True,
                 "guest": {"enabled": False},
                 "office": {"enabled": True},
+                "wps_start_available": True,
                 "wps_status": "idle",
             },
             "internet": {"privacy_level": 1, "state": "online"},
@@ -1119,10 +1136,11 @@ async def test_registered_controls_follow_firmware_drift_without_duplicates(
         "internet",
         "nat",
         "port_forwarding",
-        "receiver",
+        "receiver_led",
         "system",
         "wifi",
         "wps",
+        "wps_status",
     )
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
@@ -1146,6 +1164,7 @@ async def test_registered_controls_follow_firmware_drift_without_duplicates(
                 "enabled": True,
                 "guest": {"enabled": False},
                 "office": {"enabled": True},
+                "wps_start_available": True,
                 "wps_status": "idle",
             },
             "clients": {"items": [client]},

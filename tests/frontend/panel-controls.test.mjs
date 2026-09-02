@@ -132,6 +132,110 @@ test("permission-denied semantic controls make zero service calls", async () => 
   assert.equal(fixture.panel._pendingAction, undefined);
 });
 
+test("three reviewed controls show localized unavailable reasons", () => {
+  const controls = [
+    [
+      {
+        control: true,
+        domain: "select",
+        entity_id: "select.speedport_internet_privacy_level_control",
+        translation_key: "internet_privacy_level_control",
+      },
+      "capability_not_proven",
+      "This router has not confirmed that this control is supported.",
+      "Dieser Router hat die Unterstützung für diese Steuerung nicht bestätigt.",
+    ],
+    [
+      {
+        control: true,
+        domain: "select",
+        entity_id: "select.speedport_receiver_led_mode_control",
+        translation_key: "receiver_led_mode_control",
+      },
+      "firmware_not_supported",
+      "This router firmware does not support this control.",
+      "Diese Router-Firmware unterstützt diese Steuerung nicht.",
+    ],
+    [
+      {
+        control: true,
+        domain: "button",
+        entity_id: "button.speedport_wps",
+        translation_key: "wps",
+      },
+      "disabled_by_setting",
+      "This control is disabled in the router settings.",
+      "Diese Steuerung ist in den Router-Einstellungen deaktiviert.",
+    ],
+  ];
+
+  for (const [meta, reason, english, german] of controls) {
+    for (const [language, expected] of [
+      ["en", english],
+      ["de", german],
+    ]) {
+      const fixture = panelFixture({
+        meta,
+        pending: null,
+        state: "unavailable",
+      });
+      fixture.panel._hass.language = language;
+      fixture.panel._hass.states[meta.entity_id].attributes = {
+        control_unavailable_reason: reason,
+      };
+
+      fixture.panel._prepareAction(meta.entity_id);
+
+      assert.equal(fixture.panel._notice, expected);
+      assert.equal(fixture.panel._noticeKind, "status");
+      assert.equal(fixture.panel._pendingAction, null);
+    }
+  }
+});
+
+test("unavailable WPS remains a focusable status action and never calls Home Assistant", () => {
+  const wpsMeta = {
+    control: true,
+    domain: "button",
+    entity_id: "button.speedport_wps",
+    translation_key: "wps",
+  };
+  const fixture = panelFixture({
+    meta: wpsMeta,
+    pending: null,
+    state: "unavailable",
+  });
+  fixture.panel._hass.states[wpsMeta.entity_id].attributes = {
+    control_unavailable_reason: "disabled_by_setting",
+  };
+
+  const html = fixture.panel._renderEntity(wpsMeta);
+  assert.match(html, /data-control="button\.speedport_wps"/);
+  assert.match(html, /aria-disabled="true"/);
+  assert.match(html, /is-unavailable/);
+  assert.match(html, /This control is disabled in the router settings\./);
+  const wpsControl = html.match(
+    /<button[^>]*data-control="button\.speedport_wps"[^>]*>/,
+  )?.[0];
+  assert.ok(wpsControl);
+  assert.doesNotMatch(wpsControl, /\sdisabled(?:\s*=\s*["']|(?=\s*>))/);
+
+  fixture.panel._handleClick({
+    target: {
+      closest() {
+        return { dataset: { control: wpsMeta.entity_id } };
+      },
+    },
+  });
+
+  assert.equal(
+    fixture.panel._notice,
+    "This control is disabled in the router settings.",
+  );
+  assert.equal(fixture.panel._pendingAction, null);
+  assert.deepEqual(fixture.calls, []);
+});
+
 test("wrong typed phrase submitted with Enter makes zero service calls", async () => {
   const fixture = panelFixture({
     pending: pendingAction({ confirmationDraft: "turn off wi-fi" }),

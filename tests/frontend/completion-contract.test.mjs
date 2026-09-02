@@ -85,7 +85,7 @@ function router(overrides = {}) {
 
 function panelFixture(routerData = router()) {
   const panel = new SpeedportSmartPanel();
-  panel._metadata = { routers: [routerData], schema_version: 18 };
+  panel._metadata = { routers: [routerData], schema_version: 19 };
   panel._selectedEntry = routerData.entry_id;
   panel._platformIcons = {};
   panel._componentIcons = {};
@@ -307,7 +307,7 @@ test("router identity and telemetry are rendered only from current runtime data"
     model: "Model-B-Unique",
     title: "Router-B-Unique",
   });
-  panel._metadata = { routers: [secondRouter], schema_version: 18 };
+  panel._metadata = { routers: [secondRouter], schema_version: 19 };
   panel._hass.states[REPORTING_META.entity_id] = {
     attributes: { friendly_name: "Runtime metric" },
     state: "Metric-B-Unique",
@@ -349,13 +349,17 @@ test("control stays singular and recovers in place across session loss", () => {
   );
   assert.doesNotMatch(
     available,
-    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*disabled`),
+    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*aria-disabled="true"`),
+  );
+  assert.match(
+    available,
+    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*aria-disabled="false"`),
   );
 
   const blockedRouter = router({
     management: { controls_available: false, state: "blocked" },
   });
-  panel._metadata = { routers: [blockedRouter], schema_version: 18 };
+  panel._metadata = { routers: [blockedRouter], schema_version: 19 };
   const blocked = renderedMarkup(panel);
   assert.equal(
     exactCount(blocked, `data-more-info="${WIFI_CONTROL_META.entity_id}"`),
@@ -367,10 +371,20 @@ test("control stays singular and recovers in place across session loss", () => {
   );
   assert.match(
     blocked,
-    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*disabled`),
+    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*aria-disabled="true"`),
+  );
+  assert.match(
+    blocked,
+    new RegExp(
+      `class="[^"]*is-unavailable[^"]*"[^>]*data-control="${WIFI_CONTROL_META.entity_id}"`,
+    ),
+  );
+  assert.doesNotMatch(
+    blocked,
+    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*\\sdisabled(?:\\s|>|=)`),
   );
 
-  panel._metadata = { routers: [router()], schema_version: 18 };
+  panel._metadata = { routers: [router()], schema_version: 19 };
   const recovered = renderedMarkup(panel);
   assert.equal(
     exactCount(recovered, `data-more-info="${WIFI_CONTROL_META.entity_id}"`),
@@ -382,6 +396,10 @@ test("control stays singular and recovers in place across session loss", () => {
   );
   assert.doesNotMatch(
     recovered,
-    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*disabled`),
+    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*aria-disabled="true"`),
+  );
+  assert.match(
+    recovered,
+    new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*aria-disabled="false"`),
   );
 });

@@ -635,7 +635,7 @@ _CONTRACTS: Final = (
     ),
     _contract(
         "set_receiver_led_mode",
-        "receiver",
+        "receiver_led",
         "internet_receiver_led",
         supported_routers=_SMART_4R_TYP_A_TARGETS,
         handler="set_receiver_led_mode",

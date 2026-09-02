@@ -69,6 +69,13 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Internet privacy and 5G receiver LED controls now use their exact firmware
+  fields and capability families, so valid current-state readback no longer
+  leaves the controls unavailable.
+- WPS availability now follows the router's stable radio, visibility,
+  encryption, guest-network, and firmware prerequisites while its transient
+  lifecycle is read independently. Unavailable controls report a bounded,
+  localized reason instead of failing silently.
 - Public Status failures no longer make healthy WAN counters appear available
   merely because both sources share the fast coordinator.
 - The Recorder-backed WAN sample timestamp now advances at minute precision to

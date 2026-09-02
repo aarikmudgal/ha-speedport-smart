@@ -1,7 +1,8 @@
-import { keepDialogFocus } from "./accessibility.js?schema=18";
+import { keepDialogFocus } from "./accessibility.js?schema=19";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
+  controlUnavailableReason,
   isSupportedSelectControl,
   isSupportedTextControl,
   managementControlAvailable,
@@ -12,22 +13,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=18";
+} from "./controls.js?schema=19";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=18";
+} from "./entity-state.js?schema=19";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=18";
+} from "./render-state.js?schema=19";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=18";
+} from "./translations.js?schema=19";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -49,7 +50,7 @@ const ADMIN_PRIVATE_QUERY_PBX_STATUSES = Object.freeze([
   "registered",
   "locked",
 ]);
-const PANEL_SCHEMA_VERSION = 18;
+const PANEL_SCHEMA_VERSION = 19;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -645,7 +646,7 @@ export const ADMIN_IA = Object.freeze([
           contract: "reviewed",
           controls: ["select:internet_privacy_level_control"],
           entityGroups: ["connection_privacy"],
-          capabilities: ["internet_privacy"],
+          capabilities: ["connection_privacy"],
         }),
       ],
     }),
@@ -3047,6 +3048,21 @@ export class SpeedportSmartPanel extends HTMLElement {
     );
   }
 
+  _controlUnavailableReason(meta, state) {
+    const router = this._currentRouter();
+    const managementMeta = router?.entities?.find(
+      (entity) => entity.translation_key === "management_access",
+    );
+    const managementState = this._state(managementMeta);
+    return controlUnavailableReason(
+      meta,
+      state,
+      managementState?.state || router?.management?.state,
+      managementState?.attributes?.controls_available ??
+        router?.management?.controls_available,
+    );
+  }
+
   _friendlyName(meta, state) {
     return entityDisplayName(
       meta,
@@ -3558,10 +3574,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     const meta = this._entityMetadata(entityId);
     const state = this._state(meta);
     if (!meta?.control || this._isControlUnavailable(meta, state)) {
+      const unavailableReason = meta?.control
+        ? this._controlUnavailableReason(meta, state)
+        : undefined;
       this._notice =
         meta?.domain === "update" && state?.state !== "on"
           ? this._t("notice.firmware_current")
-          : this._t("notice.control_unavailable");
+          : unavailableReason
+            ? this._t(`control.unavailable_reason.${unavailableReason}`)
+            : this._t("notice.control_unavailable");
       this._noticeKind = "status";
       this._render();
       return;
@@ -4133,13 +4154,23 @@ export class SpeedportSmartPanel extends HTMLElement {
     const riskBadge = isSemanticControl(meta)
       ? this._renderRiskBadge(meta.risk)
       : "";
+    const unavailableReason = controlUnavailable
+      ? this._controlUnavailableReason(meta, state)
+      : undefined;
+    const unavailableMessage = unavailableReason
+      ? this._t(`control.unavailable_reason.${unavailableReason}`)
+      : this._t("notice.control_unavailable");
+    const controlAriaLabel = controlUnavailable
+      ? `${this._t("action.for_entity", { action: actionLabel, entity: label })}. ${unavailableMessage}`
+      : this._t("action.for_entity", { action: actionLabel, entity: label });
     const control = meta.control
       ? `
         <button
-          class="entity-action risk-${escapeHtml(ADMIN_RISK_ORDER.includes(meta.risk) ? meta.risk : "unknown")} ${meta.disruptive ? "disruptive" : ""}"
+          class="entity-action risk-${escapeHtml(ADMIN_RISK_ORDER.includes(meta.risk) ? meta.risk : "unknown")} ${meta.disruptive ? "disruptive" : ""} ${controlUnavailable ? "is-unavailable" : ""}"
           data-control="${escapeHtml(meta.entity_id)}"
-          aria-label="${escapeHtml(this._t("action.for_entity", { action: actionLabel, entity: label }))}"
-          ${controlUnavailable ? "disabled" : ""}
+          aria-disabled="${controlUnavailable}"
+          aria-label="${escapeHtml(controlAriaLabel)}"
+          ${controlUnavailable ? `title="${escapeHtml(unavailableMessage)}"` : ""}
         >
           ${escapeHtml(actionLabel)}
         </button>
@@ -6917,7 +6948,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           cursor: pointer;
         }
         .entity-action.disruptive { color: var(--sp-error); border-color: color-mix(in srgb, var(--sp-error) 35%, var(--sp-border)); }
-        button:disabled { cursor: not-allowed; opacity: .48; }
+        button:disabled, .entity-action.is-unavailable { cursor: not-allowed; opacity: .48; }
         button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible {
           outline: 2px solid var(--sp-magenta);
           outline-offset: 2px;

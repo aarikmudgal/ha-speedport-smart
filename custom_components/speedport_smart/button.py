@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -14,8 +15,11 @@ from .const import DOMAIN
 from .coordinator import PollGroup
 from .entity import SpeedportEntity
 from .platform_helpers import (
+    MISSING,
+    command_unavailable_reason,
     coordinator,
     wps_in_progress,
+    wps_lifecycle_known,
     wps_started_or_completed,
 )
 
@@ -171,10 +175,7 @@ class SpeedportCommandButton(SpeedportEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         """Require the exact current firmware, capability, and session contract."""
-        return (
-            super().available
-            and self.hub.command_decision(self.entity_description.command).executable
-        )
+        return self._control_unavailable_reason() is None
 
     async def async_press(self) -> None:
         """Execute action through its declared hub verification policy."""
@@ -194,6 +195,58 @@ class SpeedportCommandButton(SpeedportEntity, ButtonEntity):
             self.hub.get(self.entity_description.data_path)
         ):
             raise _verification_error()
+
+    def _control_unavailable_reason(self) -> str | None:
+        """Explain the first failed control-safety or readback gate."""
+        raw = self.hub.get(self.entity_description.data_path, MISSING)
+        state_available = raw is not MISSING and raw is not None
+        readback_supported = True
+        prerequisite_reason: str | None = None
+        if self.entity_description.key == "wps":
+            status_available = (
+                self.hub.has_capability("wps_status")
+                and not self.hub.has_endpoint_error("wps_status")
+                and wps_lifecycle_known(raw)
+            )
+            state_available = status_available
+            readback_supported = status_available
+            start_available = self.hub.get("wifi.wps_start_available", MISSING)
+            if wps_in_progress(raw):
+                prerequisite_reason = "wps_in_progress"
+            elif start_available is True:
+                # Stable WLANAccess proves prerequisites; WPSStatus must still
+                # prove the current lifecycle before this action is available.
+                pass
+            elif start_available is False:
+                observed_reason = self.hub.get("wifi.wps_unavailable_reason")
+                prerequisite_reason = (
+                    observed_reason
+                    if observed_reason
+                    in {
+                        "disabled_by_firmware",
+                        "disabled_by_setting",
+                        "incompatible_encryption",
+                        "ssid_hidden",
+                        "wifi_off",
+                    }
+                    else "wps_prerequisite_unavailable"
+                )
+            else:
+                prerequisite_reason = "wps_prerequisite_unavailable"
+        return command_unavailable_reason(
+            self.hub,
+            self.entity_description.command,
+            coordinator_available=self.coordinator.last_update_success,
+            state_available=state_available,
+            readback_supported=readback_supported,
+            prerequisite_reason=prerequisite_reason,
+        )
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, str]:
+        """Expose a safe reason code when the control is unavailable."""
+        reason = self._control_unavailable_reason()
+        return {} if reason is None else {"control_unavailable_reason": reason}
 
 
 class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):

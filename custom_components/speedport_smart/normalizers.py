@@ -146,6 +146,8 @@ _CALL_GROUPS: Final = {
     "addmissedcalls": "missed",
     "addtakencalls": "incoming",
 }
+_WPS_WEP_ENCRYPTION: Final = 2
+_WPS_WPA3_ENCRYPTION: Final = 6
 
 _MANAGEMENT_SCOPED_FAMILIES: Final = frozenset(
     {
@@ -173,6 +175,8 @@ _MANAGEMENT_SCOPED_FAMILIES: Final = frozenset(
         "wifi_environment",
         "wifi_schedule",
         "wps",
+        "wps_status",
+        "receiver_led",
         "vpn_details",
     }
 )
@@ -257,7 +261,8 @@ def normalize_feature_payload(
         "wifi_access": _normalize_wifi,
         "wifi_configuration": _normalize_wifi,
         "wifi_schedule": _normalize_wifi_schedule,
-        "wps": _normalize_wifi,
+        "wps": _normalize_wps_prerequisites,
+        "wps_status": _normalize_wps_status,
         "mesh": _normalize_mesh,
         "mesh_topology": _normalize_mesh,
         "lan": _normalize_lan,
@@ -274,6 +279,7 @@ def normalize_feature_payload(
         "dect_status": _normalize_dect,
         "dect_repeater": _normalize_dect_repeater,
         "receiver": _normalize_receiver,
+        "receiver_led": _normalize_receiver_led,
         "security": _normalize_security,
         "dns_rebind": _normalize_security,
         "port_blocking": _normalize_security,
@@ -693,6 +699,114 @@ def _normalize_wifi(raw: Mapping[str, Any]) -> NormalizedData:
     return {"wifi": wifi} if wifi else {}
 
 
+def _normalize_wps_prerequisites(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize only stable WPS start prerequisites from WLANAccess.json."""
+    view = _view(raw)
+    if not view:
+        return {}
+    wps_enabled = _first(view, ("use_wps",), _boolean)
+    disabled_by_firmware = _first(view, ("disabled_wps",), _boolean)
+    wifi_enabled = _first(view, ("use_wlan",), _boolean)
+    band_mode = _first(view, ("wlan_band",), _wifi_band_mode)
+    visible_2_4 = _first(view, ("wlan_visible",), _boolean)
+    visible_5 = _first(view, ("wlan_5ghz_visible",), _boolean)
+    encryption_mode = _first(view, ("wlan_enc",), _nonnegative_integer)
+    guest_enabled = _first(view, ("wlan_guest_active",), _boolean)
+    guest_wps_enabled = _first(view, ("wlan_guest_wps",), _boolean)
+    guest_encryption_mode = _first(view, ("wlan_guest_enc",), _nonnegative_integer)
+
+    wifi = _without_missing(
+        {
+            "wps_enabled": wps_enabled,
+            "wps_disabled_by_firmware": disabled_by_firmware,
+        }
+    )
+    reason: str | None
+    prerequisite = (wps_enabled, disabled_by_firmware, wifi_enabled, band_mode)
+    if any(value is None for value in prerequisite):
+        reason = "wps_prerequisite_unavailable"
+    elif disabled_by_firmware:
+        reason = "disabled_by_firmware"
+    elif not wps_enabled:
+        reason = "disabled_by_setting"
+    elif not wifi_enabled:
+        reason = "wifi_off"
+    elif encryption_mode is None:
+        reason = "wps_prerequisite_unavailable"
+    elif encryption_mode == _WPS_WEP_ENCRYPTION:
+        reason = "incompatible_encryption"
+    else:
+        active_visibility = tuple(
+            visible
+            for active, visible in (
+                (band_mode in {0, 1}, visible_2_4),
+                (band_mode in {0, 2}, visible_5),
+            )
+            if active
+        )
+        main_visible = (
+            True
+            if any(visible is True for visible in active_visibility)
+            else False
+            if all(visible is False for visible in active_visibility)
+            else None
+        )
+        guest_prerequisite = (
+            guest_enabled,
+            guest_wps_enabled,
+            guest_encryption_mode,
+        )
+        guest_required = (
+            encryption_mode == _WPS_WPA3_ENCRYPTION or main_visible is not True
+        )
+        if guest_required and any(value is None for value in guest_prerequisite):
+            reason = "wps_prerequisite_unavailable"
+        elif (
+            all(value is not None for value in guest_prerequisite)
+            and guest_enabled
+            and guest_wps_enabled
+            and guest_encryption_mode != _WPS_WPA3_ENCRYPTION
+        ):
+            reason = (
+                "incompatible_encryption"
+                if guest_encryption_mode == _WPS_WEP_ENCRYPTION
+                else None
+            )
+        elif encryption_mode == _WPS_WPA3_ENCRYPTION:
+            reason = "incompatible_encryption"
+        elif main_visible is None:
+            reason = "wps_prerequisite_unavailable"
+        elif not main_visible:
+            reason = "ssid_hidden"
+        else:
+            reason = None
+    wifi["wps_start_available"] = reason is None
+    if reason is not None:
+        wifi["wps_unavailable_reason"] = reason
+    return {"wifi": wifi}
+
+
+def _normalize_wps_status(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize WPSStatus.json lifecycle; its empty response is idle."""
+    view = _view(raw)
+    if not view:
+        return {"wifi": {"wps_status": "idle"}}
+    state_code = _first(view, ("wlan_wps_state",), _wps_state_code)
+    if state_code is None:
+        return {}
+    return {
+        "wifi": {
+            "wps_state_code": state_code,
+            "wps_status": {
+                -2: "failed",
+                -1: "failed",
+                0: "success",
+                1: "connecting",
+            }[state_code],
+        }
+    }
+
+
 def _normalize_wifi_schedule(raw: Mapping[str, Any]) -> NormalizedData:
     """Normalize only schedule fields owned by the detail endpoint."""
     schedule = _wifi_schedule_fields(_view(raw))
@@ -713,22 +827,11 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 ("use_wlan", "wlan_active", "wlan_enabled", "wifi_enabled"),
                 _boolean,
             ),
-            "wps_enabled": (("use_wps",), _boolean),
-            "wps_state_code": (("wlan_wps_state",), _wps_state_code),
-            "wps_disabled_by_firmware": (("disabled_wps",), _boolean),
             "mac_filter_enabled": (("wlan_mac_active",), _boolean),
             "schedule_enabled": (("wlan_time_active",), _boolean),
             "band_mode": (("wlan_band",), _wifi_band_mode),
         },
     )
-    wps_state_code = wifi.get("wps_state_code")
-    if isinstance(wps_state_code, int):
-        wifi["wps_status"] = {
-            -2: "failed",
-            -1: "failed",
-            0: "success",
-            1: "connecting",
-        }[wps_state_code]
     # wlan_access.js presents the inverse of this firmware form flag.
     wlan_allow_all = _first(view, ("wlan_allow_all",), _boolean)
     if wlan_allow_all is not None:
@@ -2455,6 +2558,12 @@ def _normalize_receiver(raw: Mapping[str, Any]) -> NormalizedData:
     if mobile:
         result["mobile"] = mobile
     return result
+
+
+def _normalize_receiver_led(raw: Mapping[str, Any]) -> NormalizedData:
+    """Normalize only LED control readback from its exact LTE capability."""
+    led_mode = _first(_view(raw), ("ex5g_led_mode",), _led_mode)
+    return {"receiver": {"led_mode": led_mode}} if led_mode is not None else {}
 
 
 def _receiver_status_fields(view: Mapping[str, Any]) -> NormalizedData:

@@ -20,6 +20,26 @@ const READ_ONLY_BUTTON_CONTROLS = new Set([
   "capture_read_only_inventory",
   "retry_protected_data",
 ]);
+const CONTROL_UNAVAILABLE_REASONS = new Set([
+  "authenticated_access_unavailable",
+  "capability_not_proven",
+  "command_handler_unavailable",
+  "contract_unavailable",
+  "control_surface_unavailable",
+  "controls_disabled",
+  "disabled_by_firmware",
+  "disabled_by_setting",
+  "firmware_not_supported",
+  "incompatible_encryption",
+  "management_session_unavailable",
+  "polling_unavailable",
+  "ssid_hidden",
+  "state_readback_unavailable",
+  "state_readback_unsupported",
+  "wifi_off",
+  "wps_in_progress",
+  "wps_prerequisite_unavailable",
+]);
 
 function finiteInteger(value) {
   const numeric = Number(value);
@@ -179,6 +199,35 @@ export function managementControlAvailable(
   }
   if (typeof controlsAvailable === "boolean") return controlsAvailable;
   return managementState === "available";
+}
+
+export function controlUnavailableReason(
+  meta,
+  state,
+  managementState,
+  controlsAvailable,
+) {
+  const observed = state?.attributes?.control_unavailable_reason;
+  if (
+    typeof observed === "string" &&
+    CONTROL_UNAVAILABLE_REASONS.has(observed)
+  ) {
+    return observed;
+  }
+  if (!managementControlAvailable(meta, managementState, controlsAvailable)) {
+    return "management_session_unavailable";
+  }
+  if (!state || state.state === "unavailable") {
+    return "state_readback_unavailable";
+  }
+  if (
+    (meta?.domain === "select" && !isSupportedSelectControl(meta, state)) ||
+    (meta?.domain === "switch" && !["on", "off"].includes(state.state)) ||
+    (meta?.domain === "text" && state.state === "unknown")
+  ) {
+    return "state_readback_unsupported";
+  }
+  return undefined;
 }
 
 export function controlConfirmationPhrase(meta, observedState) {

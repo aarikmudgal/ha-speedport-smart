@@ -698,10 +698,6 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
 
     assert wifi["band_mode"] == 1
     assert wifi["allow_all_devices"] is True
-    assert wifi["wps_enabled"] is True
-    assert wifi["wps_disabled_by_firmware"] is False
-    assert wifi["wps_state_code"] == 1
-    assert wifi["wps_status"] == "connecting"
     assert wifi["radio_2_4"]["visible"] is False
     assert wifi["radio_2_4"]["encryption_mode"] == 6
     assert wifi["radio_5"]["encryption_mode"] == 6
@@ -730,13 +726,24 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
 
 
 def test_wps_enablement_does_not_claim_an_active_pairing_session() -> None:
-    """The persistent use_wps setting is distinct from WPS transaction state."""
+    """WLANAccess prerequisites remain distinct from WPSStatus lifecycle."""
     wifi = normalize_feature_payload(
         "wps",
-        {"use_wps": "1", "wps_status": "active", "wps_active": "1"},
+        {
+            "use_wlan": "1",
+            "use_wps": "1",
+            "disabled_wps": "0",
+            "wlan_band": "1",
+            "wlan_enc": "1",
+            "wlan_visible": "1",
+        },
     )["wifi"]
 
-    assert wifi == {"wps_enabled": True}
+    assert wifi == {
+        "wps_enabled": True,
+        "wps_disabled_by_firmware": False,
+        "wps_start_available": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -749,7 +756,7 @@ def test_wps_transaction_code_maps_to_exact_firmware_lifecycle(
 ) -> None:
     """WPSStatus.json state is the sole proven pairing-lifecycle source."""
     wifi = normalize_feature_payload(
-        "wps",
+        "wps_status",
         {"wlan_wps_state": firmware_state},
     )["wifi"]
 

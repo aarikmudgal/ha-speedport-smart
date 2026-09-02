@@ -97,7 +97,7 @@ _EXPECTED_CANONICAL_COMMANDS = {
         ManagementConfirmation.CONFIRM,
     ),
     "set_receiver_led_mode": (
-        "receiver",
+        "receiver_led",
         frozenset(),
         ManagementRisk.NORMAL,
         ManagementConfirmation.NONE,
@@ -693,7 +693,7 @@ def test_management_feature_ids_are_stable_semantic_identifiers(
         pytest.param(("reboot", "system"), id="button"),
         pytest.param(("wifi_set_enabled", "wifi"), id="switch"),
         pytest.param(
-            ("set_receiver_led_mode", "receiver"),
+            ("set_receiver_led_mode", "receiver_led"),
             id="select",
         ),
         pytest.param(("rename_client", "clients"), id="text"),

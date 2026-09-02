@@ -213,12 +213,14 @@ def test_feature_families_do_not_publish_unobserved_normalized_roots(
         "port_blocking",
         "qos",
         "receiver",
+        "receiver_led",
         "system_services",
         "telephony",
         "usb_tethering",
         "wifi_access",
         "wifi_configuration",
         "wps",
+        "wps_status",
     }
     report = CapabilityReport(
         authenticated_json=True,
@@ -292,6 +294,12 @@ def test_feature_families_do_not_publish_unobserved_normalized_roots(
             PollGroup.NORMAL,
             {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
             frozenset({"receiver", "mobile"}),
+        ),
+        (
+            "receiver_led",
+            PollGroup.NORMAL,
+            {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
+            frozenset({"receiver"}),
         ),
     ],
 )

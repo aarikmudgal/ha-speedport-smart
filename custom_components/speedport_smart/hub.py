@@ -63,6 +63,7 @@ NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
         "lte",
         "5g",
         "receiver",
+        "receiver_led",
         "mesh_topology",
         "wifi",
         "clients",
@@ -72,6 +73,7 @@ NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
         "dect_status",
         "ip",
         "wps",
+        "wps_status",
     }
 )
 FAST_FAMILIES: Final[frozenset[str]] = frozenset()

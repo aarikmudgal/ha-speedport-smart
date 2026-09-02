@@ -462,6 +462,10 @@ test("fixed Administration manifest places reviewed controls and collections", (
     "switch:wifi",
     "text:client_name",
   ]);
+  const privacyFeature = ADMIN_IA.flatMap((area) => area.subsections)
+    .flatMap((subsection) => subsection.features)
+    .find((feature) => feature.id === "internet_privacy");
+  assert.deepEqual(privacyFeature?.capabilities, ["connection_privacy"]);
   const analogFeatures = ADMIN_IA.flatMap((area) => area.subsections)
     .flatMap((subsection) => subsection.features)
     .filter((feature) => feature.id.startsWith("telephony_analog_"));

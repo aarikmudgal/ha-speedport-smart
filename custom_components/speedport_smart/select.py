@@ -15,7 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 from .coordinator import PollGroup
 from .entity import SpeedportEntity
-from .platform_helpers import coordinator
+from .platform_helpers import MISSING, command_unavailable_reason, coordinator
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -54,7 +54,7 @@ SELECT_DESCRIPTIONS: tuple[SpeedportSelectEntityDescription, ...] = (
         key="receiver_led_mode_control",
         translation_key="receiver_led_mode_control",
         data_path="receiver.led_mode",
-        capability="receiver",
+        capability="receiver_led",
         coordinator_group=PollGroup.NORMAL,
         command="set_receiver_led_mode",
         command_parameter="mode",
@@ -138,14 +138,27 @@ class SpeedportCommandSelect(SpeedportEntity, SelectEntity):
             None,
         )
 
+    def _control_unavailable_reason(self) -> str | None:
+        """Explain the first failed control-safety or readback gate."""
+        raw = self.hub.get(self.entity_description.data_path, MISSING)
+        return command_unavailable_reason(
+            self.hub,
+            self.entity_description.command,
+            coordinator_available=self.coordinator.last_update_success,
+            state_available=raw is not MISSING and raw is not None,
+            readback_supported=self.current_option is not None,
+        )
+
     @property
     def available(self) -> bool:
         """Remain available only with explicit current-state readback."""
-        return (
-            super().available
-            and self.hub.command_decision(self.entity_description.command).executable
-            and self.current_option is not None
-        )
+        return self._control_unavailable_reason() is None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, str]:
+        """Expose a safe reason code when the control is unavailable."""
+        reason = self._control_unavailable_reason()
+        return {} if reason is None else {"control_unavailable_reason": reason}
 
     async def async_select_option(self, option: str) -> None:
         """Set one allowlisted semantic option and verify fresh readback."""

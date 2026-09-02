@@ -7,6 +7,7 @@ import {
   SELECT_CONTROL_OPTIONS,
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
+  controlUnavailableReason,
   isSupportedSelectControl,
   isSupportedTextControl,
   managementControlAvailable,
@@ -308,6 +309,62 @@ test("management backoff disables mutations but preserves read-only actions", ()
   assert.equal(
     managementControlAvailable(CLIENT_NAME_META, "available", true),
     true,
+  );
+});
+
+test("unavailable reasons accept only reviewed backend codes and safe fallbacks", () => {
+  const wpsMeta = {
+    control: true,
+    domain: "button",
+    entity_id: "button.speedport_wps",
+    translation_key: "wps",
+  };
+  const reasons = [
+    [
+      PRIVACY_SELECT_META,
+      selectState("off", SELECT_CONTROL_OPTIONS.internet_privacy_level_control),
+      "capability_not_proven",
+    ],
+    [
+      RECEIVER_LED_SELECT_META,
+      selectState("use_leds", SELECT_CONTROL_OPTIONS.receiver_led_mode_control),
+      "firmware_not_supported",
+    ],
+    [wpsMeta, { attributes: {}, state: "unknown" }, "disabled_by_setting"],
+    [wpsMeta, { attributes: {}, state: "unknown" }, "wps_in_progress"],
+  ];
+
+  for (const [meta, state, reason] of reasons) {
+    state.attributes.control_unavailable_reason = reason;
+    assert.equal(
+      controlUnavailableReason(meta, state, "available", true),
+      reason,
+    );
+  }
+  assert.equal(
+    controlUnavailableReason(
+      wpsMeta,
+      {
+        attributes: { control_unavailable_reason: "router_internal_error" },
+        state: "unknown",
+      },
+      "available",
+      true,
+    ),
+    undefined,
+  );
+  assert.equal(
+    controlUnavailableReason(PRIVACY_SELECT_META, undefined, "available", true),
+    "state_readback_unavailable",
+  );
+  assert.equal(
+    controlUnavailableReason(
+      PRIVACY_SELECT_META,
+      selectState("off", SELECT_CONTROL_OPTIONS.internet_privacy_level_control),
+      "blocked",
+      false,
+    ),
+    "management_session_unavailable",
   );
 });
 

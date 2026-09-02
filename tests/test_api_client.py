@@ -2563,6 +2563,16 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "html/content/network/wlan_access.html",
         ),
         (
+            "wps",
+            "data/WLANAccess.json",
+            "html/content/network/wlan_wps.html",
+        ),
+        (
+            "wps_status",
+            "data/WPSStatus.json",
+            "html/content/network/wlan_wps.html",
+        ),
+        (
             "wifi_environment",
             "data/WLANEnviron.json",
             "html/content/network/wlan_environ.html",
@@ -2576,6 +2586,11 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
         ("lte", "data/LTE.json", "html/content/internet/lte_mode.html"),
         ("5g", "data/LTE.json", "html/content/internet/lte_mode.html"),
         ("receiver", "data/LTE.json", "html/content/internet/lte_mode.html"),
+        (
+            "receiver_led",
+            "data/LTE.json",
+            "html/content/internet/lte_mode.html",
+        ),
         (
             "mesh",
             "data/SecureStatus.json",

@@ -125,6 +125,7 @@ _PHONEBOOK_ENTRY_ENDPOINT: Final = "data/PhoneBookEntry.json"
 _PHONEBOOK_REFERER: Final = "html/content/phone/phone_book.html"
 _THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
 _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
+_WPS_STATE_VALUES: Final = frozenset({"-2", "-1", "0", "1"})
 _IP_PBX_STATUS_VALUES: Final = {0: "disconnected", 1: "registered", 2: "locked"}
 _PHONEBOOK_IDS: Final = frozenset(range(5))
 _PRIVATE_QUERY_MAX_ROWS: Final = 256
@@ -136,7 +137,7 @@ _PHONEBOOK_NUMBER = re.compile(r"^\+?[0-9/\-*# ]*$")
 _PHONEBOOK_BIRTHDAY = re.compile(r"^(?:|\d{2}\.\d{2}\.\d{4})$")
 _OBSERVED_SCHEMA_MAX_DEPTH: Final = 6
 _OBSERVED_SCHEMA_MAX_FIELDS: Final = 128
-_OBSERVED_SCHEMA_MAX_FAMILIES: Final = 64
+_OBSERVED_SCHEMA_MAX_FAMILIES: Final = 96
 _OBSERVED_SCHEMA_MAX_CANDIDATES: Final = 128
 _OBSERVED_SCHEMA_MAX_CANDIDATES_PER_FAMILY: Final = 8
 _OBSERVED_SCHEMA_MAX_ARRAY_ITEMS: Final = 8
@@ -623,7 +624,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/IPPrivacy.json",
                     authenticated=True,
                     referer="html/content/internet/con_privacy.html",
-                    evidence_keys=("privacy", "lan_privacy_policy"),
+                    evidence_keys=("lan_privacy_policy",),
                 ),
             ),
             "telephony": (
@@ -682,10 +683,19 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "wps": (
                 _endpoint(
                     "wps",
+                    "data/WLANAccess.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_wps.html",
+                    evidence_keys=("use_wps",),
+                ),
+            ),
+            "wps_status": (
+                _endpoint(
+                    "wps_status",
                     "data/WPSStatus.json",
                     authenticated=True,
                     referer="html/content/network/wlan_wps.html",
-                    evidence_keys=("wps",),
+                    evidence_keys=("wlan_wps_state",),
                 ),
             ),
             "wifi_access": (
@@ -831,6 +841,15 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                         "extwan_typ",
                         "use_lte",
                     ),
+                ),
+            ),
+            "receiver_led": (
+                _endpoint(
+                    "receiver_led",
+                    "data/LTE.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("ex5g_led_mode",),
                 ),
             ),
             "mesh": (
@@ -3599,8 +3618,29 @@ def _failure_text(error: SpeedportError) -> str:
 def _has_capability_evidence(
     data: Mapping[str, Any], capability: EndpointCapability
 ) -> bool:
+    if capability.family == "wps_status" and not data:
+        # WPSStatus.json is an ephemeral transaction endpoint. An empty,
+        # successfully decoded response is its firmware-defined idle shape.
+        return True
     if not data:
         return False
+    exact_scalar = {
+        "connection_privacy": ("lan_privacy_policy", _THREE_STATE_VALUES),
+        "receiver_led": ("ex5g_led_mode", _THREE_STATE_VALUES),
+        "wps": ("use_wps", _BINARY_STATE_VALUES),
+        "wps_status": ("wlan_wps_state", _WPS_STATE_VALUES),
+    }.get(capability.family)
+    if exact_scalar is not None:
+        field, allowed_values = exact_scalar
+        try:
+            _require_guarded_scalar_value(
+                data,
+                field=field,
+                allowed_values=allowed_values,
+            )
+        except SpeedportUnsupportedError:
+            return False
+        return True
     if not capability.evidence_keys:
         return True
     keys = tuple(_iter_mapping_keys(data))

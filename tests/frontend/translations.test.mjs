@@ -91,6 +91,55 @@ test("Panel translation interpolates values and falls back to English", () => {
   assert.equal(panelTranslate("de", "missing.key"), "missing.key");
 });
 
+test("Unavailable-control reasons are complete, localized, and bounded", () => {
+  const reasons = [
+    "authenticated_access_unavailable",
+    "capability_not_proven",
+    "command_handler_unavailable",
+    "contract_unavailable",
+    "control_surface_unavailable",
+    "controls_disabled",
+    "disabled_by_firmware",
+    "disabled_by_setting",
+    "firmware_not_supported",
+    "incompatible_encryption",
+    "management_session_unavailable",
+    "polling_unavailable",
+    "ssid_hidden",
+    "state_readback_unavailable",
+    "state_readback_unsupported",
+    "wifi_off",
+    "wps_in_progress",
+    "wps_prerequisite_unavailable",
+  ];
+  const keys = Object.keys(PANEL_TRANSLATIONS.en)
+    .filter((key) => key.startsWith("control.unavailable_reason."))
+    .map((key) => key.slice("control.unavailable_reason.".length))
+    .sort();
+
+  assert.deepEqual(keys, reasons.sort());
+  assert.equal(
+    panelTranslate("en", "control.unavailable_reason.capability_not_proven"),
+    "This router has not confirmed that this control is supported.",
+  );
+  assert.equal(
+    panelTranslate("de", "control.unavailable_reason.disabled_by_setting"),
+    "Diese Steuerung ist in den Router-Einstellungen deaktiviert.",
+  );
+  assert.equal(
+    panelTranslate("de", "control.unavailable_reason.firmware_not_supported"),
+    "Diese Router-Firmware unterstützt diese Steuerung nicht.",
+  );
+  assert.equal(
+    panelTranslate("en", "control.unavailable_reason.wps_in_progress"),
+    "WPS pairing is already in progress.",
+  );
+  assert.equal(
+    panelTranslate("de", "control.unavailable_reason.wps_in_progress"),
+    "Die WPS-Kopplung läuft bereits.",
+  );
+});
+
 test("Durations use localized compact units and reject invalid samples", () => {
   assert.equal(formatPanelDurationSeconds(0, "en-US", "en"), "0 s");
   assert.equal(formatPanelDurationSeconds(59, "de-DE", "de"), "59 Sek.");
@@ -172,7 +221,7 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   const frontendSchema = panel.match(/PANEL_SCHEMA_VERSION = (\d+)/)?.[1];
   const backendSchema = backend.match(/PANEL_SCHEMA_VERSION: Final = (\d+)/)?.[1];
   assert.ok(frontendSchema);
-  assert.equal(frontendSchema, "18");
+  assert.equal(frontendSchema, "19");
   assert.equal(frontendSchema, backendSchema);
   assert.match(panel, new RegExp(`accessibility\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`translations\\.js\\?schema=${frontendSchema}`));
