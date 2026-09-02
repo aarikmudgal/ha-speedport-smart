@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=15";
+import { keepDialogFocus } from "./accessibility.js?schema=16";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=15";
+} from "./controls.js?schema=16";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=15";
+} from "./entity-state.js?schema=16";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=15";
+} from "./render-state.js?schema=16";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=15";
+} from "./translations.js?schema=16";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 15;
+const PANEL_SCHEMA_VERSION = 16;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -2089,6 +2089,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminReadLoading = false;
     this._adminReadError = "";
     this._adminReadRequest = 0;
+    this._adminReadRefreshPending = undefined;
     this._loading = false;
     this._loadError = "";
     this._pendingAction = undefined;
@@ -2341,6 +2342,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminReadEntry = undefined;
     this._adminReadLoading = false;
     this._adminReadError = "";
+    this._adminReadRefreshPending = undefined;
   }
 
   async _loadAdminRead(entryId, { force = false } = {}) {
@@ -2348,13 +2350,19 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._hass?.user?.is_admin !== true ||
       !entryId ||
       this._currentRouter()?.entry_id !== entryId ||
-      (this._adminReadLoading && !force) ||
       (!force && this._adminReadEntry === entryId && this._adminRead)
     ) {
       return;
     }
+    if (this._adminReadLoading) {
+      if (force) this._adminReadRefreshPending = entryId;
+      return;
+    }
 
     const request = ++this._adminReadRequest;
+    if (this._adminReadRefreshPending === entryId) {
+      this._adminReadRefreshPending = undefined;
+    }
     this._adminReadLoading = true;
     this._adminReadError = "";
     this._render();
@@ -2381,9 +2389,20 @@ export class SpeedportSmartPanel extends HTMLElement {
         this._adminReadError = "error.admin_read_unavailable";
       }
     } finally {
+      let refreshPending = false;
       if (request === this._adminReadRequest) {
         this._adminReadLoading = false;
+        refreshPending = this._adminReadRefreshPending === entryId;
+        this._adminReadRefreshPending = undefined;
         if (!this._pendingAction) this._render();
+      }
+      if (
+        refreshPending &&
+        this._activeView === "administration" &&
+        this._hass?.user?.is_admin === true &&
+        this._currentRouter()?.entry_id === entryId
+      ) {
+        await this._loadAdminRead(entryId, { force: true });
       }
     }
   }
@@ -2412,16 +2431,22 @@ export class SpeedportSmartPanel extends HTMLElement {
     ) {
       return;
     }
+    const previousView = this._activeView;
     this._activeView = view;
     this._notice = "";
+    // Switch the visible panel immediately. A cached administrator snapshot must
+    // never make `_loadAdminRead` short-circuit before the selected tab renders.
+    this._render();
     if (view === "administration" && this._hass?.user?.is_admin === true) {
       const entryId = this._currentRouter()?.entry_id;
       if (entryId) {
-        this._loadAdminRead(entryId);
-        return;
+        const cachedForEntry =
+          this._adminReadEntry === entryId && Boolean(this._adminRead);
+        this._loadAdminRead(entryId, {
+          force: previousView !== "administration" && cachedForEntry,
+        });
       }
     }
-    this._render();
   }
 
   _entityMetadata(entityId) {
@@ -4597,7 +4622,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 6px;
-          width: min(100%, 620px);
+          width: 100%;
           margin: 22px auto 0;
           padding: 5px;
           border: 1px solid var(--sp-border);
@@ -4623,6 +4648,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           background: var(--sp-surface);
           box-shadow: 0 4px 16px rgba(0,0,0,.08);
         }
+        .view-tabs button:only-child { grid-column: 1 / -1; }
         .view-tabs ha-icon { --mdc-icon-size: 20px; }
         .notice {
           display: flex;

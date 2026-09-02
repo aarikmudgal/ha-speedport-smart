@@ -29,7 +29,7 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Separate Dashboard and Administration views in the native Home Assistant
   panel, with administrator-only, on-demand structured details projected from
   the existing normalized cache without additional router traffic.
-- A responsive Administration catalog covering 73 router-management features
+- A responsive Administration catalog covering 78 router-management features
   across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
   mobile receivers, and system services. Every entry distinguishes reviewed
   controls, related read-only evidence, blocked contracts, and unsupported
@@ -41,6 +41,17 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Normalized cross-family data now publishes native entities only after the
+  router actually returns that semantic root; read-only projections can no
+  longer unlock an unrelated management command.
+- The Administration tab now renders cached data immediately, refreshes it on
+  re-entry, and coalesces a forced post-action refresh behind any active read
+  instead of dropping the newest state.
+- Native command execution rechecks the exact authenticated capability,
+  endpoint family, and management-session gate after acquiring the router
+  operation lock, closing a capability-loss race before router I/O.
+- Dashboard and Administration navigation now uses the full panel width, with
+  a single visible tab spanning the complete selector.
 - Temporary router-session contention no longer changes whether a reviewed
   control is supported; current execution availability remains a separate gate.
 - Administration controls and shared cached collections render under one

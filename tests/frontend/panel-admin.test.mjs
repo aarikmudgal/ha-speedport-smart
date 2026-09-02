@@ -1559,6 +1559,76 @@ test("only Home Assistant administrators call the cached-read endpoint", async (
   assert.equal(denied.panel._adminRead, undefined);
 });
 
+test("cached Administration re-entry renders immediately and refreshes without overlap", async () => {
+  const fixture = panelFixture({ admin: true });
+  const requests = [];
+  const resolveReads = [];
+  fixture.panel._hass.connection.sendMessagePromise = (message) => {
+    requests.push(message);
+    return new Promise((resolve) => {
+      resolveReads.push(resolve);
+    });
+  };
+  fixture.panel._adminRead = adminPayload("entry-a", [
+    {
+      id: "clients",
+      rows: [{ connected: true, name: "Cached laptop" }],
+      source: "protected_json",
+      truncated: false,
+    },
+  ]);
+  fixture.panel._adminReadEntry = "entry-a";
+  fixture.panel._activeView = "dashboard";
+  const renders = [];
+  fixture.panel._render = () => {
+    renders.push({
+      loading: fixture.panel._adminReadLoading,
+      view: fixture.panel._activeView,
+    });
+  };
+
+  fixture.panel._selectView("administration");
+
+  assert.deepEqual(renders[0], { loading: false, view: "administration" });
+  assert.equal(requests.length, 1);
+  assert.equal(fixture.panel._adminReadLoading, true);
+
+  fixture.panel._selectView("dashboard");
+  fixture.panel._selectView("administration");
+  assert.equal(requests.length, 1);
+
+  resolveReads[0](
+    adminPayload("entry-a", [
+      {
+        id: "clients",
+        rows: [{ connected: true, name: "Fresh laptop" }],
+        source: "protected_json",
+        truncated: false,
+      },
+    ]),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(requests.length, 2);
+  assert.equal(fixture.panel._adminReadLoading, true);
+  resolveReads[1](
+    adminPayload("entry-a", [
+      {
+        id: "clients",
+        rows: [{ connected: true, name: "Latest laptop" }],
+        source: "protected_json",
+        truncated: false,
+      },
+    ]),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(fixture.panel._adminReadLoading, false);
+  assert.equal(fixture.panel._adminRead.sections[0].rows[0].name, "Latest laptop");
+});
+
 test("router change and disconnect clear private cached data", async () => {
   const fixture = panelFixture({ entries: ["entry-a", "entry-b"] });
   await fixture.panel._loadAdminRead("entry-a");
@@ -2275,6 +2345,12 @@ test("Administration stays full-width, responsive, and theme-native", async () =
   assert.match(source, /\.shell\s*\{[^}]*width:\s*100%/s);
   assert.doesNotMatch(source, /1540px/);
   assert.match(source, /\.administration-view\s*\{[^}]*width:\s*100%/s);
+  assert.match(source, /\.view-tabs\s*\{[^}]*width:\s*100%/s);
+  assert.match(
+    source,
+    /\.view-tabs button:only-child\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s,
+  );
+  assert.doesNotMatch(source, /\.view-tabs\s*\{[^}]*620px/s);
   assert.match(
     source,
     /\.administration-subsections\s*\{[^}]*grid-template-columns:\s*repeat\(2,/s,

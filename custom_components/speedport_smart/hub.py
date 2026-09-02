@@ -89,43 +89,34 @@ _DSL_TRANSIENT_GRACE_FAILURES: Final = 1
 _PROTECTED_RETRY_SECONDS: Final = 60.0
 _PROTECTED_MAX_RETRY_SECONDS: Final = 900.0
 _MANAGEMENT_ISSUE_KEY: Final = "management_session_blocked"
-# One endpoint family may contribute state to several top-level normalized roots.
-_FAMILY_CAPABILITY_ROOTS: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+# Only canonical roots emitted by reviewed normalizers may become read capabilities.
+# Endpoint-family names are deliberately not mapped ahead of a successful read.
+_NORMALIZED_READ_CAPABILITY_ROOTS: Final[frozenset[str]] = frozenset(
     {
-        "5g": ("mobile",),
-        "active_calls": ("telephony",),
-        "calls": ("telephony",),
-        "connection_privacy": ("internet",),
-        "dect": ("dect",),
-        "dect_status": ("dect",),
-        "dect_repeater": ("dect",),
-        "dns_rebind": ("security",),
-        "easy_support": ("system",),
-        "firmware": ("system",),
-        "firewall": ("security",),
-        "ip": ("internet",),
-        "ip_phones": ("pbx",),
-        "lte": ("mobile",),
-        "mobile": ("mobile",),
-        "mesh_topology": ("mesh",),
-        "media_server": ("usb",),
-        "nas": ("usb",),
-        "parental_controls": ("parental",),
-        "pbx": ("pbx",),
-        "phonebook": ("dect",),
-        "port_blocking": ("security",),
-        "port_forwarding": ("nat",),
-        "qos": ("qos",),
-        "receiver": ("receiver",),
-        "telephony": ("telephony",),
-        "upnp": ("nat",),
-        "usb_tethering": ("usb",),
-        "wifi_access": ("wifi",),
-        "wifi_configuration": ("wifi",),
-        "wifi_schedule": ("wifi",),
-        "wireguard": ("vpn",),
-        "vpn_details": ("vpn",),
-        "wps": ("wifi",),
+        "clients",
+        "ddns",
+        "dect",
+        "dhcp",
+        "diagnostics",
+        "dsl",
+        "hybrid",
+        "internet",
+        "lan",
+        "mesh",
+        "mobile",
+        "nat",
+        "parental",
+        "pbx",
+        "powerline",
+        "qos",
+        "receiver",
+        "security",
+        "smarthome",
+        "system",
+        "telephony",
+        "usb",
+        "vpn",
+        "wifi",
     }
 )
 _TRANSITION_KEYS: Final[frozenset[str]] = frozenset(
@@ -565,7 +556,9 @@ class SpeedportHub:
             ),
             firmware_supported=firmware_supported,
             capability_supported=(
-                contract is not None and self.has_capability(contract.capability)
+                contract is not None
+                and contract.capability.casefold() in self._feature_families
+                and self.has_capability(contract.capability)
             ),
             handler_available=callable(handler),
             session_available=self.management_controls_available,
@@ -1394,6 +1387,7 @@ class SpeedportHub:
                         self._endpoint_errors.pop(family, None)
                         self.client.observe_feature_data(family, value)
                         normalized = normalize_feature_payload(family, value)
+                        self._observe_normalized_read_capabilities(normalized)
                         previous = self._family_data.get(family)
                         if previous is not None:
                             partial = _deep_merge_dicts(
@@ -1627,6 +1621,12 @@ class SpeedportHub:
                     translation_domain=DOMAIN,
                     translation_key="command_failed",
                 )
+            if not self.command_decision(command).executable:
+                raise HomeAssistantError(
+                    "The router management capability is not currently available.",
+                    translation_domain=DOMAIN,
+                    translation_key="command_failed",
+                )
             try:
                 try:
                     result = await handler(**parameters)
@@ -1757,10 +1757,8 @@ class SpeedportHub:
             str(name).casefold() for name in report.feature_endpoints
         )
         capabilities = set(feature_families)
-        for family in feature_families:
-            capabilities.update(_FAMILY_CAPABILITY_ROOTS.get(family, ()))
         if report.status_json:
-            capabilities.update({"status", "system", "diagnostics"})
+            capabilities.update({"status", "diagnostics"})
         if report.tr064:
             capabilities.add("tr064")
         if report.wan_counters or self._wan_counter_probe_pending:
@@ -1768,6 +1766,20 @@ class SpeedportHub:
         if report.authenticated_json:
             capabilities.add("authenticated_json")
         self._capabilities = frozenset(capabilities)
+
+    def _observe_normalized_read_capabilities(
+        self,
+        normalized: Mapping[str, Any],
+    ) -> None:
+        """Publish only non-empty canonical roots from one successful read."""
+        observed = frozenset(
+            root
+            for root, payload in normalized.items()
+            if root in _NORMALIZED_READ_CAPABILITY_ROOTS
+            and isinstance(payload, Mapping)
+            and payload
+        )
+        self._capabilities = self._capabilities | observed
 
     def _merge_data(self, partial: Mapping[str, Any]) -> tuple[StateTransition, ...]:
         """Deep-merge normalized data and collect meaningful state transitions."""

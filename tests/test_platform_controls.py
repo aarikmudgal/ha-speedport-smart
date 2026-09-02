@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -36,7 +38,7 @@ from custom_components.speedport_smart.device_tracker import (
     async_setup_entry as async_setup_trackers,
 )
 from custom_components.speedport_smart.hub import SpeedportHub
-from custom_components.speedport_smart.models import RouterInfo
+from custom_components.speedport_smart.models import EndpointCapability, RouterInfo
 from custom_components.speedport_smart.select import (
     SELECT_DESCRIPTIONS,
     SpeedportCommandSelect,
@@ -86,6 +88,30 @@ def _attach_coordinators(hass: HomeAssistant, hub: SpeedportHub) -> None:
         hub.attach_coordinator(group, coordinator)
 
 
+def _add_exact_feature_families(hub: SpeedportHub, *families: str) -> None:
+    """Add exact probed endpoint families to a focused control fixture."""
+    report = hub._capability_report  # noqa: SLF001 - explicit capability fixture
+    assert report is not None
+    endpoints = dict(report.feature_endpoints)
+    endpoints.update(
+        {
+            family: EndpointCapability(
+                family,
+                f"data/{family}.json",
+                authenticated=True,
+            )
+            for family in families
+        }
+    )
+    hub._apply_capability_report(  # noqa: SLF001 - explicit capability fixture
+        replace(
+            report,
+            authenticated_json=True,
+            feature_endpoints=MappingProxyType(endpoints),
+        )
+    )
+
+
 async def test_select_setup_requires_reviewed_identity_capabilities_and_readback(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -99,11 +125,11 @@ async def test_select_setup_requires_reviewed_identity_capabilities_and_readback
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
+    _add_exact_feature_families(
+        hub,
         "connection_privacy",
         "receiver",
-    }
+    )
     hub._merge_data(  # noqa: SLF001
         {
             "internet": {"privacy_level": 1},
@@ -238,7 +264,7 @@ async def test_select_rejects_mismatched_post_command_readback_and_backoff(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = frozenset((*hub.capabilities, "receiver"))  # noqa: SLF001
+    _add_exact_feature_families(hub, "receiver")
     description = _description(SELECT_DESCRIPTIONS, "receiver_led_mode_control")
     hub._merge_data({"receiver": {"led_mode": 0}})  # noqa: SLF001
     entity = SpeedportCommandSelect(hub, description)
@@ -331,9 +357,7 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = frozenset(  # noqa: SLF001
-        (*hub.capabilities, "clients", "wps")
-    )
+    _add_exact_feature_families(hub, "clients", "wps")
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -984,8 +1008,8 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
         "uses_dhcp": True,
         "uses_rule": 0,
     }
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
+    _add_exact_feature_families(
+        hub,
         "clients",
         "connection_privacy",
         "hybrid",
@@ -993,9 +1017,10 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
         "nat",
         "port_forwarding",
         "receiver",
+        "system",
         "wifi",
         "wps",
-    }
+    )
     hub._merge_data(  # noqa: SLF001
         {
             "wifi": {
@@ -1086,8 +1111,8 @@ async def test_registered_controls_follow_firmware_drift_without_duplicates(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
+    _add_exact_feature_families(
+        hub,
         "clients",
         "connection_privacy",
         "hybrid",
@@ -1095,9 +1120,10 @@ async def test_registered_controls_follow_firmware_drift_without_duplicates(
         "nat",
         "port_forwarding",
         "receiver",
+        "system",
         "wifi",
         "wps",
-    }
+    )
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -1233,10 +1259,7 @@ async def test_managed_client_controls_are_gated_and_verify_readback(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
-        "clients",
-    }
+    _add_exact_feature_families(hub, "clients")
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -1596,6 +1619,7 @@ async def test_firmware_update_metadata_is_read_only_without_command(
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    _add_exact_feature_families(hub, "system")
     hub._merge_data(  # noqa: SLF001 - platform contract fixture
         {
             "system": {

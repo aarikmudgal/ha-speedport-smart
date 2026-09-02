@@ -189,6 +189,81 @@ async def test_smarthome_linked_uses_public_system_status_capability(
         unload_call.args[0]()
 
 
+async def test_cross_root_normalizer_values_create_native_entities(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Successful endpoint polling discovers every returned canonical entity."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints={
+            family: EndpointCapability(
+                family,
+                f"data/{family}.json",
+                authenticated=True,
+            )
+            for family in ("clients", "lan", "mobile")
+        },
+    )
+    mock_speedport_client.get_json.side_effect = lambda endpoint, **_kwargs: {
+        "data/clients.json": {
+            "addmlandevice": [{"id": "lan-1", "connected": "1"}],
+            "addmwlandevice": [{"id": "wifi-1", "connected": "1"}],
+            "addpwlinedevice": [
+                {
+                    "id": "powerline-1",
+                    "pwline_name": "Powerline",
+                    "pwline_mode": "mesh",
+                }
+            ],
+        },
+        "data/lan.json": {
+            "lan_use_dhcp": "1",
+            "lan1_device": "1000000000",
+            "lan4_link_status": "1",
+        },
+        "data/mobile.json": {
+            "ex5g_signal_5g": "-80",
+            "ex5g_led_mode": "1",
+        },
+    }[endpoint]
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+    entry = MagicMock(runtime_data=hub)
+    sensors: list[Any] = []
+    binary_sensors: list[Any] = []
+
+    await async_setup_sensors(hass, entry, sensors.extend)
+    await async_setup_binary_sensors(hass, entry, binary_sensors.extend)
+
+    fixed_sensor_keys = {
+        entity.entity_description.key
+        for entity in sensors
+        if isinstance(entity, SpeedportSensor)
+    }
+    assert {
+        "lan_linked_ports",
+        "receiver_led_mode",
+        "wifi_2_4_clients",
+    } <= fixed_sensor_keys
+    assert any(
+        isinstance(entity, SpeedportChildSensor)
+        and entity._collection_spec.kind == "powerline_node"  # noqa: SLF001
+        and entity._field_description.key == "powerline_mode"  # noqa: SLF001
+        for entity in sensors
+    )
+    assert any(
+        isinstance(entity, SpeedportBinarySensor)
+        and entity.entity_description.key == "dhcp_enabled"
+        for entity in binary_sensors
+    )
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
+
+
 async def test_fixed_wan_binary_sensor_is_added_after_setup_busy_recovers(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
