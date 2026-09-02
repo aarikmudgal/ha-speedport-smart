@@ -76,10 +76,14 @@ class _BoundedStream:
         bounded = min(size, _CHUNK) if size >= 0 else _CHUNK
         return self._account(await self.stream.read(bounded))
 
-    async def readline(self) -> bytes:
+    async def readline(self, *, max_line_length: int | None = None) -> bytes:
+        # New aiohttp multipart readers pass a per-header limit. Enforce it here
+        # without forwarding a keyword unsupported by older StreamReader versions.
         data = await self.stream.readline()
         self.framing += len(data)
-        if self.framing > _BODY_OVERHEAD:
+        if self.framing > _BODY_OVERHEAD or (
+            max_line_length is not None and len(data) > max_line_length
+        ):
             raise FileTransferError("invalid_transfer_file")
         return self._account(data)
 

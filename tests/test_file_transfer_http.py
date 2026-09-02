@@ -437,6 +437,52 @@ async def test_raw_multipart_stream_bounds_chunked_header_framing() -> None:
         await stream.readline()
 
 
+@pytest.mark.parametrize("max_line_length", [None, 8, 100_000])
+async def test_raw_line_keyword_preserves_older_stream_signature(
+    max_line_length: int | None,
+) -> None:
+    """New parser keywords do not reach old streams or reread private bytes."""
+    source = SimpleNamespace(readline=AsyncMock(return_value=b"header\r\n"))
+    stream = _BoundedStream(source)
+    assert await stream.readline(max_line_length=max_line_length) == b"header\r\n"
+    source.readline.assert_awaited_once_with()
+    assert stream.total == stream.framing == 8
+
+
+@pytest.mark.parametrize("max_line_length", [0, 7])
+async def test_raw_line_keyword_rejects_full_line_over_limit(
+    max_line_length: int,
+) -> None:
+    """The caller's stricter limit includes CRLF even on older aiohttp versions."""
+    source = SimpleNamespace(readline=AsyncMock(return_value=b"header\r\n"))
+    stream = _BoundedStream(source)
+    with pytest.raises(ValueError, match=r"^invalid_transfer_file$"):
+        await stream.readline(max_line_length=max_line_length)
+    source.readline.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("max_line_length", [None, 100_000])
+async def test_raw_line_keyword_cannot_widen_aggregate_framing_limit(
+    max_line_length: int | None,
+) -> None:
+    """Many permitted lines still share the independent 16 KiB framing budget."""
+    source = SimpleNamespace(readline=AsyncMock(return_value=b"x" * 4094 + b"\r\n"))
+    stream = _BoundedStream(source)
+    for _ in range(4):
+        assert len(await stream.readline(max_line_length=max_line_length)) == 4096
+    with pytest.raises(ValueError, match=r"^invalid_transfer_file$"):
+        await stream.readline(max_line_length=max_line_length)
+
+
+async def test_raw_line_keyword_cannot_widen_tightened_body_limit() -> None:
+    """A large caller line allowance cannot bypass the approved raw-body limit."""
+    source = SimpleNamespace(readline=AsyncMock(return_value=b"header\r\n"))
+    stream = _BoundedStream(source)
+    stream.limit(7)
+    with pytest.raises(ValueError, match=r"^invalid_transfer_file$"):
+        await stream.readline(max_line_length=100_000)
+
+
 async def test_raw_stream_counts_prefetch_but_refunds_boundary_pushback() -> None:
     """A tightened grant limit includes bytes prefetched while parsing metadata."""
     source = SimpleNamespace(
@@ -454,9 +500,11 @@ async def test_raw_stream_counts_prefetch_but_refunds_boundary_pushback() -> Non
         stream.limit(1)
 
 
-async def test_real_multipart_parser_accepts_browser_form_through_bounded_stream() -> (
-    None
-):
+@pytest.mark.parametrize("has_content_length", [False, True])
+async def test_real_multipart_parser_accepts_browser_form_through_bounded_stream(
+    *,
+    has_content_length: bool,
+) -> None:
     """Exercise real aiohttp framing and boundary pushback, not only part mocks."""
     hass, hub, user = _context()
     token = _grant(hub)
@@ -470,7 +518,7 @@ async def test_real_multipart_parser_accepts_browser_form_through_bounded_stream
     )
     request = _Request(user, parts=[])
     request.headers = {"Content-Type": "multipart/form-data; boundary=boundary"}
-    request.content_length = len(raw)
+    request.content_length = len(raw) if has_content_length else None
     request.content = StreamReader(MagicMock(_reading_paused=False), 65_536)
     request.content.feed_data(raw)
     request.content.feed_eof()
