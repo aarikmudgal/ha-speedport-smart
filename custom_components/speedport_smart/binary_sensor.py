@@ -101,6 +101,16 @@ CHILD_BINARY_SENSOR_COLLECTIONS: tuple[SpeedportChildBinarySensorCollection, ...
                 field="internet_access_allowed",
                 device_class=BinarySensorDeviceClass.CONNECTIVITY,
             ),
+            SpeedportChildBinarySensorDescription(
+                key="uses_dhcp",
+                name="Uses DHCP",
+                field="uses_dhcp",
+            ),
+            SpeedportChildBinarySensorDescription(
+                key="web_interface_available",
+                name="Web interface available",
+                field="has_web_ui",
+            ),
         ),
     ),
     SpeedportChildBinarySensorCollection(

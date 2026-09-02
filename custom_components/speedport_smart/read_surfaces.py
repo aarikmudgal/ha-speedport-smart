@@ -279,6 +279,8 @@ _LOCAL_NETWORK_FIELDS: Final = frozenset(
         "update_server",
         "web_ui_port",
         "web_ui_scheme",
+        "wifi_2_4_mac",
+        "wifi_5_mac",
     }
 )
 _PERSONAL_ADMIN_SECTIONS: Final = frozenset(
@@ -417,7 +419,7 @@ def _admin_privacy(section_id: str, field: str) -> ReadPrivacy:
         "serial",
     }:
         return ReadPrivacy.PERSONAL
-    if field in {"id", "provider_code", "rule_group", "slot"}:
+    if field in {"id", "provider_code", "provider_id", "rule_group", "slot"}:
         return ReadPrivacy.INTERNAL
     if field in _LOCAL_NETWORK_FIELDS:
         return ReadPrivacy.LOCAL_NETWORK
@@ -1151,7 +1153,6 @@ _EXCLUDED_SURFACES: Final = tuple(
         "powerline.nodes[].management_url",
         "security.port_block_rules[].client_scope",
         "telephony.numbers[].error_reason",
-        "usb.storage_items[].serial",
     )
 )
 

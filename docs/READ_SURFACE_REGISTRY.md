@@ -64,14 +64,19 @@ identifier may still have a separately declared derived `DeviceInfo` use.
 No credential value, raw authentication response, or unrestricted router
 payload belongs in this registry or in Home Assistant state.
 
-The administrator-only IP-PBX refresh and phonebook search/contact queries are
-intentionally outside `READ_SURFACES`: they are not normalized-snapshot
-publications. Their fixed WebSocket commands return short-lived, independently
-allowlisted projections only to the requesting administrator panel. Results
-never enter coordinator data, entities, Recorder, diagnostics, URLs, browser
-storage, or logs, and the panel clears them on context change or disconnect.
-Exact discovered query-family capability plus a healthy protected session is
-required before either the frontend or backend can issue a router request.
+The administrator-only IP-PBX refresh, phonebook search/contact/capacity reads,
+and administrator-action target queries are intentionally outside
+`READ_SURFACES`: they are not normalized-snapshot publications. Their fixed
+WebSocket commands return short-lived, independently allowlisted projections
+only to the requesting administrator panel. Action targets expose only
+contract-bounded selector fields, including exact router row IDs as opaque
+`reference` values and masked four-digit VoIP suffixes, plus 60-second single-use
+tokens; fingerprints, full phone numbers, and private target context remain
+backend-only. Results never enter coordinator data, entities, Recorder,
+diagnostics, URLs, browser storage, or logs, and the panel clears them on context
+change or disconnect. Exact discovered query-family capability plus a healthy
+protected session is required before either the frontend or backend can issue a
+router request.
 
 The administrator-only `system.domain_name` publication is an explicit example
 of a raw technical mirror: it is bounded text from the already-polled public

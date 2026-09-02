@@ -24,9 +24,10 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Two exact `LAN.json` IPv6 firmware flags in the administrator-only technical
   view. Their undocumented semantics are not guessed, and they do not create
   native entities or controls.
-- Explicit Administration candidates for DECT handset paging and handset or
-  repeater disconnect, each naming the remaining acknowledgement, roundtrip,
-  and recovery proof while exposing no runnable unverified action.
+- Four guarded beta Administration actions for DECT handset and repeater
+  enrollment, per-handset paging, and VoIP line activation, plus seven typed
+  destructive actions for DECT handset/repeater disconnect and VoIP provider,
+  VoIP number, IP-PBX client, phonebook entry, or NAS share deletion.
 - A distinct diagnostic timestamp for the firmware-reported Internet
   connection start, while preserving the independent online-duration sensor.
   Ambiguous timestamps without an explicit UTC offset remain unavailable.
@@ -36,9 +37,15 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   administrator-only cached read section, with accessible expandable groups.
 - Central immutable risk, dashboard-confirmation, and execution-surface metadata
   for every reviewed router command. Destructive commands cannot be exposed as
-  native entities and must use a future admin-only backend grant flow.
+  native entities and use an administrator-only backend action flow.
+- A fixed administrator-action executor with exact model, firmware, endpoint,
+  Referer, capability, handler, input, confirmation, and readback contracts.
+  Targeted actions use 60-second single-use grants, repeat a fresh identity
+  preflight under the operation lock, send at most one mutation, perform bounded
+  independent readback, and release the router session.
 - Read-only mesh topology details from the proven DeviceList endpoint, including
-  directional link speeds and Wi-Fi generation metadata for managed clients.
+  directional link speeds, exact per-node 2.4/5 GHz MAC identities, and Wi-Fi
+  generation metadata for managed clients.
 - An offline, stdin-only browser-capture sanitizer that verifies one explicit
   reversible scalar apply/readback/rollback sequence and emits only bounded,
   privacy-safe contract evidence.
@@ -50,22 +57,30 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   panel, with administrator-only, on-demand structured details projected from
   the existing normalized cache without additional router traffic.
 - Administrator-only, rate-limited, ephemeral read forms for one IP-PBX client
-  status refresh and bounded phonebook search/contact details. Private results
-  never enter entities, Recorder, coordinator data, diagnostics, URLs, or
-  browser storage.
-- A responsive Administration catalog covering 118 router-management features
+  status refresh and bounded phonebook search/contact details, including the
+  router's exact bounded total and remaining-entry counts. Private results never
+  enter entities, Recorder, coordinator data, diagnostics, URLs, or browser
+  storage.
+- A responsive Administration catalog covering 122 router-management features
   across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
   mobile receivers, and system services. Every entry distinguishes reviewed
   controls, related read-only evidence, blocked contracts, and unsupported
   local management.
-- Separate blocked cards for 5G receiver update versus factory/eSIM restore,
-  VoIP provider/number deletion and number activation, Mesh identify/delete,
-  and USB safe removal. Candidate impact uses the same five risk tiers as
-  reviewed backend controls without enabling any unverified write.
+- Separate blocked cards remain for 5G receiver update versus factory/eSIM
+  restore, Mesh identify/delete, and USB safe removal. VoIP activation and the
+  seven fixed destructive operations instead use the beta administrator-action
+  executor described above. Dynamic DNS deletion remains blocked because its
+  static request uses an unresolved page-local endpoint alias.
 - Expanded privacy-bounded read models for LAN/DHCP, Wi-Fi identities and radio
   configuration, managed clients, Mesh and Powerline nodes, port forwarding
   and blocking, DNS exceptions, traffic-priority slots, DDNS, telephony, DECT,
   PBX, USB storage, NAS, and mobile receivers when the firmware returns them.
+- Seven exact administrator-only read additions: two Mesh radio MACs, storage
+  serial, NAS-share ID, VPN-peer ID, VoIP line-to-provider ID, and phonebook
+  remaining-entry count. None becomes a Recorder-backed native scalar.
+- Exact automatic-family routing for VoIP-provider and PBX-client responses, so
+  their reviewed safe rows reach the existing normalized administrator view
+  while names, numbers, usernames, and credentials remain excluded.
 
 ### Fixed
 
@@ -113,8 +128,9 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   deterministic feature owner instead of appearing in multiple sections.
 - Wi-Fi generation is no longer mistaken for a radio band, and firmware link
   speeds are no longer presented as live traffic throughput.
-- Unproven router-global parental-time and phonebook-entry entities are withheld
-  until their separate read-only request contracts are implemented.
+- Unproven router-global parental-time and phonebook-entry native entities remain
+  withheld. Phonebook search/detail and deletion instead use bounded ephemeral
+  administrator flows that never publish contacts to Recorder.
 - Read-authorized users without control permission retain reporting placement
   for reviewed entity state instead of losing it from both panel views.
 - Client and mobile-receiver child entities now appear in their matching
@@ -126,6 +142,16 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   identified administrator-only share rows. The three unproven router-global
   NAS binary sensors are retired and removed from the entity registry on
   upgrade, preventing permanent unavailable entries.
+- Nine retired beta router-control placeholders are removed from the entity
+  registry on upgrade, preventing permanent unavailable button and switch
+  entries while preserving unrelated and user-managed entities.
+- Administrator actions now refresh every affected cached capability family
+  before the panel reloads, and invalidate protected cached data if that refresh
+  fails. Phonebook target selection also reloads independently of any open
+  confirmation dialog.
+- Repeated human-readable target names now remain unambiguous through bounded
+  opaque row references, including distinct accessible button names for screen
+  readers and action-specific truncation limits.
 
 ### Security
 
@@ -149,6 +175,22 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - A latched firmware write-block state cannot be cleared by transient missing
   status, while explicit safe readback and existing session backoff continue to
   gate all mutating requests.
+- Administrator-action target fingerprints, full telephone numbers, and private
+  target context remain backend-only. The requesting administrator's in-memory
+  panel receives only contract-bounded selector fields, including exact router
+  row IDs as opaque `reference` values and masked four-digit VoIP suffixes, plus
+  single-use action tokens. Fixed typed phrases, one-mutation execution, no
+  ambiguous-write retry, and strict session cleanup apply to every destructive
+  action.
+- Target grants are bound to the requesting Home Assistant administrator and
+  refresh-token session, erased on use, management-generation change, expiry,
+  unload, or shutdown, and never published when final session cleanup fails.
+  Exact-ACK actions treat missing or malformed acknowledgement as an unknown
+  outcome even when a later read happens to match.
+- The eleven new administrator actions are beta implementations based on exact
+  downloaded firmware contracts and automated tests. No live router mutation or
+  change/readback/rollback roundtrip was performed during development, so they
+  are not promoted as stable proof.
 
 ## [0.2.0] - 2026-09-01
 

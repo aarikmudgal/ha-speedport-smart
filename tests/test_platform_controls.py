@@ -940,9 +940,31 @@ async def test_platform_setup_gates_controls_and_discovers_dynamic_entities(
         isinstance(entity, SpeedportCaptureReadOnlyInventoryButton)
         for entity in buttons
     )
-    assert entry.async_on_unload.call_count == 7
+    assert entry.async_on_unload.call_count == 6
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()
+
+
+def test_fixed_descriptions_exclude_unproven_or_misleading_controls() -> None:
+    """Static read evidence must not create a writable entity contract."""
+    described_commands = {
+        description.command
+        for description in (*SWITCH_DESCRIPTIONS, *BUTTON_DESCRIPTIONS)
+    }
+
+    assert described_commands.isdisjoint(
+        {
+            "ddns_update",
+            "dsl_restart",
+            "mesh_optimize",
+            "set_ddns",
+            "set_media_server",
+            "set_parental_controls",
+            "set_upnp",
+            "set_vpn",
+            "wireguard_restart",
+        }
+    )
 
 
 async def test_reviewed_controls_register_after_protected_capability_recovery(

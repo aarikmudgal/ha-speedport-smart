@@ -299,10 +299,13 @@ def test_registry_covers_only_existing_commands_and_aliases() -> None:
                 contract.verification.strategy
                 is ManagementVerificationStrategy.REFRESH_ONLY
             )
+            assert contract.verification.readback_retry_delays == ()
         else:
             assert (
                 contract.verification.strategy is ManagementVerificationStrategy.EXACT
             )
+            assert contract.verification.readback_retry_delays == (0.5, 0.5, 1.0)
+            assert contract.verification.readback_families
             expected_parameter, collection_field = _EXPECTED_VALUE_PARAMETERS[canonical]
             assert contract.verification.expected_parameter == expected_parameter
             assert contract.verification.collection_value_field == collection_field
@@ -316,6 +319,13 @@ def test_registry_covers_only_existing_commands_and_aliases() -> None:
         for alias in aliases:
             assert get_command_write_contract(alias) is contract
     assert get_command_write_contract("factory_reset") is None
+    port_forward = get_command_write_contract("set_port_forward_rule")
+    assert port_forward is not None
+    assert port_forward.verification is not None
+    assert port_forward.verification.readback_families == (
+        "nat",
+        "port_forwarding",
+    )
 
 
 def test_management_contract_registry_loads_without_package_context() -> None:
@@ -568,6 +578,7 @@ def test_verification_policies_reject_ambiguous_declarations() -> None:
             ("clients.items",),
             expected_parameter="enabled",
             collection_value_field="fixed_dhcp",
+            readback_families=("clients",),
         )
     with pytest.raises(ValueError, match="cannot declare an expected value"):
         ManagementVerificationPolicy(
@@ -581,6 +592,22 @@ def test_verification_policies_reject_ambiguous_declarations() -> None:
             ManagementVerificationStrategy.DEFERRED,
             ManagementVerificationCadence.NORMAL,
             ("wifi.enabled",),
+        )
+    with pytest.raises(ValueError, match="retry schedule"):
+        ManagementVerificationPolicy(
+            ManagementVerificationStrategy.EXACT,
+            ManagementVerificationCadence.NORMAL,
+            ("wifi.enabled",),
+            expected_parameter="enabled",
+            readback_families=("wifi",),
+            readback_retry_delays=(0.5, 0.5, 1.0, 2.0),
+        )
+    with pytest.raises(ValueError, match="cannot declare exact readback metadata"):
+        ManagementVerificationPolicy(
+            ManagementVerificationStrategy.REFRESH_ONLY,
+            ManagementVerificationCadence.NORMAL,
+            ("wifi.wps_status",),
+            readback_retry_delays=(0.5,),
         )
 
 
@@ -811,6 +838,7 @@ def test_hub_uses_the_requested_commands_firmware_contract(
                 ManagementVerificationCadence.NORMAL,
                 ("wifi.enabled",),
                 expected_parameter="enabled",
+                readback_families=("wifi",),
             ),
         ),
         "reboot": ManagementCommandContract(

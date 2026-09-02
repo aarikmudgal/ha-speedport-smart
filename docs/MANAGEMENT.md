@@ -15,20 +15,22 @@ set.
 
 ## Evidence classes
 
-| Class | Stable version 0.2 baseline meaning |
+| Class | Meaning |
 | --- | --- |
 | Implemented read-only | A discovered response is normalized and exposed without sending a setting request. |
 | Implemented writable | An allowlisted request has a complete endpoint and form contract, positive acknowledgement handling, independent readback where the action permits it, and stable target identity when it addresses a row. |
 | Staged guarded writable | The current firmware proves one exact scalar endpoint, field, value domain, and read source. The beta control additionally requires a fresh pre-read, positive acknowledgement, and matching post-write readback at runtime, but still needs one user-authorized change and rollback before promotion. |
+| Executable beta administrator action | One fixed panel-only operation is bound to the exact reviewed model, firmware, endpoint, Referer, capability, handlers, typed parameters, confirmation policy, preflight, and independent readback. Static firmware evidence and automated tests support the implementation, but it remains unproven on a live router until a user-authorized roundtrip succeeds. |
 | Firmware-evidenced but blocked | Public firmware material names a page, field, endpoint candidate, or request shape, but at least one required proof is missing. No control is exposed. |
-| Destructive, private, or deferred | The operation can erase configuration, interrupt recovery, or reveal credentials or key material, or it lacks a safe Home Assistant interaction model. It is excluded from the stable version 0.2 baseline; version 0.3 can add it only through the structured admin contract below after all proof gates pass. |
+| Destructive, private, or deferred | The operation can erase configuration, interrupt recovery, or reveal credentials or key material, or it lacks a safe Home Assistant interaction model. It is excluded from the stable version 0.2 baseline. Version 0.3 beta exposes only the seven fixed destructive administrator actions documented below; every other destructive/private operation remains excluded. |
 
 No write is promoted as proven without a complete endpoint, form,
 acknowledgement, readback, and stable-identity contract. Static reconnaissance
-alone never creates a generic request or form. Three exact, reversible scalar
-controls are staged for an explicit user roundtrip; they retain strict runtime
-acknowledgement and readback gates and never retry a rejected or ambiguous
-request.
+alone never creates a generic request or form. Three exact reversible scalar
+controls and eleven fixed administrator actions are staged for explicit user
+roundtrips. A state-changing request is never replayed. The administrator
+executor rejects explicit negative replies, treats an ambiguous mutation
+outcome as unknown, and reports success only after bounded independent readback.
 
 Read coverage is independent of write eligibility. A missing write contract does
 not by itself suppress an independently reviewed read field, but returned data
@@ -40,23 +42,24 @@ according to their privacy and persistence requirements. Passwords, keys,
 recovery material, and raw private records are never copied into entity state,
 diagnostics, logs, or dashboard metadata.
 
-Version 0.3 development uses one immutable safety policy for both backend
-contracts and dashboard controls. Each reviewed command binds a semantic feature
-ID, one exact client handler and parameter-name set, a model/firmware and
-capability boundary, a native or future admin execution surface, a normal,
-sensitive, disruptive, lockout, or destructive risk tier, and a none, confirm,
-or typed dashboard-confirmation presentation. Support, current session
-availability, Home Assistant entity permission, and presentation confirmation
-remain separate gates. The dashboard receives only semantic metadata, never
-router endpoints or request fields, and revalidates the current policy and target
-state immediately before invoking the native Home Assistant service. This dialog
-is user-experience protection, not backend authorization: native entities remain
-callable through Home Assistant services and automations. Destructive commands
-are therefore forbidden from native entity exposure. Before the first
-destructive command is added, its admin-only action surface must require a
-single-use backend grant bound to the exact command, target, parameters, current
-state, and documented recovery prerequisites. No such executor exists today.
-Unknown control-shaped entities fail closed as read only.
+Version 0.3 development uses immutable safety policies for backend contracts and
+dashboard controls. Each reviewed command binds a semantic feature ID, exact
+client handler and parameter-name set, model/firmware and capability boundary,
+execution surface, risk tier, confirmation policy, and readback cadence.
+Support, current session availability, Home Assistant permission, and
+presentation confirmation remain separate gates. The dashboard receives only
+semantic metadata, never router endpoints or request fields.
+
+Native entities remain callable through Home Assistant services and
+automations. The separate administrator-action executor is panel-only and
+requires an administrator, entry-scoped control permission, exact server-side
+confirmation, strict parameter validation, and serialized execution.
+Targeted operations use 60-second single-use grants bound to the action, target
+identity, private context, management generation, and current session. Those
+grants are consumed before one fresh preflight and at most one mutation.
+Destructive commands are forbidden from native entity exposure and require a
+fixed typed phrase plus recovery guidance. Unknown control-shaped entities fail
+closed as read only.
 
 ## Implemented stable-baseline controls
 
@@ -81,10 +84,12 @@ read-only until its write contract is reviewed.
 | Receiver LED mode select (staged) | Fresh `data/LTE.json`, then only `ex5g_led_mode=0`, `1`, or `2` | Positive acknowledgement plus fresh `receiver.led_mode` | Options are Use LEDs, switch off after timeout, and Do not use LEDs; requires user change/readback/rollback validation |
 
 Stateful switches skip a request when the router already reports the desired
-state. After a request, the integration performs one serialized readback and
-raises a Home Assistant error if the expected value is missing or different.
-Reboot and Internet reconnect cannot use an immediate readback because the
-requested action deliberately breaks the connection.
+state. After a request, the integration performs serialized read-only
+verification at approximately 0, 0.5, 1, and 2 seconds, stopping when the exact
+requested value appears. It never replays the mutation. Exhausted mismatches or
+read failures raise a Home Assistant error. Reboot and Internet reconnect cannot
+use an immediate readback because the requested action deliberately breaks the
+connection.
 
 Client rename and fixed DHCP preserve the complete current row returned by
 `data/DeviceList.json`. Both require the same stable row ID and nonempty MAC
@@ -96,8 +101,42 @@ The staged scalar controls reject missing, duplicated, nested, wrong-type,
 case-shifted, or out-of-range current values before a POST. Their entities are
 created only for the exact reviewed model and firmware, only when the matching
 read capability and current state exist, and only when management controls are
-enabled. The dashboard sends standard Home Assistant switch/select service
-calls; it never receives router endpoints, field names, or numeric codes.
+enabled. For these native scalar controls, the dashboard sends standard Home
+Assistant switch/select service calls; it never receives router endpoints,
+field names, or numeric codes.
+
+## Executable beta administrator actions
+
+The current version 0.3 beta exposes the following fixed actions only for the
+exact reviewed model and firmware. Their request shapes come from downloaded
+firmware resources and their behavior is covered by automated tests. No action
+in this table has completed a live mutation/readback/rollback roundtrip on a
+physical router, so none is promoted as stable proof.
+
+| Administrator action | Exact mutation and independent readback | Additional guard |
+| --- | --- | --- |
+| Enroll DECT handset | `POST data/DECT.json` with `scan_dect=scan dect phones`, then fresh `DECTInfo.json` scan state | Explicit confirmation; refuses an already-active scan |
+| Enroll DECT repeater | `POST data/DECTRepeater.json` with `scan_repeater=scan dect repeater`, then fresh `DECTInfo.json` scan state | Separate confirmations that the DECT PIN is `0000`, full DECT transmit power is enabled, and Full Eco Mode is off; refuses an already-active scan |
+| Start or stop handset paging | `POST data/DECT.json` with the fixed paging command and exact handset ID, then fresh handset membership and `DECTInfo.json` paging state | 60-second single-use target grant and explicit confirmation |
+| Activate or deactivate VoIP line | `POST data/IPPhoneNumbers.json` with exact line ID, `no_delete=keep`, and closed active state, then fresh line state | 60-second single-use target grant and disruptive confirmation |
+| Disconnect DECT handset | One exact `DECT.json` disconnect, then fresh absence in `DECTStation.json` | Single-use target grant, `DISCONNECT DECT HANDSET`, and re-enrollment recovery guidance |
+| Disconnect DECT repeater | One exact `DECTRepeater.json` disconnect, then fresh absence in the repeater inventory | Single-use target grant, admin-visible opaque repeater reference, `DISCONNECT DECT REPEATER`, and re-enrollment recovery guidance |
+| Delete VoIP provider | One exact `IPPhone.json` deletion, then fresh provider-list absence | Single-use target grant, `DELETE VOIP PROVIDER`, and calling recovery guidance |
+| Delete VoIP number | One exact `IPPhoneNumbers.json` deletion, then fresh line-list absence | Single-use target grant, `DELETE VOIP NUMBER`, and calling recovery guidance |
+| Delete IP-PBX client | One exact `IPClients.json` deletion, then fresh client-list absence | Single-use target grant, `DELETE IP PBX CLIENT`, and client re-enrollment guidance |
+| Delete phonebook entry | One exact `PhoneBook.json` deletion in its bound phonebook, then complete fresh book-list absence | Single-use target grant, `DELETE PHONEBOOK ENTRY`, and backup/recreation guidance |
+| Delete NAS share | One exact `NASFolder.json` deletion, then fresh share-list absence | Single-use target grant, `DELETE NAS SHARE`, and share-recreation guidance |
+
+All actions recheck capability and identity under the shared operation lock,
+send at most one mutation, perform bounded read-only verification, and release
+their authenticated session. Explicit router rejection fails immediately;
+transport or decoding ambiguity produces an outcome-unknown error and is never
+retried. Target fingerprints, full telephone numbers, and private target context
+stay backend-only. Target selectors return only contract-bounded fields to the
+requesting administrator, including bounded exact router row IDs as opaque
+`reference` values and masked four-digit VoIP `number_suffix` values, plus
+single-use tokens. These ephemeral results never enter persistent Home Assistant
+state.
 
 ## Implemented read-only coverage
 
@@ -120,10 +159,10 @@ Read-only fields do not imply a matching write. In particular:
 | Wi-Fi | Correct global and per-band state, channels, client counts, guest and prioritized-network state, and Mesh topology; bounded 2.4 GHz, 5 GHz, guest, and prioritized-network SSIDs in the administrator-only cached view, with keys excluded |
 | LAN and DHCP | Clients, presence, signal, links, DHCP state, leases, pool/lease summaries, IPv4/IPv6 state, aggregate linked ports, per-port LAN 1-4 link and negotiated speed, and client access allowance when returned |
 | NAT, DNS, traffic prioritization, and security | Port-forward counts plus bounded rule name, state, target, and TCP/UDP mapping summaries; port-block state/counts plus bounded rule-group, ID, state, and validated port-list rows, aggregating distinct extended and extra groups without merging colliding IDs; DNS-rebind state/count plus bounded exception-domain rows; traffic-priority count plus exact slot flags without inferred client identity; firewall, remote-management, and router-side HTTPS state when returned |
-| Mesh and Powerline | Mesh topology and node metrics; bounded Powerline ID, name, parent, manufacturer, MAC, firmware, mode, and upload/download link-rate rows in the administrator-only cached view |
-| Telephony and DECT | Registration, provider/line summaries, missed-call count and latest call timestamp without call identities or records, paging state, handsets, PBX/IP-phone counts and rows, DECT repeater count and bounded membership rows, and phonebook count plus the returned entry-count aggregate when present; analog-socket fields remain absent pending an exact read contract |
-| USB and NAS | Device state, mount state, aggregate capacity/free space, media/temperature, NAS safe flags, and bounded storage-device/share rows when returned; the private share name/folder identifier can be path-like and remains administrator-only, while users and credentials are excluded |
-| DDNS, VPN, and parental controls | DDNS enablement and status plus bounded domain/update-server identity in the administrator-only cached view; VPN profile enablement, connection, type, peer counts and bounded peer rows; and parental profile state when returned |
+| Mesh and Powerline | Mesh topology and node metrics, including exact per-radio 2.4 GHz and 5 GHz MAC identities in the administrator-only cached view; bounded Powerline ID, name, parent, manufacturer, MAC, firmware, mode, and upload/download link-rate rows |
+| Telephony and DECT | Registration, provider/line summaries, opaque line-to-provider relationships in the administrator-only cached view, missed-call count and latest call timestamp without call identities or records, paging state, handsets, PBX/IP-phone counts and rows, DECT repeater count and bounded membership rows, and phonebook count plus bounded total and remaining-entry counts in the ephemeral administrator search when returned; analog-socket fields remain absent pending an exact read contract |
+| USB and NAS | Device state, mount state, aggregate capacity/free space, media/temperature, NAS safe flags, and bounded storage-device/share rows with exact storage serial and share identifiers in the administrator-only cached view when returned; the private share name/folder identifier can be path-like, while users and credentials are excluded |
+| DDNS, VPN, and parental controls | DDNS enablement and status plus bounded domain/update-server identity in the administrator-only cached view; VPN profile enablement, connection, type, peer counts and bounded peer rows with opaque peer identifiers; and parental profile state when returned |
 | Setup, SmartHome, system, energy, and update | Initial-setup/password prerequisite flags, SmartHome linked state, operating mode, uptime, health, temperature, device firmware, and update metadata when exposed |
 | Mobile and 5G | Connection, radio type, signal measurements, band, frequency, cell, and receiver state when exposed |
 
@@ -141,24 +180,19 @@ never used to generate runtime schemas or a generic router editor.
 | --- | --- | --- |
 | Client Internet pause/resume | `access_possible` reports whether access is allowed. | `ENDPOINT`, `FORM`, `ACK`, and independent `READBACK`; the read-only allowance must not be treated as an inverse pause command. |
 | Per-band Wi-Fi changes | `wlan_band` proves read semantics for both, 2.4 GHz-only, and 5 GHz-only modes. | Complete shared `FORM`, positive `ACK`, independent per-band `READBACK`, and disconnect recovery. |
-| DDNS changes | `DDNS.json` and `DynDNS.json` plus `use_dyndns` provide endpoint and state candidates. | Exact save `ENDPOINT`, complete provider `FORM`, `ACK`, independent `READBACK`, and `SECRET` handling for credentials. |
-| VPN and WireGuard changes | `VPN.json`, `WireGuard.json`, `vpn_status`, and peer rows provide endpoint and state candidates. | Exact save `ENDPOINT`, complete `FORM`, `ACK`, separate enabled/connected `READBACK`, stable peer `IDENTITY`, and private-key or pre-shared-key `SECRET` handling. |
-| UPnP, parental controls, and media server | Read-only fields and source descriptors exist. | Exact write `ENDPOINT`, complete `FORM`, `ACK`, and independent `READBACK`. |
+| DDNS create/edit/provider changes and deletion | `DDNS.json` and `DynDNS.json` plus `use_dyndns` provide read endpoint and state candidates. Static deletion code posts `delprov=true` through an unresolved page-local `JSONSource`; it does not prove that the mutation uses `DynDNS.json`. No proven manual “update now” action exists. | Exact mutation `ENDPOINT` and Referer, complete provider `FORM`, `ACK`, independent `READBACK`, and `SECRET` handling for credentials. |
+| VPN and WireGuard changes | `VPN.json`, `WireGuard.json`, `vpn_status`, and peer rows provide endpoint and state candidates. The observed switch is per profile, while `renewvpn` renews generated access material; neither is a global VPN restart. | Exact save `ENDPOINT`, complete `FORM`, `ACK`, separate enabled/connected `READBACK`, stable peer `IDENTITY`, and private-key or pre-shared-key `SECRET` handling. |
+| UPnP, parental controls, and media server | Read-only fields and source descriptors exist. `internet_timerule_active` is aggregate parental-rule state, and the media server becomes active through enabled shared folders; neither proves a global switch. | Exact write `ENDPOINT`, complete `FORM`, `ACK`, and independent `READBACK`. |
+| DSL restart | No discrete DSL-restart operation was found in the captured firmware UI. Router reboot and mode-changing reboot flows are different operations. | An exact firmware action plus positive `ACK` and DSL-specific `READBACK`; it must not be aliased to router reboot. |
 | Mesh node rename | The page reads rows from authenticated `GET data/DeviceList.json`. Its static form names candidate action `data/MeshDevice.json` and the apparent row fields `id`, `mesh_connected`, `mesh_device_type`, `mesh_downspeed`, `mesh_ipv4`, `mesh_mac`, `mesh_mac_wlan`, `mesh_mac_wlan5`, `mesh_name`, `mesh_rssi`, `mesh_type`, and `mesh_upspeed`; the name is constrained to 1-28 ASCII letters, digits, or hyphens. | The captured form has only a reset button and no bound save/submit action. Therefore an accepted POST/positive `ACK` and the exact `id`/MAC-to-child identity retained by a fresh collection `READBACK` are unproven. The endpoint string and field list alone are not executable evidence. |
 | Powerline node rename | The page reads rows from authenticated `GET data/DeviceList.json`. Its static form names candidate action `data/PWLineDevice.json` and the apparent row fields `id`, `pwline_downspeed`, `pwline_name`, and `pwline_upspeed`; the name uses the same 1-28 character constraint. | The captured form has only a reset button and no bound save/submit action. Therefore an accepted POST/positive `ACK` and the exact `id`-to-child identity retained by a fresh collection `READBACK` are unproven. The endpoint string and field list alone are not executable evidence. |
 | Mesh identify | Static firmware proves `POST data/ActiveNode.json` with `mesh_paging=0/1` and `mesh_mac`. | Stable node `IDENTITY`, positive `ACK`, bounded lifetime, stop recovery, independent `READBACK`, and a user-operated disruptive-action roundtrip. |
 | Powerline identify | Static resources suggest identify behavior but do not resolve a complete request. | Exact `ENDPOINT` and `FORM`, stable node `IDENTITY`, positive `ACK`, bounded lifetime, and independent `READBACK`. |
 | Mesh node delete | Static firmware proves `deleteEntry=delete` and `mesh_serial_number`; the endpoint is read from the row's dynamic form action. | Exact `ENDPOINT`, stable serial `IDENTITY`, positive `ACK`, independent collection `READBACK`, typed confirmation, recovery, and a user-operated roundtrip. |
 | USB storage safe remove | Static firmware proves `deleteEntry=delete`, storage `serial`, row `id`, and a returned `status` check; the endpoint is read from the row's dynamic form action. | Exact `ENDPOINT`, stable target `IDENTITY`, positive `ACK`, independent unmounted-state `READBACK`, failure recovery, and a user-operated disruptive-action roundtrip. |
-| VoIP provider delete | Static firmware proves `POST data/IPPhone.json` with `id` and `deleteEntry=delete`. | Stable private provider `IDENTITY`, positive `ACK`, independent collection `READBACK`, typed confirmation, calling recovery, and a user-operated roundtrip. |
-| VoIP number delete | Static firmware proves `POST data/IPPhoneNumbers.json` with `id` and `deleteEntry=delete`. | Stable private line `IDENTITY`, positive `ACK`, independent collection `READBACK`, typed confirmation, calling recovery, and a user-operated roundtrip. |
-| VoIP number activation | Static firmware proves `POST data/IPPhoneNumbers.json` with `id`, `no_delete=keep`, and closed `number_status=ok/inactive`. | Stable private line `IDENTITY`, positive `ACK`, independent enabled/registration `READBACK`, calling recovery, and a user-operated disruptive-action roundtrip. |
 | 5G receiver firmware update | Static firmware proves `auto_update=true` on the page's dynamic `JSONSource`. | Exact `ENDPOINT`/Referer, positive `ACK`, progress and reconnect `READBACK`, maintenance recovery, and a user-operated disruptive-action roundtrip. |
 | 5G receiver factory/eSIM restore | Static firmware proves the separate `restore=0/1` request; `1` is selected only when the eSIM-reset checkbox is checked. | Exact `ENDPOINT`/Referer, explicit eSIM scope, positive `ACK`, progress/reconnect `READBACK`, typed confirmation, physical recovery, and a user-operated destructive-action roundtrip. |
-| DECT handset paging | Static firmware proves `POST data/DECT.json` with only `ring=start paging` and the stable handset row `id`. `DECTInfo.json` independently refreshes `PagingStat<id>`. | The action callback does not inspect or prove a positive `ACK`. Keep the candidate unavailable until a user-authorized roundtrip confirms the response and paging lifecycle. |
-| DECT handset disconnect | Static firmware proves `POST data/DECT.json` with only `disconnect=disconnect` and the stable handset row `id`, then refreshes the `DECTStation.json` collection. | The callback does not inspect or prove a positive `ACK`. Destructive execution also requires a typed administrator action, target confirmation, a user-authorized roundtrip, and re-enrollment recovery proof. |
-| DECT repeater disconnect | Static firmware proves `POST data/DECTRepeater.json` with only `disconnect=disconnect` and the stable repeater row `id`, then refreshes the `DECTStation.json` collection after the firmware's delay. | The callback does not inspect or prove a positive `ACK`. Destructive execution also requires a typed administrator action, target confirmation, a user-authorized roundtrip, and re-enrollment recovery proof. |
-| Creation, editing, or deletion of structured records | Firmware pages expose clients, port rules, schedules, peers, shares, and telephony records. | Stable target `IDENTITY`, complete collection `FORM`, conflict behavior, `ACK`, and full-list `READBACK`; deletion also needs recovery and confirmation. |
+| Remaining structured creation, editing, or deletion | Firmware pages expose clients, port rules, schedules, peers, shares, and telephony records. The eleven fixed beta actions above are the only exceptions. | Stable target `IDENTITY`, complete collection `FORM`, conflict behavior, `ACK`, and full-list `READBACK`; deletion also needs recovery and confirmation. |
 
 `ENDPOINT` includes method, path, authentication, token, and Referer. `FORM`
 includes every submitted and hidden field, allowed value, and dependency. `ACK`
@@ -181,12 +215,11 @@ tiers as backend write contracts: `normal`, `sensitive`, `disruptive`,
 `lockout`, and `destructive`. A badge is informational only; blocked candidates
 still contain no executable control.
 
-The DECT paging and disconnect cards are likewise evidence-only candidates.
-Read-only inventory capture can confirm endpoint presence and value-free shapes,
-but it cannot prove an action response. Promotion requires an explicitly
-authorized handset or repeater roundtrip that records only the bounded positive
-acknowledgement shape and independent follow-up state. Until then, the panel
-shows the precise blocker and exposes no runnable DECT action.
+The four guarded and seven destructive actions above are executable only in the
+version 0.3 beta Administration view. Their static request shapes, runtime
+guards, and automated tests do not prove router acceptance. Promotion still
+requires an explicitly authorized roundtrip and, where reversible, restoration
+of the original state.
 
 ## Destructive, private, or deferred operations in the stable baseline
 
@@ -230,15 +263,16 @@ distinguish otherwise anonymous rows. Raw source records, hidden form/request
 details, passwords, keys, and other secret material are never returned. The
 frontend requests the data only when an administrator opens the Administration
 view, keeps it only in memory, and clears it when access or the selected router
-changes. This read surface is deliberately separate from the future mutation
-contract below.
+changes. This read surface remains separate from the administrator-action
+executor below.
 
 Two firmware reads cannot be represented safely as Recorder-backed entities:
 an IP-PBX client refresh and phonebook contact data. The Administration view
 therefore provides administrator-only, on-demand read forms under the existing
 IP-PBX and phonebook capability cards. Inputs are restricted to the firmware's
 five phonebook indexes, an optional single-letter prefix, and bounded opaque
-row identifiers. Results pass through fixed field allowlists and are escaped
+row identifiers. Phonebook results also include bounded total and remaining
+entry counts when those exact fields are returned. Results pass through fixed field allowlists and are escaped
 again before rendering. They never enter coordinator data, entities,
 diagnostics, logs, URLs, or browser storage. A result remains only in the
 current panel and is cleared when the user leaves Administration, changes
@@ -264,11 +298,11 @@ inventory atomically. Diagnostics distinguish complete, partial, and failed
 attempts and expose only safe counts, timestamps, and an exception class for a
 fatal failure.
 
-A structured editor will be added only with its first fully proven operation;
-the integration does not ship an empty generic executor. Native scalar and
-bounded action entities continue to use ordinary Home Assistant services.
-List, secret, upload, delete, reset, and maintenance operations must instead
-use an admin-only, typed transaction with these invariants:
+The integration ships a fixed administrator-action executor for the eleven beta
+operations above; it is not a generic editor. Native scalar and bounded action
+entities continue to use ordinary Home Assistant services. List, secret,
+upload, delete, reset, and maintenance operations can enter this executor only
+as fixed, reviewed operations with these invariants:
 
 1. A static internal descriptor binds one exact operation to its model,
    firmware, capability, input schema, direct client method, risk class,
@@ -278,38 +312,44 @@ use an admin-only, typed transaction with these invariants:
 2. The backend requires a Home Assistant administrator and entry-scoped
    control permission. It resolves a loaded integration entry, never a
    user-supplied host or address.
-3. A prepare phase performs a fresh read, validates the target and complete
-   typed payload, and returns a short-lived, single-use challenge bound to the
-   user, entry, operation, target, pre-state revision, and payload digest.
-4. Execute consumes the challenge before mutation, repeats schema, identity,
-   capability, session, and stale-state checks under the integration operation
-   lock, sends one exact request, requires a positive acknowledgement, performs
-   an independent readback, and always releases its router session. It never
-   retries an ambiguous write.
-5. Reversible edits require an explicit apply confirmation. Delete operations
-   require the exact target phrase. Reset, mode, restore, upload, and other
-   maintenance operations additionally require the exact router phrase plus
-   proven backup and recovery prerequisites. Frontend confirmation alone is
-   never an authorization boundary.
+3. Targeted actions first return a bounded label and a 60-second, single-use
+   token. The server binds that token to the user, entry, operation, target,
+   private context, management generation, and current session. Untargeted
+   enrollment actions do not use a target token.
+4. Execute consumes the token before mutation, repeats support, schema,
+   identity, capability, session, and stale-state checks under the integration
+   operation lock, then performs a fresh target/state preflight and sends at
+   most one exact request. An explicit negative response is rejected. A
+   transport or decoding ambiguity is reported as outcome unknown and is never
+   retried. Bounded independent readback must verify the result, and the router
+   session is released on every path.
+5. Guarded actions require explicit confirmation. Delete operations require
+   their fixed operation phrase and display target-specific recovery guidance.
+   Reset, restore, upload, and other maintenance operations remain blocked
+   until their additional recovery prerequisites are proven. Frontend
+   confirmation alone is never an authorization boundary.
 6. Secrets are write-only one-shot inputs with explicit keep-existing or
    replace semantics. They never enter config-entry options, entity state,
    attributes, coordinator data, diagnostics, logs, Repair issues, WebSocket
    results, or dashboard state. Private downloads use authenticated,
    no-store, expiring, single-use delivery bound to the requesting admin.
 
-Successful structured operations return only a fixed verified status and an
-opaque revision. Unknown operations, extra fields, changed targets, expired or
-reused challenges, missing acknowledgements, and mismatched readback fail
-closed. No generic Home Assistant service is provided; a proven operation that
-needs automation receives its own named admin service and static schema.
+Successful administrator operations return only a fixed verified status and a
+value-free result field: `active`, `deleted`, or an enrollment lifecycle.
+Unknown operations, extra fields, changed targets, expired or reused tokens,
+explicit rejection, ambiguous outcomes, and mismatched readback fail closed.
+No generic Home Assistant service is provided.
 
 ## Development and testing policy
 
 Setup, discovery, polling, diagnostics, dashboard rendering, and automated
-tests never change router settings. A write runs only after a Home Assistant
-user invokes its specific entity or service. Development validation against a
-physical router is limited to read requests plus the router's required login
-and logout lifecycle.
+tests never change router settings. A native write runs only after a Home
+Assistant user invokes its specific entity or service. A beta administrator
+action runs only after an administrator opens its panel card, completes its
+server-enforced confirmation, and submits it. Development validation against a
+physical router has been limited to read requests plus the router's required
+login and logout lifecycle; none of the eleven administrator actions has been
+sent to the router.
 
 The first validation of a staged control is always user-driven: record the
 current value, change exactly one setting, require a positive acknowledgement,

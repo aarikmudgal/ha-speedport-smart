@@ -2979,7 +2979,6 @@ def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
         "energy",
         "internet_configuration",
         "telephony_configuration",
-        "nas_folders",
         "lte_log",
         "backup_restore",
     }
@@ -3163,8 +3162,8 @@ def test_target_firmware_inventory_gets_have_exact_safety_contracts() -> None:
         candidate = candidates[key]
         assert candidate.referer == referer
         assert candidate.authenticated is True
-        assert candidate.automatic_probe is (key[0] == "pbx_clients")
-        assert candidate.inventory_safe is True
+        assert candidate.automatic_probe is (key[0] in {"pbx_clients", "nas_folders"})
+        assert candidate.inventory_safe is (key[0] != "nas_folders")
         assert candidate.evidence_keys
 
 
@@ -3410,7 +3409,7 @@ async def test_probe_keeps_summary_and_independent_detail_families(
                 "data/DECTStation.json",
                 authenticated=True,
                 referer="html/content/phone/phone_dect_mobiles.html",
-                evidence_keys=("use_dect",),
+                evidence_keys=("dect", "handset"),
                 automatic_probe=True,
             ),
         ),
@@ -3461,7 +3460,7 @@ async def test_probe_keeps_summary_and_independent_detail_families(
                 "wlan_active": "1",
                 "vpn_active": "1",
             },
-            "data/DECTStation.json": {"use_dect": "1"},
+            "data/DECTStation.json": {"adddect": [{"id": "handset-1"}]},
             "data/NASDevice.json": {"addnasdevice": [{"id": "usb-1"}]},
         }
         if endpoint in base_payloads:

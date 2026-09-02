@@ -43,6 +43,8 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
                     "name": "Mesh repeater",
                     "connected": True,
                     "role": "agent",
+                    "wifi_2_4_mac": "AA:BB:CC:DD:EE:01",
+                    "wifi_5_mac": "AA:BB:CC:DD:EE:02",
                     "endpoint": "/data/hidden.json",
                 }
             ]
@@ -138,7 +140,13 @@ def test_admin_read_payload_projects_only_fixed_reviewed_fields() -> None:
         }
     ]
     assert sections["mesh_nodes"]["rows"] == [
-        {"name": "Mesh repeater", "connected": True, "role": "agent"}
+        {
+            "name": "Mesh repeater",
+            "connected": True,
+            "wifi_2_4_mac": "AA:BB:CC:DD:EE:01",
+            "wifi_5_mac": "AA:BB:CC:DD:EE:02",
+            "role": "agent",
+        }
     ]
     assert sections["port_forward_rules"]["rows"] == [
         {
@@ -349,6 +357,7 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
         "vpn": {
             "peers": [
                 {
+                    "id": "peer-1",
                     "name": "Road warrior",
                     "enabled": True,
                     "connected": True,
@@ -378,6 +387,7 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
                     "id": "line-1",
                     "status": "warning",
                     "provider_code": 99,
+                    "provider_id": "provider-1",
                     "error_code": "403",
                     "error_reason": "registration rejected",
                     "ip_number": "+49 30 123456",
@@ -410,6 +420,7 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
             ],
             "shares": [
                 {
+                    "id": "share-1",
                     "name": "Backup",
                     "path": "/mnt/backup",
                     "enabled": True,
@@ -452,7 +463,12 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
         }
     ]
     assert sections["vpn_peers"] == [
-        {"name": "Road warrior", "enabled": True, "connected": True}
+        {
+            "id": "peer-1",
+            "name": "Road warrior",
+            "enabled": True,
+            "connected": True,
+        }
     ]
     assert sections["dns_rebind_exceptions"] == [{"domain": "private-service.example"}]
     assert sections["qos_prioritized_clients"] == [{"slot": 2, "prioritized": True}]
@@ -464,6 +480,7 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
             "id": "line-1",
             "status": "warning",
             "provider_code": 99,
+            "provider_id": "provider-1",
             "error_code": "403",
         }
     ]
@@ -479,6 +496,7 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
     assert sections["storage_devices"] == [
         {
             "name": "Backup SSD",
+            "serial": "hidden-serial",
             "storage_type": "NAS",
             "connection": "USB",
             "total_bytes": 4096,
@@ -488,6 +506,7 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
     ]
     assert sections["nas_shares"] == [
         {
+            "id": "share-1",
             "name": "Backup",
             "enabled": True,
             "read_only": True,
@@ -512,7 +531,6 @@ def test_admin_read_payload_projects_new_management_collections() -> None:
         "192.0.2.50",
         "+49 30 123456",
         "registration rejected",
-        "hidden-serial",
         "hidden-user",
         "/mnt/backup",
         "http://192.0.2.30",

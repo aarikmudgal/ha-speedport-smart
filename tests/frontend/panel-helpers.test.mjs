@@ -78,6 +78,39 @@ test("explicit backend capability groups remain authoritative", () => {
   );
 });
 
+test("removed controls cannot regain obsolete dashboard groups", () => {
+  for (const translationKey of [
+    "restart_dsl",
+    "optimize_mesh",
+    "ddns",
+    "update_ddns",
+    "vpn",
+    "restart_vpn",
+    "parental_controls",
+    "media_server",
+  ]) {
+    assert.equal(
+      capabilityGroupFor({
+        section: "controls",
+        translation_key: translationKey,
+        domain: "button",
+      }),
+      "controls_other",
+      translationKey,
+    );
+  }
+
+  for (const groupId of [
+    "controls_mesh",
+    "controls_ddns",
+    "controls_vpn",
+    "controls_parental",
+    "controls_media",
+  ]) {
+    assert.equal(panelSource.includes(groupId), false, groupId);
+  }
+});
+
 test("Powerline child entities stay in the LAN hierarchy", () => {
   assert.equal(
     capabilityGroupFor({

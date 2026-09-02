@@ -568,11 +568,11 @@ async def test_update_failure_sensor_refreshes_from_every_poll_group(
     await entity.async_will_remove_from_hass()
 
 
-async def test_client_access_allowed_binary_sensor_is_discovered(
+async def test_client_safe_connection_metadata_entities_are_discovered(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """The firmware-provided client allowance becomes a read-only entity."""
+    """Observed non-secret client metadata becomes read-only native entities."""
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     await hub.async_setup()
     _attach_coordinators(hass, hub)
@@ -585,6 +585,10 @@ async def test_client_access_allowed_binary_sensor_is_discovered(
                         "mac": "AA:BB:CC:DD:EE:FF",
                         "connected": True,
                         "internet_access_allowed": True,
+                        "uses_dhcp": True,
+                        "has_web_ui": False,
+                        "medium": "wifi_5",
+                        "wifi_standard": "IEEE 802.11ax",
                     }
                 ]
             }
@@ -592,8 +596,10 @@ async def test_client_access_allowed_binary_sensor_is_discovered(
     )
     entry = MagicMock(runtime_data=hub)
     binary_sensors: list[SpeedportBinarySensor | SpeedportChildBinarySensor] = []
+    sensors: list[SpeedportSensor | SpeedportChildSensor] = []
 
     await async_setup_binary_sensors(hass, entry, binary_sensors.extend)
+    await async_setup_sensors(hass, entry, sensors.extend)
 
     allowed = next(
         entity
@@ -604,6 +610,36 @@ async def test_client_access_allowed_binary_sensor_is_discovered(
     assert allowed.translation_key == "internet_access_allowed"
     assert allowed.is_on
     assert allowed.device_class is BinarySensorDeviceClass.CONNECTIVITY
+    uses_dhcp = next(
+        entity
+        for entity in binary_sensors
+        if isinstance(entity, SpeedportChildBinarySensor)
+        and entity.unique_id.endswith("uses_dhcp")
+    )
+    web_interface = next(
+        entity
+        for entity in binary_sensors
+        if isinstance(entity, SpeedportChildBinarySensor)
+        and entity.unique_id.endswith("web_interface_available")
+    )
+    medium = next(
+        entity
+        for entity in sensors
+        if isinstance(entity, SpeedportChildSensor)
+        and entity.unique_id.endswith("connection_medium")
+    )
+    standard = next(
+        entity
+        for entity in sensors
+        if isinstance(entity, SpeedportChildSensor)
+        and entity.unique_id.endswith("wifi_standard")
+    )
+    assert uses_dhcp.is_on
+    assert uses_dhcp.device_class is None
+    assert web_interface.is_on is False
+    assert web_interface.device_class is None
+    assert medium.native_value == "wifi_5"
+    assert standard.native_value == "IEEE 802.11ax"
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()
 
@@ -1386,9 +1422,20 @@ async def test_p1_safe_read_fields_have_native_entity_coverage(
         if collection.kind == "client"
     )
     assert {field.key for field in client.fields} >= {
+        "connection_medium",
         "download_link_speed",
         "upload_link_speed",
         "wifi_generation",
+        "wifi_standard",
+    }
+    client_binary = next(
+        collection
+        for collection in CHILD_BINARY_SENSOR_COLLECTIONS
+        if collection.kind == "client"
+    )
+    assert {field.key for field in client_binary.fields} >= {
+        "uses_dhcp",
+        "web_interface_available",
     }
 
 

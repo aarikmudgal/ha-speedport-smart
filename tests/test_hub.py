@@ -2037,10 +2037,10 @@ async def test_command_gate_and_verification(
 
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="ok")
 
-    def publish_requested_state(_group: PollGroup) -> None:
+    def publish_requested_state(_family: str, _group: PollGroup) -> None:
         hub._merge_data({"wifi": {"enabled": True}})  # noqa: SLF001
 
-    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
         side_effect=publish_requested_state
     )
     normal_coordinator = MagicMock()
@@ -2055,10 +2055,132 @@ async def test_command_gate_and_verification(
     mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
         enabled=True
     )
+    hub._async_update_verification_family_locked.assert_awaited_once_with(  # noqa: SLF001
+        "wifi", PollGroup.NORMAL
+    )
+    normal_coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_wps_refresh_only_verification_keeps_full_group_ownership(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """WPS lifecycle refreshes its status family through the normal group."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wps": EndpointCapability(
+                    "wps",
+                    "data/WLANAccess.json",
+                    authenticated=True,
+                ),
+                "wps_status": EndpointCapability(
+                    "wps_status",
+                    "data/WPSStatus.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    mock_speedport_client.wps = AsyncMock(return_value="accepted")
+
+    def publish_wps_status(_group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"wps_status": "connecting"}})  # noqa: SLF001
+
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_wps_status
+    )
+    hub._async_update_verification_family_locked = AsyncMock()  # noqa: SLF001
+
+    assert await hub.async_execute("wps") == "accepted"
+
+    mock_speedport_client.wps.assert_awaited_once_with()
     hub._async_update_group_locked.assert_awaited_once_with(  # noqa: SLF001
         PollGroup.NORMAL
     )
-    normal_coordinator.async_set_updated_data.assert_called_once()
+    hub._async_update_verification_family_locked.assert_not_awaited()  # noqa: SLF001
+
+
+async def test_port_forward_verification_uses_family_owning_rule_readback(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """SecureStatus capability fallback cannot replace NAT rule readback."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                ),
+                "nat": EndpointCapability(
+                    "nat",
+                    "data/PortuwMain.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.set_port_forward_rule = handler
+    fingerprint = "a" * 64
+    rule = {
+        "id": "3",
+        "name": "HTTPS",
+        "_identity_fingerprint": fingerprint,
+        "active": True,
+    }
+    initial = {"nat": {"port_forward_rules": [rule]}}
+    hub._family_data["nat"] = initial  # noqa: SLF001 - source ownership proof
+    hub._merge_data(initial)  # noqa: SLF001
+
+    def publish_disabled_rule(_family: str, _group: PollGroup) -> None:
+        hub._merge_data(  # noqa: SLF001 - focused readback fixture
+            {"nat": {"port_forward_rules": [{**rule, "active": False}]}}
+        )
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_disabled_rule
+    )
+
+    assert (
+        await hub.async_execute(
+            "set_port_forward_rule",
+            rule_id="3",
+            enabled=False,
+            expected_name="HTTPS",
+            expected_fingerprint=fingerprint,
+        )
+        == "accepted"
+    )
+
+    handler.assert_awaited_once_with(
+        rule_id="3",
+        enabled=False,
+        expected_name="HTTPS",
+        expected_fingerprint=fingerprint,
+    )
+    hub._async_update_verification_family_locked.assert_awaited_once_with(  # noqa: SLF001
+        "nat",
+        PollGroup.SLOW,
+    )
 
 
 async def test_stateful_command_cannot_bypass_contract_readback(
@@ -2221,14 +2343,19 @@ async def test_exact_scalar_readback_mismatch_fails_without_session_invalidation
     handler = AsyncMock(return_value="accepted")
     mock_speedport_client.execute_wifi_set_enabled = handler
 
-    def publish_mismatch(_group: PollGroup) -> None:
+    def publish_mismatch(_family: str, _group: PollGroup) -> None:
         hub._merge_data({"wifi": {"enabled": True}})  # noqa: SLF001
 
-    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
         side_effect=publish_mismatch
     )
 
-    with pytest.raises(HomeAssistantError) as failure:
+    with (
+        patch(
+            "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+        ) as sleep,
+        pytest.raises(HomeAssistantError) as failure,
+    ):
         await hub.async_execute("wifi_set_enabled", enabled=False)
 
     assert failure.value.translation_key == "command_verification_failed"
@@ -2236,6 +2363,152 @@ async def test_exact_scalar_readback_mismatch_fails_without_session_invalidation
     assert hub.get("management.access.state") == "available"
     assert hub._protected_retry_at == 0.0  # noqa: SLF001
     handler.assert_awaited_once_with(enabled=False)
+    assert hub._async_update_verification_family_locked.await_count == 4  # noqa: SLF001
+    sleep.assert_has_awaits([call(0.5), call(0.5), call(1.0)])
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_receiver_led_exact_readback_retries_stale_state_without_rewrite(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A stale first LED readback may settle without replaying its mutation."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "receiver_led": EndpointCapability(
+                    "receiver_led",
+                    "data/LTE.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.set_receiver_led_mode = handler
+    mock_speedport_client.get_json.side_effect = [
+        {"ex5g_led_mode": "1"},
+        {"ex5g_led_mode": "2"},
+    ]
+
+    with patch(
+        "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+    ) as sleep:
+        assert await hub.async_execute("set_receiver_led_mode", mode=2) == "accepted"
+
+    handler.assert_awaited_once_with(mode=2)
+    assert mock_speedport_client.get_json.await_args_list == [
+        call(
+            "data/LTE.json",
+            authenticated=True,
+            referer=None,
+        ),
+        call(
+            "data/LTE.json",
+            authenticated=True,
+            referer=None,
+        ),
+    ]
+    sleep.assert_awaited_once_with(0.5)
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_hybrid_exact_readback_fresh_reads_status_endpoint(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Status-backed exact verification bypasses normal public poll cadence."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "hybrid": EndpointCapability(
+                    "hybrid",
+                    "data/Status.json",
+                )
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.set_hybrid_bonding = handler
+    mock_speedport_client.get_status.side_effect = [
+        RouterStatus(
+            info=mock_speedport_client.router_info,
+            raw=MappingProxyType({"use_bonding": "0"}),
+        ),
+        RouterStatus(
+            info=mock_speedport_client.router_info,
+            raw=MappingProxyType({"use_bonding": "1"}),
+        ),
+    ]
+    hub._merge_data({"hybrid": {"enabled": False}})  # noqa: SLF001
+    hub._public_status_next_poll_at = float("inf")  # noqa: SLF001
+
+    with patch(
+        "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+    ) as sleep:
+        assert await hub.async_execute("set_hybrid_bonding", enabled=True) == "accepted"
+
+    handler.assert_awaited_once_with(enabled=True)
+    assert mock_speedport_client.get_status.await_count == 2
+    mock_speedport_client.get_json.assert_not_awaited()
+    sleep.assert_awaited_once_with(0.5)
+    assert hub.get("hybrid.enabled") is True
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_exact_readback_retries_transient_read_error_without_rewrite(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A transient read failure may recover without replaying its mutation."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+    attempts = 0
+
+    async def publish_after_error(_family: str, _group: PollGroup) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise SpeedportConnectionError("temporary read failure")
+        hub._merge_data({"wifi": {"enabled": False}})  # noqa: SLF001
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_after_error
+    )
+
+    with patch(
+        "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+    ) as sleep:
+        assert await hub.async_execute("wifi_set_enabled", enabled=False) == "accepted"
+
+    handler.assert_awaited_once_with(enabled=False)
+    assert hub._async_update_verification_family_locked.await_count == 2  # noqa: SLF001
+    sleep.assert_awaited_once_with(0.5)
+    assert hub.get("management.access.state") == "available"
     mock_speedport_client.logout.assert_awaited_once()
 
 
@@ -2479,7 +2752,7 @@ async def test_disruptive_command_defers_verification(
     mock_speedport_client.logout.assert_awaited_once()
 
 
-async def test_command_failures_are_translated_without_retry(
+async def test_command_writes_never_retry_after_indeterminate_failure(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
@@ -2517,11 +2790,16 @@ async def test_command_failures_are_translated_without_retry(
     mock_speedport_client.logout.reset_mock()
     hub._set_management_access("available")  # noqa: SLF001
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="accepted")
-    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
         side_effect=SpeedportConnectionError("readback unavailable")
     )
 
-    with pytest.raises(HomeAssistantError) as verification_error:
+    with (
+        patch(
+            "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+        ) as sleep,
+        pytest.raises(HomeAssistantError) as verification_error,
+    ):
         await hub.async_execute("wifi_set_enabled", enabled=True)
 
     assert verification_error.value.translation_domain == DOMAIN
@@ -2536,8 +2814,18 @@ async def test_command_failures_are_translated_without_retry(
     mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
         enabled=True
     )
-    hub._async_update_group_locked.assert_awaited_once_with(  # noqa: SLF001
-        PollGroup.NORMAL
+    assert hub._async_update_verification_family_locked.await_args_list == [  # noqa: SLF001
+        call("wifi", PollGroup.NORMAL),
+        call("wifi", PollGroup.NORMAL),
+        call("wifi", PollGroup.NORMAL),
+        call("wifi", PollGroup.NORMAL),
+    ]
+    sleep.assert_has_awaits(
+        [
+            call(0.5),
+            call(0.5),
+            call(1.0),
+        ]
     )
     mock_speedport_client.logout.assert_awaited_once()
 
@@ -2604,15 +2892,18 @@ async def test_command_failures_update_management_backoff(
     )
     await hub.async_setup()
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="accepted")
-    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock()  # noqa: SLF001
     if failure_stage == "command":
         mock_speedport_client.execute_wifi_set_enabled.side_effect = error
         expected_translation_key = "command_failed"
     else:
-        hub._async_update_group_locked.side_effect = error  # noqa: SLF001
+        hub._async_update_verification_family_locked.side_effect = error  # noqa: SLF001
         expected_translation_key = "command_verification_failed"
 
-    with pytest.raises(HomeAssistantError) as failure:
+    with (
+        patch("custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()),
+        pytest.raises(HomeAssistantError) as failure,
+    ):
         await hub.async_execute("wifi_set_enabled", enabled=False)
 
     assert failure.value.translation_key == expected_translation_key
@@ -2780,10 +3071,10 @@ async def test_firmware_write_block_rejects_before_handler_io(
         {"system": {"settings_write_blocked": False}}
     )
 
-    def publish_disabled_wifi(_group: PollGroup) -> None:
+    def publish_disabled_wifi(_family: str, _group: PollGroup) -> None:
         hub._merge_data({"wifi": {"enabled": False}})  # noqa: SLF001
 
-    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
         side_effect=publish_disabled_wifi
     )
     assert hub.management_controls_available
@@ -2822,11 +3113,11 @@ async def test_commands_remain_serialized(
         active -= 1
         return enabled
 
-    def publish_requested_state(_group: PollGroup) -> None:
+    def publish_requested_state(_family: str, _group: PollGroup) -> None:
         hub._merge_data({"wifi": {"enabled": requested_state}})  # noqa: SLF001
 
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(side_effect=execute_wifi)
-    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
         side_effect=publish_requested_state
     )
 
@@ -2837,7 +3128,7 @@ async def test_commands_remain_serialized(
 
     assert max_active == 1
     assert mock_speedport_client.execute_wifi_set_enabled.await_count == 2
-    assert hub._async_update_group_locked.await_count == 2  # noqa: SLF001
+    assert hub._async_update_verification_family_locked.await_count == 2  # noqa: SLF001
     assert mock_speedport_client.logout.await_count == 2
 
 

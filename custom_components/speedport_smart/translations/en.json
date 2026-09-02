@@ -423,6 +423,7 @@
       "used_space": { "name": "Used space" },
       "wifi_channel": { "name": "Wi-Fi channel" },
       "wifi_generation": { "name": "Wi-Fi generation" },
+      "wifi_standard": { "name": "Wi-Fi standard" },
       "management_access": {
         "name": "Management access",
         "state": {
@@ -520,6 +521,8 @@
       "connected": { "name": "Connected" },
       "enabled": { "name": "Enabled" },
       "internet_access_allowed": { "name": "Internet access allowed" },
+      "uses_dhcp": { "name": "Uses DHCP" },
+      "web_interface_available": { "name": "Web interface available" },
       "internet_paused": { "name": "Internet paused" },
       "mounted": { "name": "Mounted" },
       "registered": { "name": "Registered" },
@@ -531,10 +534,6 @@
       "guest_wifi": { "name": "Guest Wi-Fi" },
       "office_wifi": { "name": "Office Wi-Fi" },
       "upnp": { "name": "UPnP" },
-      "ddns": { "name": "Dynamic DNS" },
-      "vpn": { "name": "VPN" },
-      "parental_controls": { "name": "Parental controls" },
-      "media_server": { "name": "Media server" },
       "port_forward_rule": { "name": "Port forwarding rule" },
       "client_internet_access": { "name": "Internet access" },
       "client_fixed_dhcp": { "name": "Fixed DHCP reservation" }
@@ -565,11 +564,7 @@
       "retry_protected_data": { "name": "Retry protected data (log out of the router first)" },
       "wps": { "name": "Start WPS" },
       "reconnect_internet": { "name": "Reconnect internet" },
-      "restart_dsl": { "name": "Restart DSL" },
-      "reboot_router": { "name": "Reboot router" },
-      "update_ddns": { "name": "Update Dynamic DNS" },
-      "restart_vpn": { "name": "Restart VPN" },
-      "optimize_mesh": { "name": "Optimize Mesh" }
+      "reboot_router": { "name": "Reboot router" }
     },
     "update": {
       "firmware": { "name": "Firmware" }

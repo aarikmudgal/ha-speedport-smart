@@ -57,6 +57,12 @@ The current integration code has been validated with read-only requests against:
 - **Home Assistant:** 2025.12.0 or newer
 - **Languages:** English and German
 
+That live validation covers read-only discovery and polling. The administrator
+actions described below are current beta functionality for this exact router
+and firmware, built from downloaded firmware request contracts and automated
+tests. None of those actions has completed a live change/readback/rollback
+roundtrip on a physical router yet.
+
 Other Speedport models or firmware may expose a different set of endpoints and
 entities. An entity appears only when both the integration implements it and
 the connected router supplies evidence for that capability. Missing
@@ -165,7 +171,8 @@ The panel:
 - uses live Home Assistant entity states; router names and values are not
   hardcoded
 - respects the signed-in user's entity permissions
-- asks for confirmation before executing a router-changing action
+- requires confirmation before every router-changing action and an exact typed
+  phrase for destructive administrator actions
 
 The router device page also links directly to the configured local Speedport
 web interface through Home Assistant's standard **Visit** action.
@@ -180,6 +187,12 @@ cached normalized state: opening the view does not send another router request.
 The response is allowlisted, bounded, loaded only on demand, kept in browser
 memory, and cleared when the router selection, connection, or administrator
 access changes. It is never written to browser storage.
+
+The cached administrator view includes exact per-radio Mesh MAC addresses,
+opaque VPN peer and NAS-share identifiers, storage serials, and opaque VoIP
+line-to-provider relationships when the router returns their exact fields.
+Phonebook search additionally reports the router's bounded total and remaining
+entry capacity. These private details do not become Recorder-backed entities.
 
 All entities remain available through the standard **Devices & services**
 pages for dashboards, automations, history, and statistics. Disabling an entity
@@ -286,19 +299,42 @@ one allowlisted field, requires a positive acknowledgement, refreshes the
 independent Home Assistant state, and rejects a mismatch. These controls still
 require one user-driven change and rollback before being promoted as proven.
 
-The bundled dashboard asks for confirmation before an action. Invoking the same
-button, switch, update, service, script, or automation elsewhere in Home
-Assistant follows normal Home Assistant behavior, so review automations
-carefully. Controls can be hidden completely from the integration options.
+The current version 0.3 beta adds four guarded administrator actions: DECT
+handset enrollment, DECT repeater enrollment, per-handset paging, and VoIP line
+activation. It also adds seven destructive administrator actions: disconnect a
+DECT handset or repeater, and delete a VoIP provider, VoIP number, IP-PBX client,
+phonebook entry, or NAS share. These actions exist
+only in the Administration panel; they are not native entities or general Home
+Assistant services.
 
-Router-changing commands were not executed during read-only development
-validation. Review and test each action on your own router. The integration
-does not expose factory reset, configuration restore, credential changes, SIM
-PIN/PUK operations, secret export, firewall disable, arbitrary SOAP execution,
-or destructive device deletion. Firmware-discovered forms are never turned
-into a generic editor; structured or secret operations remain blocked until
-their full typed form, identity, acknowledgement, readback, confirmation, and
-redaction contracts are proven.
+Every targeted administrator action uses a short-lived, single-use token bound
+to the action and freshly read target. Execution rechecks capability and target
+identity, sends at most one mutation, performs bounded independent readback,
+never retries an ambiguous write, and releases its router session. Destructive
+actions additionally require their fixed typed phrase and show recovery
+guidance. This is beta protection, not live proof: the request shapes come from
+static firmware evidence and automated tests, and none of these eleven actions
+has completed a user-authorized live router roundtrip. Review the target and
+recovery instructions before testing one.
+
+The bundled dashboard asks for confirmation before an action. Native buttons,
+switches, updates, services, scripts, and automations elsewhere in Home
+Assistant follow normal Home Assistant behavior, so review automations
+carefully. Administrator actions are panel-only and cannot be invoked as native
+entities or general services. Controls can be hidden completely from the
+integration options.
+
+Router-changing commands were not executed during development validation.
+Review and test each beta action on your own router; destructive operations can
+remove working telephony, network, or storage configuration. The integration
+still does not expose factory reset, configuration restore, credential changes,
+SIM PIN/PUK operations, secret export, firewall disable, arbitrary JSON or SOAP
+execution, Dynamic DNS configuration deletion, or any destructive operation
+outside the seven fixed actions above.
+Firmware-discovered forms are never turned into a generic editor. All remaining
+structured or secret operations stay blocked until their full typed form,
+identity, acknowledgement, readback, confirmation, and redaction contracts are
+reviewed.
 
 See [Router management support](docs/MANAGEMENT.md) for exact implemented
 requests, readback behavior, deferred areas, and permanent exclusions.

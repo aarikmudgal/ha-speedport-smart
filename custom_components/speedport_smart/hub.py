@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
@@ -12,16 +13,27 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
 
+from homeassistant.core import HassJob
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.event import async_call_later
 
+from .admin_actions import (
+    ADMIN_ACTION_CONTRACTS,
+    AdminActionContract,
+    AdminActionDecision,
+    get_admin_action_contract,
+    valid_target_id,
+)
 from .api import (
     SpeedportAuthenticationError,
     SpeedportCommandRejectedError,
     SpeedportConnectionError,
+    SpeedportDecodeError,
     SpeedportError,
     SpeedportInvalidCredentialsError,
     SpeedportLoginLockedError,
+    SpeedportMutationOutcomeUnknownError,
     SpeedportProtocolError,
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
@@ -31,6 +43,7 @@ from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinato
 from .diagnostics import safe_error_class_name
 from .management import (
     ManagementCommandDecision,
+    ManagementConfirmation,
     ManagementExecutionSurface,
     ManagementVerificationPolicy,
     ManagementVerificationStrategy,
@@ -94,11 +107,22 @@ _PROTECTED_RETRY_SECONDS: Final = 60.0
 _PROTECTED_MAX_RETRY_SECONDS: Final = 900.0
 _MANAGEMENT_ISSUE_KEY: Final = "management_session_blocked"
 _ADMIN_QUERY_GLOBAL_INTERVAL_SECONDS: Final = 1.0
+_ADMIN_ACTION_REQUESTER_ID_MAX_LENGTH: Final = 128
+_ADMIN_ACTION_REQUESTER_PARTS: Final = 2
 _ADMIN_QUERY_INTERVAL_SECONDS: Final = MappingProxyType(
     {
+        "dect_handset_targets": 1.0,
+        "dect_handset_disconnect_targets": 1.0,
+        "dect_repeater_disconnect_targets": 1.0,
+        "voip_provider_delete_targets": 1.0,
+        "voip_line_delete_targets": 1.0,
+        "ip_pbx_client_delete_targets": 1.0,
+        "phonebook_entry_delete_targets": 1.0,
+        "nas_share_delete_targets": 1.0,
         "ip_pbx_refresh": 5.0,
         "phonebook_search": 1.0,
         "phonebook_contact": 1.0,
+        "voip_line_targets": 1.0,
     }
 )
 _ADMIN_QUERY_CAPABILITY_PROOFS: Final = MappingProxyType(
@@ -106,6 +130,42 @@ _ADMIN_QUERY_CAPABILITY_PROOFS: Final = MappingProxyType(
         "ip_pbx_refresh": ("pbx_clients", "data/IPClients.json"),
         "phonebook_search": ("phonebook", "data/PhoneBook.json"),
         "phonebook_contact": ("phonebook", "data/PhoneBook.json"),
+    }
+)
+_ADMIN_ACTION_GLOBAL_INTERVAL_SECONDS: Final = 1.0
+_ADMIN_ACTION_TARGET_FINGERPRINT_LENGTH: Final = 64
+_ADMIN_ACTION_TARGET_LABEL_MAX_LENGTH: Final = 64
+_ADMIN_ACTION_NUMBER_SUFFIX_LENGTH: Final = 4
+_ADMIN_ACTION_TARGET_MAX_ROWS: Final = 32
+_ADMIN_ACTION_TOKEN_GENERATION_ATTEMPTS: Final = 4
+_ADMIN_ACTION_INTERVAL_SECONDS: Final = MappingProxyType(
+    {
+        "dect_handset_enroll": 30.0,
+        "dect_repeater_enroll": 30.0,
+        "dect_handset_set_paging": 2.0,
+        "voip_line_set_active": 2.0,
+        "dect_handset_disconnect": 30.0,
+        "dect_repeater_disconnect": 30.0,
+        "voip_provider_delete": 30.0,
+        "voip_line_delete": 30.0,
+        "ip_pbx_client_delete": 30.0,
+        "phonebook_entry_delete": 30.0,
+        "nas_share_delete": 30.0,
+    }
+)
+_ADMIN_ACTION_REFRESH_FAMILIES: Final = MappingProxyType(
+    {
+        "dect_handset_enroll": ("dect_status", "dect"),
+        "dect_repeater_enroll": ("dect_status", "dect_repeater"),
+        "dect_handset_set_paging": ("dect", "dect_status"),
+        "voip_line_set_active": ("voip_lines",),
+        "dect_handset_disconnect": ("dect", "dect_status"),
+        "dect_repeater_disconnect": ("dect_repeater",),
+        "voip_provider_delete": ("voip_providers", "voip_lines"),
+        "voip_line_delete": ("voip_lines",),
+        "ip_pbx_client_delete": ("pbx_clients",),
+        "phonebook_entry_delete": ("phonebook",),
+        "nas_share_delete": ("nas_folders",),
     }
 )
 # Only canonical roots emitted by reviewed normalizers may become read capabilities.
@@ -162,6 +222,42 @@ def _same_exact_value(current: object, expected: object) -> bool:
     return type(current) is type(expected) and current == expected
 
 
+def _mapping_has_path(data: Mapping[str, Any], path: str) -> bool:
+    """Return whether normalized family data owns one dotted path."""
+    current: object = data
+    for part in path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return False
+        current = current[part]
+    return True
+
+
+def _retryable_verification_error(error: SpeedportError) -> bool:
+    """Return whether another read-only verification attempt is safe."""
+    if isinstance(
+        error,
+        (
+            SpeedportAuthenticationError,
+            SpeedportCommandRejectedError,
+            SpeedportDecodeError,
+            SpeedportSessionBusyError,
+            SpeedportUnsupportedError,
+        ),
+    ):
+        return False
+    return isinstance(error, (SpeedportConnectionError, SpeedportProtocolError))
+
+
+async def _capture_admin_boundary[T](
+    awaitable: Awaitable[T],
+) -> T | BaseException:
+    """Capture an unexpected local failure without leaking its details."""
+    outcome = (await asyncio.gather(awaitable, return_exceptions=True))[0]
+    if isinstance(outcome, asyncio.CancelledError):
+        raise outcome
+    return outcome
+
+
 class _ContractVerificationSentinel:
     """Marker for callers that leave verification entirely to the contract."""
 
@@ -176,6 +272,39 @@ class AdminQueryRateLimitError(HomeAssistantError):
         """Retain only a bounded retry delay, never query values."""
         super().__init__("Administrator router query rate limit exceeded")
         self.retry_after = max(retry_after, 0.0)
+
+
+class AdminActionRateLimitError(HomeAssistantError):
+    """Raised before I/O when an administrator action exceeds its cadence."""
+
+    def __init__(self, retry_after: float) -> None:
+        """Retain only a bounded retry delay, never action parameters."""
+        super().__init__("Administrator router action rate limit exceeded")
+        self.retry_after = max(retry_after, 0.0)
+
+
+class AdminActionUnavailableError(HomeAssistantError):
+    """Raised when an administrator action lacks an exact execution proof."""
+
+
+class AdminActionConfirmationError(HomeAssistantError):
+    """Raised when server-side action confirmation is absent."""
+
+
+class AdminActionBusyError(HomeAssistantError):
+    """Raised when an enrollment lifecycle is already active."""
+
+
+class AdminActionOutcomeUnknownError(HomeAssistantError):
+    """Raised after one mutation attempt whose acceptance was not proven."""
+
+
+class AdminActionVerificationError(HomeAssistantError):
+    """Raised when independent readback does not prove the requested state."""
+
+
+class AdminActionRejectedError(HomeAssistantError):
+    """Raised when the router explicitly rejects a sent administrator action."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +335,19 @@ class _CounterSample:
     sampled_at: float
     received: int
     sent: int
+
+
+@dataclass(frozen=True, slots=True)
+class _AdminActionTargetGrant:
+    """One short-lived in-memory binding from UI token to firmware row."""
+
+    action: str
+    target_id: str
+    target_fingerprint: str
+    target_context: Mapping[str, str | int | bool]
+    requester: tuple[str, str]
+    management_generation: int
+    expires_at: float
 
 
 class SpeedportHub:
@@ -274,6 +416,11 @@ class SpeedportHub:
         self._operation_lock = asyncio.Lock()
         self._admin_query_global_next_at = 0.0
         self._admin_query_next_at: dict[str, float] = {}
+        self._admin_action_global_next_at = 0.0
+        self._admin_action_next_at: dict[str, float] = {}
+        self._admin_action_target_grants: dict[str, _AdminActionTargetGrant] = {}
+        self._admin_action_grant_expiry_cancel: Callable[[], None] | None = None
+        self._management_generation = 0
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
         self._wan_counter_probe_pending = False
         self._wan_counter_failures = 0
@@ -453,6 +600,8 @@ class SpeedportHub:
         if self._closed:
             return
         self._closed = True
+        self._cancel_admin_action_grant_expiry()
+        self._admin_action_target_grants.clear()
         await self.client.close()
 
     def attach_coordinator(
@@ -596,6 +745,764 @@ class SpeedportHub:
                 contact_id=contact_id,
             ),
         )
+
+    def admin_action_decision(self, action: str) -> AdminActionDecision:
+        """Explain one ephemeral action without broad capability inference."""
+        contract = get_admin_action_contract(action)
+        identity = self.router_identity
+        handlers_available = bool(
+            contract is not None
+            and all(
+                callable(getattr(self.client, name, None))
+                for name in (
+                    contract.handler,
+                    contract.preflight_handler,
+                    contract.verification_handler,
+                )
+            )
+        )
+        return AdminActionDecision(
+            configured=self.controls_enabled,
+            firmware_supported=bool(
+                contract is not None
+                and contract.supports(identity.model, identity.firmware)
+            ),
+            capability_supported=bool(
+                contract is not None
+                and self.has_capability("authenticated_json")
+                and contract.proofs_satisfied(self._capability_report)
+            ),
+            handlers_available=handlers_available,
+            session_available=self.management_controls_available,
+        )
+
+    def admin_actions_metadata(self) -> list[dict[str, Any]]:
+        """Return bounded value-free action support metadata for the panel."""
+        metadata: list[dict[str, Any]] = []
+        for action, contract in ADMIN_ACTION_CONTRACTS.items():
+            decision = self.admin_action_decision(action)
+            metadata.append(
+                {
+                    "id": action,
+                    "feature_id": contract.feature_id,
+                    "supported": decision.supported,
+                    "available": decision.available,
+                    "unavailable_reason": decision.unavailable_reason,
+                    "risk": contract.risk.value,
+                    "confirmation": contract.confirmation.value,
+                    "typed_confirmation": contract.typed_confirmation,
+                    "target_query": contract.target_query,
+                    "target_token_ttl_seconds": (contract.target_token_ttl_seconds),
+                    "prerequisite": contract.prerequisite,
+                    "prerequisite_confirmation_required": (
+                        contract.prerequisite is not None
+                    ),
+                }
+            )
+        return metadata
+
+    async def async_query_dect_handset_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return exact handset action IDs only through an ephemeral response."""
+        contract = get_admin_action_contract("dect_handset_set_paging")
+        return await self._async_admin_action_target_query(
+            contract,
+            "dect_handset_targets",
+            self.client.query_dect_handset_targets,
+            requester=requester,
+        )
+
+    async def async_query_voip_line_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return exact VoIP action IDs only through an ephemeral response."""
+        contract = get_admin_action_contract("voip_line_set_active")
+        return await self._async_admin_action_target_query(
+            contract,
+            "voip_line_targets",
+            self.client.query_voip_line_targets,
+            requester=requester,
+        )
+
+    async def async_query_dect_handset_disconnect_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return action-bound DECT handset deletion targets."""
+        return await self._query_destructive_targets(
+            "dect_handset_disconnect",
+            self.client.query_dect_handset_disconnect_targets,
+            requester=requester,
+        )
+
+    async def async_query_dect_repeater_disconnect_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return action-bound DECT repeater deletion targets."""
+        return await self._query_destructive_targets(
+            "dect_repeater_disconnect",
+            self.client.query_dect_repeater_disconnect_targets,
+            requester=requester,
+        )
+
+    async def async_query_voip_provider_delete_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return action-bound VoIP provider deletion targets."""
+        return await self._query_destructive_targets(
+            "voip_provider_delete",
+            self.client.query_voip_provider_delete_targets,
+            requester=requester,
+        )
+
+    async def async_query_voip_line_delete_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return action-bound VoIP number deletion targets."""
+        return await self._query_destructive_targets(
+            "voip_line_delete",
+            self.client.query_voip_line_delete_targets,
+            requester=requester,
+        )
+
+    async def async_query_ip_pbx_client_delete_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return action-bound IP-PBX client deletion targets."""
+        return await self._query_destructive_targets(
+            "ip_pbx_client_delete",
+            self.client.query_ip_pbx_client_delete_targets,
+            requester=requester,
+        )
+
+    async def async_query_phonebook_entry_delete_targets(
+        self,
+        *,
+        phonebook_id: int,
+        requester: tuple[str, str],
+    ) -> dict[str, Any]:
+        """Return action-bound contact deletion targets for one phonebook."""
+        return await self._query_destructive_targets(
+            "phonebook_entry_delete",
+            lambda: self.client.query_phonebook_entry_delete_targets(
+                phonebook_id=phonebook_id,
+            ),
+            requester=requester,
+        )
+
+    async def async_query_nas_share_delete_targets(
+        self, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return action-bound NAS-share deletion targets."""
+        return await self._query_destructive_targets(
+            "nas_share_delete",
+            self.client.query_nas_share_delete_targets,
+            requester=requester,
+        )
+
+    async def _query_destructive_targets(
+        self,
+        action: str,
+        query: Callable[[], Awaitable[dict[str, Any]]],
+        *,
+        requester: tuple[str, str],
+    ) -> dict[str, Any]:
+        """Run one destructive action's private exact target query."""
+        contract = get_admin_action_contract(action)
+        return await self._async_admin_action_target_query(
+            contract,
+            f"{action}_targets",
+            query,
+            requester=requester,
+        )
+
+    async def _async_admin_action_target_query(
+        self,
+        contract: AdminActionContract | None,
+        query_kind: str,
+        query: Callable[[], Awaitable[dict[str, Any]]],
+        *,
+        requester: tuple[str, str],
+    ) -> dict[str, Any]:
+        """Run one action-target query without retaining its private result."""
+        if (
+            contract is None
+            or not self.admin_action_decision(contract.action).supported
+        ):
+            raise AdminActionUnavailableError(
+                "Administrator action targets are unavailable"
+            )
+        issued: dict[str, Any] | None = None
+        async with self._operation_lock:
+            if not self.admin_action_decision(contract.action).available:
+                raise AdminActionUnavailableError(
+                    "Administrator action targets are unavailable"
+                )
+            now = self._monotonic_time()
+            next_allowed = max(
+                self._admin_query_global_next_at,
+                self._admin_query_next_at.get(query_kind, 0.0),
+            )
+            if now < next_allowed:
+                raise AdminQueryRateLimitError(next_allowed - now)
+            self._admin_query_global_next_at = (
+                now + _ADMIN_QUERY_GLOBAL_INTERVAL_SECONDS
+            )
+            self._admin_query_next_at[query_kind] = (
+                now + _ADMIN_QUERY_INTERVAL_SECONDS[query_kind]
+            )
+            cleanup_succeeded = False
+            try:
+                outcome = await _capture_admin_boundary(query())
+                if isinstance(outcome, SpeedportError):
+                    self._publish_authenticated_failure(outcome)
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    ) from None
+                if isinstance(outcome, BaseException):
+                    self._publish_authenticated_failure(
+                        SpeedportProtocolError(
+                            "Administrator action target query failed locally"
+                        ),
+                        force_unavailable=True,
+                    )
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    ) from None
+                if not isinstance(outcome, dict):
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    )
+                issued = self._issue_admin_action_targets(
+                    contract,
+                    outcome,
+                    requester=requester,
+                )
+            finally:
+                cleanup_succeeded = await self._async_cleanup_admin_session()
+            if (
+                not cleanup_succeeded
+                or issued is None
+                or any(
+                    self._admin_action_target_grants.get(target.get("target_token"))
+                    is None
+                    for target in issued["targets"]
+                )
+            ):
+                raise AdminActionUnavailableError(
+                    "Administrator action targets are unavailable"
+                )
+            return issued
+
+    async def async_execute_admin_action(
+        self,
+        action: str,
+        *,
+        confirmed: bool,
+        confirmation_text: str | None = None,
+        requester: tuple[str, str] | None = None,
+        **parameters: Any,
+    ) -> dict[str, Any]:
+        """Execute one confirmed action without publishing private runtime state."""
+        contract = get_admin_action_contract(action)
+        if contract is None:
+            raise AdminActionUnavailableError("Administrator action is unavailable")
+        if type(confirmed) is not bool or not confirmed:
+            raise AdminActionConfirmationError(
+                "Administrator action confirmation is required"
+            )
+        if contract.confirmation is ManagementConfirmation.TYPED and (
+            not isinstance(confirmation_text, str)
+            or confirmation_text != contract.typed_confirmation
+        ):
+            raise AdminActionConfirmationError(
+                "Administrator typed confirmation does not match the action"
+            )
+        if contract.confirmation is ManagementConfirmation.CONFIRM and (
+            confirmation_text is not None
+        ):
+            raise AdminActionConfirmationError(
+                "Administrator confirmation does not match the action policy"
+            )
+        if not contract.accepts_parameters(parameters):
+            raise AdminActionUnavailableError("Administrator action is unavailable")
+        if contract.prerequisite == "dect_repeater_requirements" and any(
+            parameters.get(name) is not True
+            for name in (
+                "pin_is_default",
+                "full_power_enabled",
+                "full_eco_disabled",
+            )
+        ):
+            raise AdminActionConfirmationError(
+                "Administrator action prerequisite confirmation is required"
+            )
+        if not self.admin_action_decision(action).supported:
+            raise AdminActionUnavailableError("Administrator action is unavailable")
+
+        async with self._operation_lock:
+            if not self.admin_action_decision(action).available:
+                raise AdminActionUnavailableError("Administrator action is unavailable")
+            now = self._monotonic_time()
+            interval = _ADMIN_ACTION_INTERVAL_SECONDS[action]
+            next_allowed = max(
+                self._admin_action_global_next_at,
+                self._admin_action_next_at.get(action, 0.0),
+            )
+            if now < next_allowed:
+                raise AdminActionRateLimitError(next_allowed - now)
+            resolved_parameters = self._resolve_admin_action_target(
+                contract,
+                parameters,
+                now=now,
+                requester=requester,
+            )
+            self._admin_action_global_next_at = (
+                now + _ADMIN_ACTION_GLOBAL_INTERVAL_SECONDS
+            )
+            self._admin_action_next_at[action] = now + interval
+            try:
+                try:
+                    result = await self._async_execute_admin_action_locked(
+                        contract,
+                        resolved_parameters,
+                    )
+                finally:
+                    await self._async_refresh_admin_action_state_locked(contract)
+                return result
+            finally:
+                await self._async_cleanup_admin_session()
+
+    async def _async_execute_admin_action_locked(
+        self,
+        contract: AdminActionContract,
+        parameters: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Perform one preflight, at most one mutation, and bounded readbacks."""
+        preflight = getattr(self.client, contract.preflight_handler)
+        mutation = getattr(self.client, contract.handler)
+        verification = getattr(self.client, contract.verification_handler)
+        expected = contract.expected(parameters)
+
+        preflight_outcome = await _capture_admin_boundary(
+            preflight(
+                **_admin_action_arguments(parameters, contract.preflight_parameters)
+            )
+        )
+        if isinstance(preflight_outcome, SpeedportError):
+            self._publish_authenticated_failure(preflight_outcome)
+            raise AdminActionUnavailableError(
+                "Administrator action preflight could not be completed"
+            ) from None
+        if isinstance(preflight_outcome, BaseException):
+            self._publish_authenticated_failure(
+                SpeedportProtocolError("Administrator action preflight failed locally"),
+                force_unavailable=True,
+            )
+            raise AdminActionUnavailableError(
+                "Administrator action preflight could not be completed"
+            ) from None
+        current = preflight_outcome
+        if type(current) is not bool:
+            raise AdminActionUnavailableError(
+                "Administrator action preflight could not be completed"
+            )
+        if current is expected:
+            if contract.already_expected_is_error:
+                raise AdminActionBusyError(
+                    "A DECT enrollment lifecycle is already active"
+                )
+            return _admin_action_success_result(
+                contract,
+                status="unchanged",
+                expected=expected,
+            )
+
+        mutation_outcome = await _capture_admin_boundary(
+            mutation(
+                **_admin_action_arguments(parameters, contract.mutation_parameters)
+            )
+        )
+        if isinstance(mutation_outcome, SpeedportCommandRejectedError):
+            raise AdminActionRejectedError(
+                "Router explicitly rejected the administrator action"
+            ) from None
+        mutation_uncertain: SpeedportError | None = None
+        mutation_force_unavailable = False
+        if isinstance(mutation_outcome, SpeedportMutationOutcomeUnknownError):
+            mutation_uncertain = mutation_outcome
+        elif isinstance(mutation_outcome, SpeedportError):
+            self._publish_authenticated_failure(mutation_outcome)
+            raise AdminActionUnavailableError(
+                "Administrator action could not be sent"
+            ) from None
+        elif isinstance(mutation_outcome, BaseException):
+            mutation_uncertain = SpeedportProtocolError(
+                "Administrator action failed locally"
+            )
+            mutation_force_unavailable = True
+
+        readback_error: SpeedportError | None = None
+        for delay in contract.readback_delays:
+            if delay:
+                await asyncio.sleep(delay)
+            verification_outcome = await _capture_admin_boundary(
+                verification(
+                    **_admin_action_arguments(
+                        parameters,
+                        contract.verification_parameters,
+                    )
+                )
+            )
+            if isinstance(verification_outcome, SpeedportError):
+                if not _retryable_verification_error(verification_outcome):
+                    self._publish_authenticated_failure(verification_outcome)
+                    if mutation_uncertain is not None:
+                        self._publish_authenticated_failure(
+                            mutation_uncertain,
+                            force_unavailable=mutation_force_unavailable,
+                        )
+                        raise AdminActionOutcomeUnknownError(
+                            "Router action outcome is unknown; inspect state before "
+                            "retrying"
+                        ) from None
+                    raise AdminActionVerificationError(
+                        "Router action result could not be independently verified"
+                    ) from None
+                readback_error = verification_outcome
+                continue
+            if isinstance(verification_outcome, BaseException):
+                self._publish_authenticated_failure(
+                    SpeedportProtocolError(
+                        "Administrator action verification failed locally"
+                    ),
+                    force_unavailable=True,
+                )
+                if mutation_uncertain is not None:
+                    raise AdminActionOutcomeUnknownError(
+                        "Router action outcome is unknown; inspect state before "
+                        "retrying"
+                    ) from None
+                raise AdminActionVerificationError(
+                    "Router action result could not be independently verified"
+                ) from None
+            current = verification_outcome
+            if type(current) is bool and current is expected:
+                if mutation_uncertain is not None:
+                    raise AdminActionOutcomeUnknownError(
+                        "Router action acknowledgement is unknown; inspect state "
+                        "before retrying"
+                    ) from None
+                return _admin_action_success_result(
+                    contract,
+                    status="verified",
+                    expected=expected,
+                )
+
+        if readback_error is not None:
+            self._publish_authenticated_failure(readback_error)
+        if mutation_uncertain is not None:
+            self._publish_authenticated_failure(
+                mutation_uncertain,
+                force_unavailable=mutation_force_unavailable,
+            )
+            raise AdminActionOutcomeUnknownError(
+                "Router action outcome is unknown; inspect state before retrying"
+            ) from None
+        raise AdminActionVerificationError(
+            "Router action result could not be independently verified"
+        )
+
+    async def _async_refresh_admin_action_state_locked(
+        self,
+        contract: AdminActionContract,
+    ) -> None:
+        """Refresh or invalidate every cached family affected by an action."""
+        partial: dict[str, Any] = {}
+        for family in _ADMIN_ACTION_REFRESH_FAMILIES[contract.action]:
+            outcome = await _capture_admin_boundary(
+                self._async_fetch_families(
+                    (family,),
+                    propagate_errors=True,
+                    release_authenticated_session=False,
+                    update_management_access=False,
+                )
+            )
+            if isinstance(outcome, SpeedportUnsupportedError):
+                self._endpoint_errors[family] = safe_error_class_name(outcome)
+                partial = _deep_merge_dicts(
+                    partial,
+                    self._unavailable_family_data(family),
+                )
+                continue
+            if isinstance(outcome, SpeedportError):
+                self._publish_authenticated_failure(outcome)
+                partial = self._invalidate_authenticated_families(
+                    partial,
+                    error_name=safe_error_class_name(outcome),
+                )
+                break
+            if isinstance(outcome, BaseException):
+                error = SpeedportProtocolError(
+                    "Administrator action cache refresh failed locally"
+                )
+                self._publish_authenticated_failure(error, force_unavailable=True)
+                partial = self._invalidate_authenticated_families(
+                    partial,
+                    error_name=safe_error_class_name(error),
+                )
+                break
+            partial = _deep_merge_dicts(partial, outcome)
+
+        if not partial:
+            return
+        now = datetime.now(UTC)
+        transitions = self._merge_data(partial)
+        self._generation += 1
+        self._last_transitions = transitions
+        self._protected_invalidation_pending = False
+        for group, coordinator in self._coordinators.items():
+            coordinator.async_set_updated_data(
+                GroupSnapshot(
+                    group=group,
+                    data=self._data,
+                    generation=self._generation,
+                    updated_at=now,
+                    transitions=transitions,
+                )
+            )
+
+    async def _async_cleanup_admin_session(self) -> bool:
+        """Release an ephemeral session and report only bounded success."""
+        cleanup = getattr(self.client, "logout_ephemeral", self.client.logout)
+        outcome = await _capture_admin_boundary(cleanup())
+        if isinstance(outcome, SpeedportError):
+            self._publish_authenticated_failure(outcome, force_unavailable=True)
+            return False
+        if isinstance(outcome, BaseException):
+            self._publish_authenticated_failure(
+                SpeedportProtocolError("Router session cleanup failed"),
+                force_unavailable=True,
+            )
+            return False
+        return True
+
+    def _issue_admin_action_targets(
+        self,
+        contract: AdminActionContract,
+        result: Mapping[str, Any],
+        *,
+        requester: tuple[str, str],
+    ) -> dict[str, Any]:
+        """Replace one action's grants and return only safe ephemeral targets."""
+        raw_targets = result.get("targets")
+        truncated = result.get("truncated")
+        if (
+            not isinstance(raw_targets, list)
+            or len(raw_targets) > _ADMIN_ACTION_TARGET_MAX_ROWS
+            or type(truncated) is not bool
+        ):
+            raise AdminActionUnavailableError(
+                "Administrator action targets are unavailable"
+            )
+        requester = _require_admin_action_requester(requester)
+        now = self._monotonic_time()
+        token_ttl = contract.target_token_ttl_seconds
+        if token_ttl is None:
+            raise AdminActionUnavailableError(
+                "Administrator action targets are unavailable"
+            )
+        retained_grants = {
+            token: grant
+            for token, grant in self._admin_action_target_grants.items()
+            if (
+                grant.expires_at > now
+                and (grant.action != contract.action or grant.requester != requester)
+            )
+        }
+        new_grants: dict[str, _AdminActionTargetGrant] = {}
+        targets: list[dict[str, Any]] = []
+        projected_identities: list[tuple[tuple[str, str | int | bool], ...]] = []
+        seen_targets: set[tuple[str, tuple[tuple[str, str | int | bool], ...]]] = set()
+        allowed_target_fields = {
+            "target_id",
+            "target_fingerprint",
+            *contract.target_context_specs,
+            *contract.target_projection_specs,
+        }
+        for raw_target in raw_targets:
+            if not isinstance(raw_target, Mapping) or not set(raw_target) <= (
+                allowed_target_fields
+            ):
+                raise AdminActionUnavailableError(
+                    "Administrator action targets are unavailable"
+                )
+            target_id = raw_target.get("target_id")
+            fingerprint = raw_target.get("target_fingerprint")
+            if (
+                not valid_target_id(target_id)
+                or not isinstance(fingerprint, str)
+                or len(fingerprint) != _ADMIN_ACTION_TARGET_FINGERPRINT_LENGTH
+                or any(character not in "0123456789abcdef" for character in fingerprint)
+            ):
+                raise AdminActionUnavailableError(
+                    "Administrator action targets are unavailable"
+                )
+            target_context: dict[str, str | int | bool] = {}
+            for field, specification in contract.target_context_specs.items():
+                value = raw_target.get(field, _MISSING)
+                if value is _MISSING or not specification.accepts(value):
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    )
+                if not isinstance(value, (str, int, bool)):
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    )
+                target_context[field] = value
+            target_identity = (target_id, tuple(target_context.items()))
+            if target_identity in seen_targets:
+                raise AdminActionUnavailableError(
+                    "Administrator action targets are unavailable"
+                )
+            seen_targets.add(target_identity)
+
+            projected_values: dict[str, Any] = {}
+            for field, specification in contract.target_projection_specs.items():
+                value = raw_target.get(field, _MISSING)
+                if value is _MISSING or value is None:
+                    if specification.allow_none:
+                        continue
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    )
+                if not specification.accepts(value) or (
+                    isinstance(value, str)
+                    and (
+                        not value.isprintable()
+                        or (
+                            field == "number_suffix"
+                            and (not value.isascii() or not value.isdigit())
+                        )
+                    )
+                ):
+                    raise AdminActionUnavailableError(
+                        "Administrator action targets are unavailable"
+                    )
+                projected_values[field] = value
+            projected_identities.append(tuple(projected_values.items()))
+            token: str | None = None
+            for _attempt in range(_ADMIN_ACTION_TOKEN_GENERATION_ATTEMPTS):
+                candidate = secrets.token_hex(16)
+                if candidate not in retained_grants and candidate not in new_grants:
+                    token = candidate
+                    break
+            if token is None:
+                raise AdminActionUnavailableError(
+                    "Administrator action targets are unavailable"
+                )
+            new_grants[token] = _AdminActionTargetGrant(
+                action=contract.action,
+                target_id=target_id,
+                target_fingerprint=fingerprint,
+                target_context=MappingProxyType(target_context),
+                requester=requester,
+                management_generation=self._management_generation,
+                expires_at=now + token_ttl,
+            )
+            targets.append({"target_token": token, **projected_values})
+        if len(set(projected_identities)) != len(projected_identities):
+            raise AdminActionUnavailableError(
+                "Administrator action targets are not uniquely identifiable"
+            )
+        self._admin_action_target_grants = {**retained_grants, **new_grants}
+        self._schedule_admin_action_grant_expiry()
+        return {"targets": targets, "truncated": truncated}
+
+    def _resolve_admin_action_target(
+        self,
+        contract: AdminActionContract,
+        parameters: Mapping[str, Any],
+        *,
+        now: float,
+        requester: tuple[str, str] | None,
+    ) -> dict[str, Any]:
+        """Consume one valid token and restore only internal handler arguments."""
+        self._purge_expired_admin_action_grants(now=now)
+        resolved = dict(parameters)
+        if contract.target_query is None:
+            return resolved
+        requester = _require_admin_action_requester(requester)
+        token = resolved.pop("target_token", None)
+        grant = (
+            self._admin_action_target_grants.get(token)
+            if isinstance(token, str)
+            else None
+        )
+        if (
+            grant is None
+            or grant.action != contract.action
+            or grant.requester != requester
+            or grant.management_generation != self._management_generation
+            or grant.expires_at <= now
+            or contract.target_id_parameter is None
+            or contract.target_fingerprint_parameter is None
+        ):
+            if isinstance(token, str) and (
+                grant is None or grant.requester == requester
+            ):
+                self._admin_action_target_grants.pop(token, None)
+            raise AdminActionUnavailableError(
+                "Administrator action target authorization is unavailable"
+            )
+        self._admin_action_target_grants.pop(token, None)
+        self._schedule_admin_action_grant_expiry()
+        resolved[contract.target_id_parameter] = grant.target_id
+        resolved[contract.target_fingerprint_parameter] = grant.target_fingerprint
+        resolved.update(grant.target_context)
+        return resolved
+
+    def _cancel_admin_action_grant_expiry(self) -> None:
+        """Cancel the pending in-memory grant expiry callback."""
+        cancel = self._admin_action_grant_expiry_cancel
+        self._admin_action_grant_expiry_cancel = None
+        if cancel is not None:
+            cancel()
+
+    def _schedule_admin_action_grant_expiry(self) -> None:
+        """Erase unused target grants as soon as their shortest TTL expires."""
+        self._cancel_admin_action_grant_expiry()
+        if self._closed or not self._admin_action_target_grants:
+            return
+        now = self._monotonic_time()
+        next_expiry = min(
+            grant.expires_at for grant in self._admin_action_target_grants.values()
+        )
+        self._admin_action_grant_expiry_cancel = async_call_later(
+            self.hass,
+            max(next_expiry - now, 0.001),
+            HassJob(
+                self._purge_expired_admin_action_grants,
+                "expire Speedport administrator action grants",
+                cancel_on_shutdown=True,
+            ),
+        )
+
+    def _purge_expired_admin_action_grants(
+        self,
+        _scheduled_at: datetime | None = None,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Drop expired private grants and schedule the next bounded purge."""
+        self._admin_action_grant_expiry_cancel = None
+        current = self._monotonic_time() if now is None else now
+        self._admin_action_target_grants = {
+            token: grant
+            for token, grant in self._admin_action_target_grants.items()
+            if grant.expires_at > current
+        }
+        self._schedule_admin_action_grant_expiry()
 
     async def _async_admin_query(
         self,
@@ -815,6 +1722,44 @@ class SpeedportHub:
         )
         return snapshot
 
+    async def _async_update_verification_family_locked(
+        self,
+        family: str,
+        group: PollGroup,
+    ) -> GroupSnapshot:
+        """Refresh only one command family's readback endpoint."""
+        report = self._capability_report
+        capability = (
+            report.feature_endpoints.get(family) if report is not None else None
+        )
+        if capability is not None and capability.endpoint == "data/Status.json":
+            status = await self.client.get_status()
+            self._router_info = status.info
+            partial, inferred_capabilities = normalize_status_payload(status)
+            self._public_status_data = _thaw(partial)
+            self._capabilities = self._capabilities | inferred_capabilities
+            self._endpoint_errors.pop("status", None)
+            self._public_status_next_poll_at = (
+                self._monotonic_time() + self._public_status_interval
+            )
+        else:
+            partial = await self._async_fetch_families(
+                (family,),
+                propagate_errors=True,
+                release_authenticated_session=False,
+            )
+        now = datetime.now(UTC)
+        transitions = self._merge_data(partial)
+        self._generation += 1
+        self._last_transitions = transitions
+        return GroupSnapshot(
+            group=group,
+            data=self._data,
+            generation=self._generation,
+            updated_at=now,
+            transitions=transitions,
+        )
+
     def _publish_protected_invalidation(
         self,
         *,
@@ -864,6 +1809,7 @@ class SpeedportHub:
         """Return normalized, UI-safe management access state."""
         return {
             "state": self._management_state,
+            "generation": self._management_generation,
             "owner_ip_address": self._management_owner,
             "retry_after_seconds": self._management_retry_after,
             "last_changed": self._management_changed_at.isoformat(),
@@ -894,6 +1840,9 @@ class SpeedportHub:
         self._management_owner = owner
         self._management_retry_after = retry_after
         if changed:
+            self._management_generation += 1
+            self._cancel_admin_action_grant_expiry()
+            self._admin_action_target_grants.clear()
             self._management_changed_at = now
         if state == "available":
             self._management_last_success = now
@@ -1426,7 +2375,14 @@ class SpeedportHub:
         public_wan = self._public_status_data.get("wan")
         return isinstance(public_wan, Mapping) and bool(public_wan)
 
-    async def _async_fetch_families(self, families: Iterable[str]) -> dict[str, Any]:
+    async def _async_fetch_families(
+        self,
+        families: Iterable[str],
+        *,
+        propagate_errors: bool = False,
+        release_authenticated_session: bool = True,
+        update_management_access: bool = True,
+    ) -> dict[str, Any]:
         """Fetch feature endpoints, isolating failures between families."""
         selected = sorted(set(families) & self._feature_families)
         if not selected:
@@ -1462,7 +2418,7 @@ class SpeedportHub:
                 item[0][2] or "",
             ),
         )
-        protected_retry_deferred = (
+        protected_retry_deferred = not propagate_errors and (
             self._management_state
             in {"blocked", "locked", "other_session", "unavailable"}
             and self._monotonic_time() < self._protected_retry_at
@@ -1487,6 +2443,8 @@ class SpeedportHub:
                 except SpeedportInvalidCredentialsError:
                     raise
                 except SpeedportLoginLockedError as err:
+                    if propagate_errors:
+                        raise
                     authenticated_blocked = True
                     self._mark_management_locked(err)
                     partial = self._invalidate_authenticated_families(
@@ -1494,6 +2452,8 @@ class SpeedportHub:
                     )
                     break
                 except SpeedportAuthenticationError as err:
+                    if propagate_errors:
+                        raise
                     authenticated_blocked = True
                     self._mark_management_unavailable()
                     partial = self._invalidate_authenticated_families(
@@ -1501,6 +2461,8 @@ class SpeedportHub:
                     )
                     break
                 except SpeedportSessionBusyError as err:
+                    if propagate_errors:
+                        raise
                     authenticated_blocked = True
                     self._mark_management_busy(err)
                     partial = self._invalidate_authenticated_families(
@@ -1508,6 +2470,8 @@ class SpeedportHub:
                     )
                     break
                 except SpeedportUnsupportedError as err:
+                    if propagate_errors:
+                        raise
                     failed_families = frozenset(endpoint_families)
                     for family in endpoint_families:
                         self._endpoint_errors[family] = safe_error_class_name(err)
@@ -1520,6 +2484,8 @@ class SpeedportHub:
                             ),
                         )
                 except SpeedportError as err:
+                    if propagate_errors:
+                        raise
                     if authenticated:
                         authenticated_blocked = True
                         self._mark_management_unavailable()
@@ -1562,10 +2528,14 @@ class SpeedportHub:
                             normalized,
                         )
         finally:
-            if authenticated_attempted:
+            if authenticated_attempted and release_authenticated_session:
                 await self.client.logout()
 
-        if authenticated_attempted and not authenticated_blocked:
+        if (
+            update_management_access
+            and authenticated_attempted
+            and not authenticated_blocked
+        ):
             if authenticated_succeeded:
                 self._set_management_access("available")
             else:
@@ -1770,6 +2740,22 @@ class SpeedportHub:
             expected,
         )
 
+    def _verification_readback_family(
+        self,
+        verification: ManagementVerificationPolicy,
+    ) -> str:
+        """Choose family proven to own one exact normalized readback path."""
+        readback_path = verification.readback_paths[0]
+        for family in verification.readback_families:
+            if family in self._feature_families and _mapping_has_path(
+                self._family_data.get(family, {}), readback_path
+            ):
+                return family
+        for family in verification.readback_families:
+            if family in self._feature_families:
+                return family
+        return verification.readback_families[0]
+
     async def async_execute(
         self,
         command: str,
@@ -1863,38 +2849,70 @@ class SpeedportHub:
                 if contract_verify_group is None:
                     return result
 
-                try:
-                    await self._async_update_group_locked(contract_verify_group)
-                except SpeedportError as err:
-                    self._publish_authenticated_failure(err)
-                    raise HomeAssistantError(
-                        "The router action was sent, but its resulting state could not "
-                        "be verified. Check the router state before trying again.",
-                        translation_domain=DOMAIN,
-                        translation_key="command_verification_failed",
-                    ) from err
-                coordinator = self._coordinators.get(contract_verify_group)
-                if coordinator is not None:
-                    coordinator.async_set_updated_data(
-                        GroupSnapshot(
-                            group=contract_verify_group,
-                            data=self._data,
-                            generation=self._generation,
-                            updated_at=datetime.now(UTC),
-                            transitions=self._last_transitions,
+                retry_delays = (
+                    verification.readback_retry_delays
+                    if verification.strategy is ManagementVerificationStrategy.EXACT
+                    else ()
+                )
+                readback_family = (
+                    self._verification_readback_family(verification)
+                    if verification.strategy is ManagementVerificationStrategy.EXACT
+                    else None
+                )
+                for attempt, delay in enumerate((0.0, *retry_delays)):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    try:
+                        if readback_family is None:
+                            await self._async_update_group_locked(contract_verify_group)
+                        else:
+                            await self._async_update_verification_family_locked(
+                                readback_family,
+                                contract_verify_group,
+                            )
+                    except SpeedportError as err:
+                        if attempt < len(
+                            retry_delays
+                        ) and _retryable_verification_error(err):
+                            continue
+                        self._publish_authenticated_failure(err)
+                        raise HomeAssistantError(
+                            "The router action was sent, but its resulting state could "
+                            "not be verified. Check the router state before trying "
+                            "again.",
+                            translation_domain=DOMAIN,
+                            translation_key="command_verification_failed",
+                        ) from err
+
+                    matches = (
+                        verification.strategy
+                        is not ManagementVerificationStrategy.EXACT
+                        or self._matches_command_readback(verification, parameters)
+                    )
+                    if not matches and attempt < len(retry_delays):
+                        continue
+
+                    coordinator = self._coordinators.get(contract_verify_group)
+                    if coordinator is not None:
+                        coordinator.async_set_updated_data(
+                            GroupSnapshot(
+                                group=contract_verify_group,
+                                data=self._data,
+                                generation=self._generation,
+                                updated_at=datetime.now(UTC),
+                                transitions=self._last_transitions,
+                            )
                         )
-                    )
-                if (
-                    verification.strategy is ManagementVerificationStrategy.EXACT
-                    and not self._matches_command_readback(verification, parameters)
-                ):
-                    raise HomeAssistantError(
-                        "The router action was sent, but its resulting state did not "
-                        "match the requested value.",
-                        translation_domain=DOMAIN,
-                        translation_key="command_verification_failed",
-                    )
-                return result
+                    if not matches:
+                        raise HomeAssistantError(
+                            "The router action was sent, but its resulting state did "
+                            "not match the requested value.",
+                            translation_domain=DOMAIN,
+                            translation_key="command_verification_failed",
+                        )
+                    return result
+
+                raise AssertionError("Command verification schedule was empty")
             finally:
                 await self.client.logout()
 
@@ -2047,6 +3065,49 @@ def _normalise_status(status: RouterStatus) -> dict[str, Any]:
     """Normalize core status model into stable platform-facing paths."""
     normalized, _ = normalize_status_payload(status)
     return normalized
+
+
+def _admin_action_success_result(
+    contract: AdminActionContract,
+    *,
+    status: str,
+    expected: bool,
+) -> dict[str, Any]:
+    """Return only contract-owned, value-free action completion state."""
+    if contract.deletion_result:
+        return {"status": status, "deleted": True}
+    if contract.expected_parameter is None:
+        return {"status": status, "lifecycle": "scan_active"}
+    return {"status": status, "active": expected}
+
+
+def _require_admin_action_requester(
+    requester: tuple[str, str] | None,
+) -> tuple[str, str]:
+    """Validate one server-derived Home Assistant user and login-session pair."""
+    if (
+        not isinstance(requester, tuple)
+        or len(requester) != _ADMIN_ACTION_REQUESTER_PARTS
+        or any(
+            not isinstance(value, str)
+            or not value
+            or len(value) > _ADMIN_ACTION_REQUESTER_ID_MAX_LENGTH
+            or not value.isprintable()
+            for value in requester
+        )
+    ):
+        raise AdminActionUnavailableError(
+            "Administrator action requester is unavailable"
+        )
+    return requester
+
+
+def _admin_action_arguments(
+    parameters: Mapping[str, Any],
+    names: tuple[str, ...],
+) -> dict[str, Any]:
+    """Select only statically declared handler arguments."""
+    return {name: parameters[name] for name in names}
 
 
 def _utilization(rate: float | None, capacity: Any) -> float | None:

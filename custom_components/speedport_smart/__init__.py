@@ -42,6 +42,7 @@ from .hub import SpeedportHub
 from .migration import (
     async_migrate_wan_totals_to_gigabytes,
     async_remove_retired_global_nas_entities,
+    async_remove_retired_router_control_entities,
     async_remove_retired_router_event_entities,
 )
 from .panel import async_register_panel
@@ -140,6 +141,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SpeedportConfigEntry) ->
             await coordinator.async_config_entry_first_refresh()
         async_remove_retired_router_event_entities(hass, entry.entry_id)
         async_remove_retired_global_nas_entities(hass, entry.entry_id)
+        async_remove_retired_router_control_entities(hass, entry.entry_id)
         async_migrate_wan_totals_to_gigabytes(hass, entry.entry_id)
         _enable_previously_integration_disabled_entities(hass, entry)
         entry.async_on_unload(entry.add_update_listener(_async_reload_entry))

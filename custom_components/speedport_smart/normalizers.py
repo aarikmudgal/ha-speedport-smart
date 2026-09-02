@@ -77,6 +77,11 @@ _CLIENT_MEDIUM_CODES: Final = {
     2: "wifi_5",
     4: "wifi_office",
 }
+_WIFI_STANDARD_PATTERN: Final = re.compile(
+    r"(?:IEEE )?802\.11(?:be|ax|ac|[abgn])"
+    r"(?:/(?:be|ax|ac|[abgn])){0,7}\Z",
+    re.IGNORECASE,
+)
 _NR_BAND_CODES: Final = frozenset(
     {
         "NR2100",
@@ -317,10 +322,13 @@ def _canonical_family(family: str) -> str:
         "ip_phones": "pbx",
         "lte": "mobile",
         "nas_storage": "nas",
+        "pbx_clients": "pbx",
         "phonebook": "dect",
         "portblocking": "port_blocking",
         "port_forwarding": "nat",
         "upnp": "nat",
+        "voip_lines": "telephony",
+        "voip_providers": "telephony",
         "wifi_access_control": "wifi_access",
         "wlan_access": "wifi_access",
         "wlan_configuration": "wifi_configuration",
@@ -1297,7 +1305,7 @@ def _normalize_client_record(
             "wifi_standard": _first(
                 view,
                 ("standards", "mdevice_standards"),
-                _bounded_collection_text,
+                _wifi_standard,
             ),
             # The firmware value is a local UI port, not a URL. Retain only
             # whether a UI exists so no endpoint details enter runtime data.
@@ -1702,6 +1710,11 @@ def _normalize_vpn(
             row = _view(record)
             peer = _without_missing(
                 {
+                    "id": _first(
+                        row,
+                        ("id",),
+                        _bounded_collection_text,
+                    ),
                     "name": _first(
                         row,
                         ("vpn_name", "name"),
@@ -1967,6 +1980,11 @@ def _normalize_voip_lines(raw: Mapping[str, Any]) -> list[NormalizedData] | None
                         row,
                         ("isp_selection",),
                         _nonnegative_integer,
+                    ),
+                    "provider_id": _first(
+                        row,
+                        ("template_id",),
+                        _non_phone_identifier,
                     ),
                     "error_code": _first(
                         row,
@@ -2456,6 +2474,11 @@ def _normalize_nas_storage_items(
             )
             item = _without_missing(
                 {
+                    "serial": _first(
+                        row,
+                        ("serial",),
+                        _bounded_collection_text,
+                    ),
                     "name": _first(
                         row,
                         ("nas_device_name", "name"),
@@ -2502,7 +2525,10 @@ def _normalize_nas_shares(raw: Mapping[str, Any]) -> list[NormalizedData] | None
         ("nas_folder_name", "nas_share_name", "share_name"),
         _bounded_collection_text,
     )
-    if not observed and flat_name is not None:
+    flat_id = _first(view, ("sid",), _bounded_collection_text)
+    if not observed and str(view.get("sid", "")).strip() == "-1":
+        return []
+    if not observed and (flat_name is not None or flat_id is not None):
         observed = True
         records = [view]
 
@@ -2511,6 +2537,7 @@ def _normalize_nas_shares(raw: Mapping[str, Any]) -> list[NormalizedData] | None
         row = _view(record)
         share = _without_missing(
             {
+                "id": _first(row, ("sid",), _bounded_collection_text),
                 "name": _first(
                     row,
                     ("nas_folder_name", "nas_share_name", "share_name"),
@@ -2786,6 +2813,8 @@ def _device_fields(view: Mapping[str, Any], kind: str) -> NormalizedData:
                 "medium": (("mesh_type", "type"), _network_medium_code),
                 "device_type": (("device_type",), _mesh_device_type),
                 "ipv4": (("ipv4",), _private_address),
+                "wifi_2_4_mac": (("mac_wlan",), _mac_address),
+                "wifi_5_mac": (("mac_wlan5",), _mac_address),
                 # devices.js treats mesh_use_wlan=2 as disabled.
                 "wifi_enabled": (("use_wlan",), _mesh_wifi_enabled),
                 "download_link_speed_bps": (
@@ -3817,15 +3846,25 @@ def _mobile_status_code(value: Any) -> int | None:
 
 
 def _client_medium(view: Mapping[str, Any]) -> str | None:
-    exact: str | None = _first(view, ("mdevice_type",), _network_medium_code)
-    if exact is not None:
-        return exact
-    return _first(view, ("medium", "interface", "connection_type"), _text)
+    return _first(view, ("mdevice_type",), _network_medium_code)
 
 
 def _network_medium_code(value: Any) -> str | None:
     code = _nonnegative_integer(value)
     return _CLIENT_MEDIUM_CODES.get(code) if code is not None else None
+
+
+def _wifi_standard(value: Any) -> str | None:
+    """Return one canonical value from the closed IEEE Wi-Fi standard grammar."""
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.strip().split())
+    if _WIFI_STANDARD_PATTERN.fullmatch(text) is None:
+        return None
+    suffixes = re.findall(r"(?:802\.11|/)(be|ax|ac|[abgn])", text.casefold())
+    if not suffixes or len(set(suffixes)) != len(suffixes):
+        return None
+    return f"IEEE 802.11{'/'.join(suffixes)}"
 
 
 def _client_model(view: Mapping[str, Any]) -> str | None:
@@ -3949,9 +3988,13 @@ def _bounded_label(value: Any) -> str | None:
 
 def _bounded_error_code(value: Any) -> str | None:
     text = _text(value)
-    if text is None or re.fullmatch(r"[A-Za-z0-9._-]{1,16}", text) is None:
+    if text is None or _phone_like(text):
         return None
-    return text
+    if re.fullmatch(r"[0-9]{1,3}", text) is not None:
+        return text
+    if re.fullmatch(r"SIP-[0-9]{1,3}(?:\.[0-9]{1,3})?", text, re.IGNORECASE):
+        return f"SIP-{text[4:]}"
+    return None
 
 
 def _esim_supported(value: Any) -> bool | None:

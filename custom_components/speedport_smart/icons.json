@@ -204,6 +204,9 @@
       },
       "wifi_generation": {
         "default": "mdi:wifi-cog"
+      },
+      "wifi_standard": {
+        "default": "mdi:wifi-settings"
       }
     },
     "binary_sensor": {
@@ -211,6 +214,8 @@
       "wifi_wps_enabled": { "default": "mdi:wifi-plus" },
       "lan_ipv6_enabled": { "default": "mdi:ip-network" },
       "wifi_wps_disabled_by_firmware": { "default": "mdi:wifi-alert" },
+      "uses_dhcp": { "default": "mdi:router-network" },
+      "web_interface_available": { "default": "mdi:web" },
       "guest_wifi_wps_enabled": { "default": "mdi:wifi-star" },
       "wifi_allow_all_devices": { "default": "mdi:account-multiple-check" },
       "wifi_2_4_visible": { "default": "mdi:eye-outline" },

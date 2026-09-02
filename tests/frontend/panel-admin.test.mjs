@@ -712,7 +712,7 @@ test("Administration catalog covers every reviewed management family without gen
   const featureIds = features.map((feature) => feature.id);
 
   assert.equal(subsections.length, 28);
-  assert.equal(features.length, 118);
+  assert.equal(features.length, 122);
   assert.equal(new Set(featureIds).size, featureIds.length);
   assert.deepEqual(
     [...new Set(features.map((feature) => feature.contract))].sort(),
@@ -785,6 +785,17 @@ test("Administration catalog covers every reviewed management family without gen
   );
 
   const featureById = new Map(features.map((feature) => [feature.id, feature]));
+  for (const featureId of [
+    "internet_parental_controls",
+    "internet_ddns_management",
+    "network_vpn_management",
+    "network_usb_printer_media",
+    "network_media_folders",
+    "system_dsl_modem_mode",
+  ]) {
+    assert.ok(featureById.has(featureId), featureId);
+    assert.deepEqual(featureById.get(featureId).controls, [], featureId);
+  }
   for (const featureId of [
     "telephony_number_assignment",
     "telephony_number_use",
@@ -1088,12 +1099,6 @@ test("DECT action candidates explain exact proof gaps without exposing controls"
   );
   const expected = [
     {
-      id: "telephony_dect_handset_paging",
-      blockedReasonKey:
-        "admin.feature.blocked_reason.dect_handset_paging",
-      destructive: false,
-    },
-    {
       id: "telephony_dect_handset_disconnect",
       blockedReasonKey:
         "admin.feature.blocked_reason.dect_handset_disconnect",
@@ -1163,7 +1168,6 @@ test("static blocked operations stay noninteractive and use backend risk tiers",
     telephony_provider_registration: "sensitive",
     telephony_provider_delete: "destructive",
     telephony_number_delete: "destructive",
-    telephony_number_activation: "disruptive",
     network_mesh_identify: "disruptive",
     network_mesh_node_delete: "destructive",
     network_usb_safe_remove: "disruptive",
@@ -1773,7 +1777,7 @@ test("complete capability catalog remains visible and noninteractive without liv
     /<article class="admin-feature-card[^>]*data-admin-feature="home_assistant_capability_inventory"[\s\S]*?<\/article>/,
   )?.[0];
 
-  assert.equal(featureMarkers.length, 118);
+  assert.equal(featureMarkers.length, 122);
   assert.ok(inventoryCard);
   assert.match(inventoryCard, /Read-only by design/);
   assert.doesNotMatch(inventoryCard, /destructive-candidate/);
@@ -2211,6 +2215,60 @@ test("administrator payload validation keeps only fixed sections and fields", ()
       );
     }
   }
+});
+
+test("new administrator identifiers stay read-only and section-bound", () => {
+  const rows = {
+    mesh_nodes: {
+      wifi_2_4_mac: "AA:BB:CC:DD:EE:01",
+      wifi_5_mac: "AA:BB:CC:DD:EE:02",
+    },
+    vpn_peers: { id: "peer-safe-id" },
+    telephone_lines: { provider_id: "provider-safe-id" },
+    storage_devices: { serial: "SERIAL-SAFE" },
+    nas_shares: { id: "share-safe-id" },
+  };
+  const normalized = normalizeAdminReadPayload(
+    adminPayload(
+      "entry-a",
+      Object.entries(rows).map(([id, row]) => ({
+        id,
+        rows: [{ ...row, private_secret: "MUST-NOT-SURVIVE" }],
+        source: "protected_json",
+        truncated: false,
+      })),
+    ),
+    "entry-a",
+  );
+  assert.deepEqual(
+    Object.fromEntries(
+      normalized.sections.map((section) => [section.id, section.rows[0]]),
+    ),
+    rows,
+  );
+
+  const { panel } = panelFixture();
+  const markup = normalized.sections
+    .map((section) =>
+      panel._renderAdminReadSection(section.id, section, {
+        sourceAvailable: true,
+      }),
+    )
+    .join("");
+  for (const value of [
+    "AA:BB:CC:DD:EE:01",
+    "AA:BB:CC:DD:EE:02",
+    "peer-safe-id",
+    "provider-safe-id",
+    "SERIAL-SAFE",
+    "share-safe-id",
+  ]) {
+    assert.match(markup, new RegExp(value));
+  }
+  assert.match(markup, /2\.4 GHz radio MAC address/);
+  assert.match(markup, /5 GHz radio MAC address/);
+  assert.match(markup, /Provider identifier/);
+  assert.doesNotMatch(markup, /MUST-NOT-SURVIVE|private_secret/);
 });
 
 test("LAN IPv6 technical flags stay exact read-only administrator data", () => {

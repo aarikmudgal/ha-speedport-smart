@@ -30,6 +30,33 @@ test("English and German panel dictionaries have identical keys and placeholders
   }
 });
 
+test("removed control groups have no labels while catalog labels remain", () => {
+  const removedControlGroups = [
+    "group.controls_mesh",
+    "group.controls_ddns",
+    "group.controls_vpn",
+    "group.controls_parental",
+    "group.controls_media",
+  ];
+  const retainedCatalogLabels = [
+    "admin.feature.internet_parental_controls",
+    "admin.feature.internet_ddns_management",
+    "admin.feature.network_vpn_management",
+    "admin.feature.network_usb_printer_media",
+    "admin.feature.network_media_folders",
+    "admin.feature.system_dsl_modem_mode",
+  ];
+
+  for (const language of ["en", "de"]) {
+    for (const key of removedControlGroups) {
+      assert.equal(Object.hasOwn(PANEL_TRANSLATIONS[language], key), false, key);
+    }
+    for (const key of retainedCatalogLabels) {
+      assert.equal(Object.hasOwn(PANEL_TRANSLATIONS[language], key), true, key);
+    }
+  }
+});
+
 test("Home Assistant language selects German with English fallback", () => {
   assert.equal(resolvePanelLanguage({ language: "de-DE" }, "en-US"), "de");
   assert.equal(
@@ -221,7 +248,7 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   const frontendSchema = panel.match(/PANEL_SCHEMA_VERSION = (\d+)/)?.[1];
   const backendSchema = backend.match(/PANEL_SCHEMA_VERSION: Final = (\d+)/)?.[1];
   assert.ok(frontendSchema);
-  assert.equal(frontendSchema, "19");
+  assert.equal(frontendSchema, "20");
   assert.equal(frontendSchema, backendSchema);
   assert.match(panel, new RegExp(`accessibility\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`translations\\.js\\?schema=${frontendSchema}`));

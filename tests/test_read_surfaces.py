@@ -650,3 +650,21 @@ def test_value_kinds_distinguish_counts_identifiers_and_durations() -> None:
     )
     assert publication.administrator_section_id == "status_technical"
     assert publication.administration_feature_ids == ("system_information_services",)
+
+
+def test_new_identifier_reads_are_admin_only_and_privacy_classified() -> None:
+    """Exact router identifiers never become Recorder-backed native entities."""
+    expected = {
+        "mesh.nodes[].wifi_2_4_mac": ReadPrivacy.LOCAL_NETWORK,
+        "mesh.nodes[].wifi_5_mac": ReadPrivacy.LOCAL_NETWORK,
+        "usb.storage_items[].serial": ReadPrivacy.LOCAL_NETWORK,
+        "usb.shares[].id": ReadPrivacy.INTERNAL,
+        "vpn.peers[].id": ReadPrivacy.INTERNAL,
+        "telephony.numbers[].provider_id": ReadPrivacy.INTERNAL,
+    }
+
+    for path, privacy in expected.items():
+        surface = READ_SURFACES[path]
+        assert surface.privacy is privacy
+        assert surface.has_publication(ReadPublicationSurface.ADMIN_COLLECTION)
+        assert not surface.has_publication(ReadPublicationSurface.NATIVE_SCALAR)

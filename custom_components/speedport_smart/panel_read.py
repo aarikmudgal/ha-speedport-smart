@@ -102,6 +102,8 @@ _COLLECTIONS: Final = (
             "device_type",
             "medium",
             "ipv4",
+            "wifi_2_4_mac",
+            "wifi_5_mac",
             "wifi_enabled",
             *_TRAFFIC_FIELDS,
             "signal_dbm",
@@ -139,7 +141,7 @@ _COLLECTIONS: Final = (
     _CollectionSpec(
         section_id="vpn_peers",
         path=("vpn", "peers"),
-        fields=("name", "enabled", "connected", "last_handshake"),
+        fields=("id", "name", "enabled", "connected", "last_handshake"),
     ),
     _CollectionSpec(
         section_id="telephony_providers",
@@ -158,6 +160,7 @@ _COLLECTIONS: Final = (
             "id",
             "status",
             "provider_code",
+            "provider_id",
             "error_code",
         ),
     ),
@@ -237,6 +240,7 @@ _COLLECTIONS: Final = (
         path=("usb", "storage_items"),
         fields=(
             "name",
+            "serial",
             "storage_type",
             "connection",
             "total_bytes",
@@ -247,7 +251,7 @@ _COLLECTIONS: Final = (
     _CollectionSpec(
         section_id="nas_shares",
         path=("usb", "shares"),
-        fields=("name", "enabled", "read_only", "secure"),
+        fields=("id", "name", "enabled", "read_only", "secure"),
     ),
     _CollectionSpec(
         section_id="powerline_nodes",

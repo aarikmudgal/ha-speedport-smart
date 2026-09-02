@@ -182,6 +182,29 @@ test("private responses are allowlisted, bounded, and bound to their request", (
     contact: { first_name: "Alice", private_number: "+49 30 1234" },
   });
   assert.doesNotMatch(JSON.stringify(contact), /MUST-NOT-SURVIVE/);
+
+  const search = normalizeAdminPrivateQueryPayload(
+    envelope("phonebook_search", {
+      phonebook_id: 1,
+      prefix: "A",
+      entries: [],
+      truncated: false,
+      total: 3,
+      free_entries: 997,
+      private_capacity: "MUST-NOT-SURVIVE",
+    }),
+    "phonebook_search",
+    { phonebookId: 1, prefix: "A" },
+  );
+  assert.deepEqual(search, {
+    phonebook_id: 1,
+    prefix: "A",
+    entries: [],
+    truncated: false,
+    total: 3,
+    free_entries: 997,
+  });
+  assert.doesNotMatch(JSON.stringify(search), /private_capacity|MUST-NOT-SURVIVE/);
 });
 
 test("queries render only under their owning read-only feature cards", () => {
@@ -272,6 +295,7 @@ test("successful queries send only the fixed messages and retain only normalized
         ],
         truncated: false,
         total: 1,
+        free_entries: 999,
       });
     }
     return envelope("phonebook_contact", {
@@ -307,6 +331,8 @@ test("successful queries send only the fixed messages and retain only normalized
     },
   ]);
   assert.doesNotMatch(JSON.stringify(panel._adminPrivateQueries), /MUST-NOT-SURVIVE/);
+  assert.equal(panel._adminPrivateQueries.phonebook.searchResult.free_entries, 999);
+  assert.match(panel._renderAdminPrivatePhonebookQuery(), /Free entries: 999/);
   const pbxMarkup = panel._renderAdminPrivatePbxQuery();
   assert.doesNotMatch(pbxMarkup, /MUST-NOT-SURVIVE|<img/);
   assert.match(pbxMarkup, /&lt;img src=x onerror=alert\(1\)&gt;/);

@@ -299,6 +299,16 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
             *_TRAFFIC_FIELDS,
             _WIFI_GENERATION,
             SpeedportChildSensorDescription(
+                key="wifi_standard",
+                name="Wi-Fi standard",
+                field="wifi_standard",
+            ),
+            SpeedportChildSensorDescription(
+                key="connection_medium",
+                name="Connection medium",
+                field="medium",
+            ),
+            SpeedportChildSensorDescription(
                 key="radio_band",
                 name="Radio band",
                 field="band",

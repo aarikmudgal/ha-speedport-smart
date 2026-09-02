@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 from urllib.parse import urlencode, urlsplit
 
 import aiohttp
@@ -44,6 +44,7 @@ from .exceptions import (
     SpeedportError,
     SpeedportInvalidCredentialsError,
     SpeedportLoginLockedError,
+    SpeedportMutationOutcomeUnknownError,
     SpeedportProtocolError,
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
@@ -69,6 +70,7 @@ _LOGOUT_SETTLE_SECONDS: Final = 0.5
 _LOGOUT_REJECTED_STATES: Final = frozenset(
     {"denied", "error", "failed", "failure", "false", "invalid", "0"}
 )
+_LOGOUT_ACCEPTED_STATES: Final = frozenset({"1", "ok", "success", "true"})
 _WAN_BYTE_COUNTER_SUFFIXES: Final = (
     "BytesReceived",
     "BytesSent",
@@ -137,6 +139,17 @@ _IP_PBX_CLIENTS_REFERER: Final = "html/content/phone/phone_ippbx.html"
 _PHONEBOOK_ENDPOINT: Final = "data/PhoneBook.json"
 _PHONEBOOK_ENTRY_ENDPOINT: Final = "data/PhoneBookEntry.json"
 _PHONEBOOK_REFERER: Final = "html/content/phone/phone_book.html"
+_DECT_ACTION_ENDPOINT: Final = "data/DECT.json"
+_DECT_STATION_ENDPOINT: Final = "data/DECTStation.json"
+_DECT_STATUS_ENDPOINT: Final = "data/DECTInfo.json"
+_DECT_REPEATER_ENDPOINT: Final = "data/DECTRepeater.json"
+_DECT_MOBILES_REFERER: Final = "html/content/phone/phone_dect_mobiles.html"
+_DECT_REPEATER_REFERER: Final = "html/content/phone/phone_dect_repeater.html"
+_VOIP_PROVIDERS_ENDPOINT: Final = "data/IPPhone.json"
+_VOIP_LINES_ENDPOINT: Final = "data/IPPhoneNumbers.json"
+_VOIP_LINES_REFERER: Final = "html/content/phone/phone_internet.html"
+_NAS_FOLDERS_ENDPOINT: Final = "data/NASFolder.json"
+_NAS_FOLDERS_REFERER: Final = "html/content/network/nas_share.html"
 _THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
 _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
 _WPS_STATE_VALUES: Final = frozenset({"-2", "-1", "0", "1"})
@@ -145,6 +158,11 @@ _PHONEBOOK_IDS: Final = frozenset(range(5))
 _PRIVATE_QUERY_MAX_ROWS: Final = 256
 _PRIVATE_QUERY_MAX_TEXT_LENGTH: Final = 256
 _PRIVATE_QUERY_MAX_PHONE_LENGTH: Final = 64
+_PRIVATE_QUERY_MAX_DECT_TARGETS: Final = 16
+_PRIVATE_QUERY_MAX_VOIP_TARGETS: Final = 32
+_PRIVATE_QUERY_MAX_DISPLAY_NAME_LENGTH: Final = 64
+_MASKED_PHONE_SUFFIX_DIGITS: Final = 4
+_MAX_VOIP_PROVIDER_CODE: Final = 9_999
 _PRIVATE_QUERY_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _PHONEBOOK_SEARCH_PREFIX = re.compile(r"^[A-Za-z]?$")
 _PHONEBOOK_NUMBER = re.compile(r"^\+?[0-9/\-*# ]*$")
@@ -692,6 +710,24 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     referer="html/content/phone/phone_number.html",
                     evidence_keys=("phone", "number", "assignment"),
                     automatic_probe=False,
+                ),
+            ),
+            "voip_lines": (
+                _endpoint(
+                    "voip_lines",
+                    _VOIP_LINES_ENDPOINT,
+                    authenticated=True,
+                    referer=_VOIP_LINES_REFERER,
+                    evidence_keys=("addipnumber", "number_status"),
+                ),
+            ),
+            "voip_providers": (
+                _endpoint(
+                    "voip_providers",
+                    _VOIP_PROVIDERS_ENDPOINT,
+                    authenticated=True,
+                    referer=_VOIP_LINES_REFERER,
+                    evidence_keys=("addipphoneprovider", "isp_selection"),
                 ),
             ),
             "wps": (
@@ -1325,15 +1361,15 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
             "nas_folders": (
                 _endpoint(
                     "nas_folders",
-                    "data/NASFolder.json",
+                    _NAS_FOLDERS_ENDPOINT,
                     authenticated=True,
-                    referer="html/content/network/nas_share.html",
+                    referer=_NAS_FOLDERS_REFERER,
                     evidence_keys=(
                         "nas_active",
                         "nas_folder_name",
                         "nas_secure",
                     ),
-                    automatic_probe=False,
+                    inventory_safe=False,
                 ),
             ),
             "logs": (
@@ -1715,6 +1751,12 @@ class SpeedportClient:
         async with self._lock:
             await self._logout_unlocked()
 
+    async def logout_ephemeral(self) -> None:
+        """Release an action session and report unconfirmed cleanup safely."""
+        self._ensure_open()
+        async with self._lock:
+            await self._logout_unlocked(require_confirmation=True)
+
     async def get_status(self) -> RouterStatus:
         """Fetch and normalize public encrypted Status.json."""
         data = await self.get_json("data/Status.json")
@@ -1757,6 +1799,42 @@ class SpeedportClient:
                 referer=referer,
             )
             _require_command_acknowledgement(result)
+            return result
+
+    async def _post_ephemeral_action(
+        self,
+        endpoint: str,
+        data: Mapping[str, str | int | bool],
+        *,
+        referer: str,
+        require_status_ok: bool = False,
+    ) -> dict[str, Any]:
+        """Send one exact action once and apply its reviewed ACK policy."""
+        self._ensure_open()
+        async with self._lock:
+            await self._ensure_authenticated_unlocked()
+            fields = dict(data)
+            if "httoken" not in fields:
+                token = await self._get_http_token_unlocked(referer)
+                if token:
+                    fields["httoken"] = token
+            try:
+                result = await self._post_json_unlocked(
+                    endpoint,
+                    fields,
+                    authenticated=True,
+                    referer=referer,
+                    ensure_auth=False,
+                    resolve_http_token=False,
+                )
+            except SpeedportError as err:
+                raise SpeedportMutationOutcomeUnknownError(
+                    "Router mutation result is indeterminate"
+                ) from err
+            if require_status_ok:
+                _require_exact_status_ok(result)
+            else:
+                _reject_explicit_action_failure(result)
             return result
 
     async def query_ip_pbx_client(self, *, client_id: str) -> dict[str, Any]:
@@ -1822,6 +1900,503 @@ class SpeedportClient:
             response,
             phonebook_id=safe_phonebook_id,
             contact_id=safe_contact_id,
+        )
+
+    async def query_dect_handset_targets(self) -> dict[str, Any]:
+        """Return bounded handset targets only through the ephemeral admin API."""
+        self._ensure_open()
+        async with self._lock:
+            station = await self._get_json_with_recovery_unlocked(
+                _DECT_STATION_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+            status = await self._get_json_with_recovery_unlocked(
+                _DECT_STATUS_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+        return _project_dect_handset_targets(station, status)
+
+    async def query_voip_line_targets(self) -> dict[str, Any]:
+        """Return bounded VoIP line targets only through the ephemeral admin API."""
+        data = await self.get_json(
+            _VOIP_LINES_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        return _project_voip_line_targets(data)
+
+    async def query_dect_handset_disconnect_targets(self) -> dict[str, Any]:
+        """Return exact registered-handset deletion targets ephemerally."""
+        data = await self.get_json(
+            _DECT_STATION_ENDPOINT,
+            authenticated=True,
+            referer=_DECT_MOBILES_REFERER,
+        )
+        return _project_dect_handset_disconnect_targets(data)
+
+    async def query_dect_repeater_disconnect_targets(self) -> dict[str, Any]:
+        """Return exact registered-repeater deletion targets ephemerally."""
+        data = await self.get_json(
+            _DECT_REPEATER_ENDPOINT,
+            authenticated=True,
+            referer=_DECT_REPEATER_REFERER,
+        )
+        return _project_dect_repeater_disconnect_targets(data)
+
+    async def query_voip_provider_delete_targets(self) -> dict[str, Any]:
+        """Return exact VoIP provider deletion targets ephemerally."""
+        data = await self.get_json(
+            _VOIP_PROVIDERS_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        return _project_voip_provider_delete_targets(data)
+
+    async def query_voip_line_delete_targets(self) -> dict[str, Any]:
+        """Return exact VoIP number deletion targets ephemerally."""
+        data = await self.get_json(
+            _VOIP_LINES_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        return _project_voip_line_delete_targets(data)
+
+    async def query_ip_pbx_client_delete_targets(self) -> dict[str, Any]:
+        """Return exact IP-PBX client deletion targets ephemerally."""
+        data = await self.get_json(
+            _IP_PBX_CLIENTS_ENDPOINT,
+            authenticated=True,
+            referer=_IP_PBX_CLIENTS_REFERER,
+        )
+        return _project_ip_pbx_client_delete_targets(data)
+
+    async def query_phonebook_entry_delete_targets(
+        self,
+        *,
+        phonebook_id: int,
+    ) -> dict[str, Any]:
+        """Return one complete phonebook's exact deletion targets ephemerally."""
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        self._ensure_open()
+        async with self._lock:
+            data = await self._post_json_unlocked(
+                _PHONEBOOK_ENDPOINT,
+                {"obnr": safe_phonebook_id, "search": ""},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        return _project_phonebook_entry_delete_targets(
+            data,
+            phonebook_id=safe_phonebook_id,
+        )
+
+    async def query_nas_share_delete_targets(self) -> dict[str, Any]:
+        """Return exact NAS-share deletion targets ephemerally."""
+        data = await self.get_json(
+            _NAS_FOLDERS_ENDPOINT,
+            authenticated=True,
+            referer=_NAS_FOLDERS_REFERER,
+        )
+        return _project_nas_share_delete_targets(data)
+
+    async def get_dect_scan_active(self) -> bool:
+        """Read the exact DECT enrollment lifecycle flag."""
+        data = await self.get_json(
+            _DECT_STATUS_ENDPOINT,
+            authenticated=True,
+            referer=_DECT_MOBILES_REFERER,
+        )
+        return _require_dect_scan_active(data)
+
+    async def get_dect_repeater_scan_active(self) -> bool:
+        """Read repeater enrollment lifecycle without reading the DECT PIN."""
+        return await self.get_dect_scan_active()
+
+    async def get_dect_handset_paging(
+        self,
+        *,
+        handset_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read handset membership and its exact paging state."""
+        safe_id = _require_admin_action_identifier(
+            handset_id,
+            description="DECT handset ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        self._ensure_open()
+        async with self._lock:
+            station = await self._get_json_with_recovery_unlocked(
+                _DECT_STATION_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+            handset = _require_dect_handset(station, handset_id=safe_id)
+            if (
+                _dect_handset_fingerprint(handset, handset_id=safe_id)
+                != safe_fingerprint
+            ):
+                raise SpeedportUnsupportedError("DECT handset target identity changed")
+            status = await self._get_json_with_recovery_unlocked(
+                _DECT_STATUS_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+        return _require_dect_paging_state(status, handset_id=safe_id)
+
+    async def get_voip_line_active(
+        self,
+        *,
+        line_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read one exact VoIP line state without returning its number."""
+        safe_id = _require_admin_action_identifier(
+            line_id,
+            description="VoIP line ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        data = await self.get_json(
+            _VOIP_LINES_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        line = _require_voip_line(data, line_id=safe_id)
+        if _voip_line_fingerprint(line, line_id=safe_id) != safe_fingerprint:
+            raise SpeedportUnsupportedError("VoIP line target identity changed")
+        return _require_voip_line_active(line)
+
+    async def get_dect_handset_present(
+        self,
+        *,
+        handset_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact handset membership for destructive verification."""
+        return await self._get_target_membership(
+            endpoint=_DECT_STATION_ENDPOINT,
+            referer=_DECT_MOBILES_REFERER,
+            target_id=handset_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_dect_handset_rows,
+            fingerprint=lambda row, row_id: _dect_handset_fingerprint(
+                row,
+                handset_id=row_id,
+            ),
+        )
+
+    async def get_dect_repeater_present(
+        self,
+        *,
+        repeater_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact repeater membership for destructive verification."""
+        return await self._get_target_membership(
+            endpoint=_DECT_REPEATER_ENDPOINT,
+            referer=_DECT_REPEATER_REFERER,
+            target_id=repeater_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_dect_repeater_rows,
+            fingerprint=_dect_repeater_fingerprint,
+        )
+
+    async def get_voip_provider_present(
+        self,
+        *,
+        provider_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact VoIP provider membership."""
+        return await self._get_target_membership(
+            endpoint=_VOIP_PROVIDERS_ENDPOINT,
+            referer=_VOIP_LINES_REFERER,
+            target_id=provider_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_voip_provider_rows,
+            fingerprint=_voip_provider_fingerprint,
+        )
+
+    async def get_voip_line_present(
+        self,
+        *,
+        line_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact VoIP number membership."""
+        return await self._get_target_membership(
+            endpoint=_VOIP_LINES_ENDPOINT,
+            referer=_VOIP_LINES_REFERER,
+            target_id=line_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_voip_line_rows,
+            fingerprint=lambda row, row_id: _voip_line_fingerprint(
+                row,
+                line_id=row_id,
+            ),
+        )
+
+    async def get_ip_pbx_client_present(
+        self,
+        *,
+        client_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact IP-PBX client membership."""
+        return await self._get_target_membership(
+            endpoint=_IP_PBX_CLIENTS_ENDPOINT,
+            referer=_IP_PBX_CLIENTS_REFERER,
+            target_id=client_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_ip_pbx_client_rows,
+            fingerprint=_ip_pbx_client_fingerprint,
+        )
+
+    async def get_phonebook_entry_present(
+        self,
+        *,
+        contact_id: str,
+        target_fingerprint: str,
+        phonebook_id: int,
+    ) -> bool:
+        """Fresh-read exact contact membership from a complete phonebook list."""
+        safe_id = _require_admin_action_identifier(
+            contact_id,
+            description="Phonebook contact ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        self._ensure_open()
+        async with self._lock:
+            data = await self._post_json_unlocked(
+                _PHONEBOOK_ENDPOINT,
+                {"obnr": safe_phonebook_id, "search": ""},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        rows = _strict_phonebook_rows(data)
+        _require_complete_phonebook_result(data, rows)
+        return _target_membership(
+            rows,
+            target_id=safe_id,
+            target_fingerprint=safe_fingerprint,
+            fingerprint=lambda row, row_id: _phonebook_entry_fingerprint(
+                row,
+                contact_id=row_id,
+                phonebook_id=safe_phonebook_id,
+            ),
+        )
+
+    async def get_nas_share_present(
+        self,
+        *,
+        share_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Read NAS membership without using another flat row as absence proof."""
+        safe_id = _require_admin_action_identifier(
+            share_id,
+            description="NAS share ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        data = await self.get_json(
+            _NAS_FOLDERS_ENDPOINT,
+            authenticated=True,
+            referer=_NAS_FOLDERS_REFERER,
+        )
+        rows = _strict_nas_share_rows(data)
+        has_complete_collection = any(
+            _mapping_value(data, collection) is not None
+            for collection in ("addnasfolder", "nas_folders", "nasfolder")
+        )
+        if not has_complete_collection and rows and rows[0]["id"] != safe_id:
+            raise SpeedportUnsupportedError(
+                "Flat NAS share response cannot prove target absence"
+            )
+        return _target_membership(
+            rows,
+            target_id=safe_id,
+            target_fingerprint=safe_fingerprint,
+            fingerprint=_nas_share_fingerprint,
+        )
+
+    async def _get_target_membership(
+        self,
+        *,
+        endpoint: str,
+        referer: str,
+        target_id: str,
+        target_fingerprint: str,
+        rows: Callable[[Mapping[str, Any]], tuple[dict[str, Any], ...]],
+        fingerprint: Callable[[Mapping[str, Any], str], str],
+    ) -> bool:
+        """Fresh-read one complete collection and prove exact membership."""
+        safe_id = _require_admin_action_identifier(
+            target_id,
+            description="Administrator action target ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        data = await self.get_json(
+            endpoint,
+            authenticated=True,
+            referer=referer,
+        )
+        return _target_membership(
+            rows(data),
+            target_id=safe_id,
+            target_fingerprint=safe_fingerprint,
+            fingerprint=fingerprint,
+        )
+
+    async def start_dect_handset_enrollment(self) -> dict[str, Any]:
+        """Start one DECT handset enrollment scan through its exact contract."""
+        return await self._post_ephemeral_action(
+            _DECT_ACTION_ENDPOINT,
+            {"scan_dect": "scan dect phones"},
+            referer=_DECT_MOBILES_REFERER,
+        )
+
+    async def start_dect_repeater_enrollment(self) -> dict[str, Any]:
+        """Start one DECT repeater enrollment scan through its exact contract."""
+        return await self._post_ephemeral_action(
+            _DECT_REPEATER_ENDPOINT,
+            {"scan_repeater": "scan dect repeater"},
+            referer=_DECT_REPEATER_REFERER,
+        )
+
+    async def toggle_dect_handset_paging(
+        self,
+        *,
+        handset_id: str,
+    ) -> dict[str, Any]:
+        """Toggle paging for one freshly proven handset row."""
+        safe_id = _require_admin_action_identifier(
+            handset_id,
+            description="DECT handset ID",
+        )
+        return await self._post_ephemeral_action(
+            _DECT_ACTION_ENDPOINT,
+            {"ring": "start paging", "id": safe_id},
+            referer=_DECT_MOBILES_REFERER,
+        )
+
+    async def set_voip_line_active(
+        self,
+        *,
+        line_id: str,
+        active: bool,
+    ) -> dict[str, Any]:
+        """Set one freshly proven VoIP line to the requested active state."""
+        safe_id = _require_admin_action_identifier(
+            line_id,
+            description="VoIP line ID",
+        )
+        _require_boolean(active, description="VoIP line state")
+        return await self._post_ephemeral_action(
+            _VOIP_LINES_ENDPOINT,
+            {
+                "id": safe_id,
+                "no_delete": "keep",
+                "number_status": "ok" if active else "inactive",
+            },
+            referer=_VOIP_LINES_REFERER,
+        )
+
+    async def disconnect_dect_handset(self, *, handset_id: str) -> dict[str, Any]:
+        """Disconnect one freshly proven DECT handset."""
+        safe_id = _require_admin_action_identifier(
+            handset_id,
+            description="DECT handset ID",
+        )
+        return await self._post_ephemeral_action(
+            _DECT_ACTION_ENDPOINT,
+            {"disconnect": "disconnect", "id": safe_id},
+            referer=_DECT_MOBILES_REFERER,
+        )
+
+    async def disconnect_dect_repeater(self, *, repeater_id: str) -> dict[str, Any]:
+        """Disconnect one freshly proven DECT repeater."""
+        safe_id = _require_admin_action_identifier(
+            repeater_id,
+            description="DECT repeater ID",
+        )
+        return await self._post_ephemeral_action(
+            _DECT_REPEATER_ENDPOINT,
+            {"disconnect": "disconnect", "id": safe_id},
+            referer=_DECT_REPEATER_REFERER,
+        )
+
+    async def delete_voip_provider(self, *, provider_id: str) -> dict[str, Any]:
+        """Delete one freshly proven VoIP provider."""
+        safe_id = _require_admin_action_identifier(
+            provider_id,
+            description="VoIP provider ID",
+        )
+        return await self._post_ephemeral_action(
+            _VOIP_PROVIDERS_ENDPOINT,
+            {"id": safe_id, "deleteEntry": "delete"},
+            referer=_VOIP_LINES_REFERER,
+        )
+
+    async def delete_voip_line(self, *, line_id: str) -> dict[str, Any]:
+        """Delete one freshly proven VoIP number with an exact positive ACK."""
+        safe_id = _require_admin_action_identifier(
+            line_id,
+            description="VoIP line ID",
+        )
+        return await self._post_ephemeral_action(
+            _VOIP_LINES_ENDPOINT,
+            {"id": safe_id, "deleteEntry": "delete"},
+            referer=_VOIP_LINES_REFERER,
+            require_status_ok=True,
+        )
+
+    async def delete_ip_pbx_client(self, *, client_id: str) -> dict[str, Any]:
+        """Delete one freshly proven IP-PBX client."""
+        safe_id = _require_admin_action_identifier(
+            client_id,
+            description="IP-PBX client ID",
+        )
+        return await self._post_ephemeral_action(
+            _IP_PBX_CLIENTS_ENDPOINT,
+            {"delete": "delete", "id": safe_id},
+            referer=_IP_PBX_CLIENTS_REFERER,
+        )
+
+    async def delete_phonebook_entry(
+        self,
+        *,
+        contact_id: str,
+        phonebook_id: int,
+    ) -> dict[str, Any]:
+        """Delete one freshly proven contact from one exact phonebook."""
+        safe_id = _require_admin_action_identifier(
+            contact_id,
+            description="Phonebook contact ID",
+        )
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        return await self._post_ephemeral_action(
+            _PHONEBOOK_ENDPOINT,
+            {
+                "id": safe_id,
+                "obnr": safe_phonebook_id,
+                "deleteEntry": "delete",
+            },
+            referer=_PHONEBOOK_REFERER,
+        )
+
+    async def delete_nas_share(self, *, share_id: str) -> dict[str, Any]:
+        """Delete one freshly proven NAS share."""
+        safe_id = _require_admin_action_identifier(
+            share_id,
+            description="NAS share ID",
+        )
+        return await self._post_ephemeral_action(
+            _NAS_FOLDERS_ENDPOINT,
+            {"sid": safe_id, "deleteEntry": "delete"},
+            referer=_NAS_FOLDERS_REFERER,
         )
 
     async def reconnect(self) -> dict[str, Any]:
@@ -2776,13 +3351,14 @@ class SpeedportClient:
         if not self._authenticated:
             await self._login_unlocked()
 
-    async def _logout_unlocked(self) -> None:
+    async def _logout_unlocked(self, *, require_confirmation: bool = False) -> None:
         """Release our web login while retaining credentials for later reuse."""
         cleanup_key = self._session_cleanup_key
         if cleanup_key is None:
             return
         try:
             primary_rejected = False
+            primary_confirmed = False
             try:
                 result = await self._post_json_unlocked(
                     "data/Login.json",
@@ -2794,11 +3370,13 @@ class SpeedportClient:
                     response_key=cleanup_key,
                 )
                 primary_rejected = _logout_response_rejected(result)
+                primary_confirmed = _logout_response_confirmed(result)
             except SpeedportError:
                 primary_rejected = True
-            if primary_rejected:
-                with suppress(SpeedportError):
-                    await self._post_json_unlocked(
+            cleanup_unconfirmed = not primary_confirmed
+            if primary_rejected or (require_confirmation and not primary_confirmed):
+                try:
+                    fallback = await self._post_json_unlocked(
                         "data/Login.json",
                         {"logout": "byby"},
                         authenticated=False,
@@ -2807,6 +3385,13 @@ class SpeedportClient:
                         request_key=cleanup_key,
                         response_key=cleanup_key,
                     )
+                    cleanup_unconfirmed = not _logout_response_confirmed(fallback)
+                except SpeedportError:
+                    cleanup_unconfirmed = True
+            if require_confirmation and cleanup_unconfirmed:
+                raise SpeedportProtocolError(
+                    "Router session cleanup could not be confirmed"
+                )
         finally:
             self._clear_session_state()
             await asyncio.sleep(_LOGOUT_SETTLE_SECONDS)
@@ -3303,11 +3888,614 @@ def _require_command_acknowledgement(response: Mapping[str, Any]) -> None:
         )
 
 
+def _reject_explicit_action_failure(response: Mapping[str, Any]) -> None:
+    """Allow absent ACK only when no exact response field reports failure."""
+    for key in ("status", "result"):
+        if key not in response:
+            continue
+        value = response[key]
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized in {"1", "ok", "success", "true"}:
+                continue
+            if normalized in {
+                "0",
+                "denied",
+                "error",
+                "failed",
+                "failure",
+                "false",
+                "no",
+                "nok",
+                "rejected",
+            }:
+                raise SpeedportCommandRejectedError(
+                    "Router explicitly rejected the administrator action"
+                )
+        else:
+            if (type(value) is bool and value) or (type(value) is int and value == 1):
+                continue
+            if (type(value) is bool and not value) or (
+                type(value) is int and value == 0
+            ):
+                raise SpeedportCommandRejectedError(
+                    "Router explicitly rejected the administrator action"
+                )
+        raise SpeedportMutationOutcomeUnknownError(
+            "Router mutation acknowledgement is indeterminate"
+        )
+    for key in ("error", "errors"):
+        if key in response and response[key] not in (None, "", False, 0, (), [], {}):
+            raise SpeedportCommandRejectedError(
+                "Router explicitly rejected the administrator action"
+            )
+
+
+def _require_exact_status_ok(response: Mapping[str, Any]) -> None:
+    """Require the VoIP-number deletion callback's exact positive status."""
+    for key in ("error", "errors"):
+        if key in response and response[key] not in (None, "", False, 0, (), [], {}):
+            raise SpeedportCommandRejectedError(
+                "Router explicitly rejected the administrator action"
+            )
+    status = _mapping_value(response, "status")
+    if isinstance(status, str) and status.strip().casefold() == "ok":
+        return
+    explicit_negative = (type(status) is bool and not status) or (
+        type(status) is int and status == 0
+    )
+    if isinstance(status, str):
+        explicit_negative = status.strip().casefold() in {
+            "0",
+            "denied",
+            "error",
+            "failed",
+            "failure",
+            "false",
+            "no",
+            "nok",
+            "rejected",
+        }
+    if explicit_negative:
+        raise SpeedportCommandRejectedError(
+            "Router explicitly rejected the administrator action"
+        )
+    raise SpeedportMutationOutcomeUnknownError(
+        "Router mutation acknowledgement is indeterminate"
+    )
+
+
 def _require_private_query_identifier(value: object, *, description: str) -> str:
     """Accept one short opaque firmware row identifier without echoing it on error."""
     if not isinstance(value, str) or _PRIVATE_QUERY_ID.fullmatch(value) is None:
         raise SpeedportProtocolError(f"{description} is invalid")
     return value
+
+
+def _require_admin_action_identifier(value: object, *, description: str) -> str:
+    """Accept one short opaque action target without echoing it on failure."""
+    if not isinstance(value, str) or _PRIVATE_QUERY_ID.fullmatch(value) is None:
+        raise SpeedportProtocolError(f"{description} is invalid")
+    return value
+
+
+def _require_admin_target_fingerprint(value: object) -> str:
+    """Accept one internal row fingerprint without echoing it on failure."""
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise SpeedportProtocolError("Administrator action target proof is invalid")
+    return value
+
+
+def _strict_router_boolean(value: object) -> bool | None:
+    """Parse only exact Boolean wire representations used by this firmware."""
+    if type(value) is bool:
+        return value
+    if type(value) is int and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str) and value in {"0", "1"}:
+        return value == "1"
+    return None
+
+
+def _require_unique_scalar(payload: Mapping[str, Any], field: str) -> object:
+    """Return one exact case-insensitive scalar field or fail closed."""
+    matches = [
+        value
+        for raw_key, value in payload.items()
+        if isinstance(raw_key, str) and raw_key.strip().casefold() == field.casefold()
+    ]
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError("Router action state is missing or ambiguous")
+    return matches[0]
+
+
+def _require_dect_scan_active(payload: Mapping[str, Any]) -> bool:
+    """Return the exact DECT scan lifecycle value."""
+    value = _strict_router_boolean(
+        _require_unique_scalar(payload, "dect_detect_status")
+    )
+    if value is None:
+        raise SpeedportUnsupportedError("DECT scan state is unsupported")
+    return value
+
+
+def _dect_handset_rows(payload: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Return one complete, uniquely identified firmware handset collection."""
+    return _strict_dect_handset_rows(payload)
+
+
+def _require_dect_handset(
+    payload: Mapping[str, Any],
+    *,
+    handset_id: str,
+) -> dict[str, Any]:
+    """Return one exact handset row by stable opaque ID."""
+    matches = [
+        row
+        for row in _dect_handset_rows(payload)
+        if _private_query_identifier(row.get("id")) == handset_id
+    ]
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError("DECT handset target is missing or ambiguous")
+    return matches[0]
+
+
+def _dect_handset_fingerprint(
+    row: Mapping[str, Any],
+    *,
+    handset_id: str,
+) -> str:
+    """Bind one handset token to stable, non-secret row identity fields."""
+    name = _first_private_query_value(
+        row,
+        ("dect_name", "name"),
+        _private_query_text,
+        max_length=64,
+    )
+    return sha256(f"dect\x1f{handset_id}\x1f{name or ''}".encode()).hexdigest()
+
+
+def _require_dect_paging_state(
+    payload: Mapping[str, Any],
+    *,
+    handset_id: str,
+) -> bool:
+    """Return one exact per-handset paging state."""
+    value = _strict_router_boolean(
+        _require_unique_scalar(payload, f"pagingstat{handset_id}")
+    )
+    if value is None:
+        raise SpeedportUnsupportedError("DECT paging state is unsupported")
+    return value
+
+
+def _project_dect_handset_targets(
+    station: Mapping[str, Any],
+    status: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project bounded action targets without exposing handset assignments."""
+    rows = _dect_handset_rows(station)
+    eligible: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        target_id = _private_query_identifier(row.get("id"))
+        if target_id is None or target_id in seen:
+            continue
+        seen.add(target_id)
+        try:
+            paging = _require_dect_paging_state(status, handset_id=target_id)
+        except SpeedportUnsupportedError:
+            continue
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "reference": target_id,
+            "paging": paging,
+        }
+        target["target_fingerprint"] = _dect_handset_fingerprint(
+            row,
+            handset_id=target_id,
+        )
+        name = _first_private_query_value(
+            row,
+            ("dect_name", "name"),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        eligible.append(target)
+    return {
+        "targets": eligible[:_PRIVATE_QUERY_MAX_DECT_TARGETS],
+        "truncated": len(eligible) > _PRIVATE_QUERY_MAX_DECT_TARGETS,
+    }
+
+
+def _voip_line_rows(payload: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Return one complete, uniquely identified firmware VoIP line collection."""
+    return _strict_voip_line_rows(payload)
+
+
+def _project_voip_line_targets(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project bounded line action identities without exposing phone numbers."""
+    targets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in _voip_line_rows(payload):
+        target_id = _private_query_identifier(
+            row.get("id", row.get("ipphonenumber_id"))
+        )
+        if target_id is None or target_id in seen:
+            continue
+        seen.add(target_id)
+        status = row.get("number_status")
+        if status not in {"ok", "inactive"}:
+            continue
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _voip_line_fingerprint(
+                row,
+                line_id=target_id,
+            ),
+            "reference": target_id,
+            "active": status == "ok",
+        }
+        number = _first_private_query_value(
+            row,
+            ("ip_number", "phone_number", "number"),
+            _private_query_phone_number,
+            max_length=_PRIVATE_QUERY_MAX_PHONE_LENGTH,
+        )
+        digits = "".join(character for character in number or "" if character.isdigit())
+        if len(digits) > _MASKED_PHONE_SUFFIX_DIGITS:
+            target["number_suffix"] = digits[-_MASKED_PHONE_SUFFIX_DIGITS:]
+        targets.append(target)
+    return {
+        "targets": targets[:_PRIVATE_QUERY_MAX_VOIP_TARGETS],
+        "truncated": len(targets) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _voip_line_fingerprint(
+    row: Mapping[str, Any],
+    *,
+    line_id: str,
+) -> str:
+    """Bind one line token to stable identity fields without exposing them."""
+    number = _first_private_query_value(
+        row,
+        ("ip_number", "phone_number", "number"),
+        _private_query_phone_number,
+        max_length=_PRIVATE_QUERY_MAX_PHONE_LENGTH,
+    )
+    provider = _as_int(row.get("isp_selection"))
+    provider_value = (
+        provider
+        if provider is not None and 0 <= provider <= _MAX_VOIP_PROVIDER_CODE
+        else ""
+    )
+    return sha256(
+        f"voip\x1f{line_id}\x1f{number or ''}\x1f{provider_value}".encode()
+    ).hexdigest()
+
+
+def _require_voip_line(
+    payload: Mapping[str, Any],
+    *,
+    line_id: str,
+) -> dict[str, Any]:
+    """Return one exact VoIP line row by stable opaque ID."""
+    rows = _voip_line_rows(payload)
+    matches = [
+        row
+        for row in rows
+        if _private_query_identifier(row.get("id", row.get("ipphonenumber_id")))
+        == line_id
+    ]
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError("VoIP line target is missing or ambiguous")
+    return matches[0]
+
+
+def _require_voip_line_active(row: Mapping[str, Any]) -> bool:
+    """Return one exact VoIP line state without retaining its number."""
+    status = row.get("number_status")
+    if status == "ok":
+        return True
+    if status == "inactive":
+        return False
+    raise SpeedportUnsupportedError("VoIP line state is unsupported")
+
+
+def _project_dect_handset_disconnect_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact handset identities with an opaque reference."""
+    targets: list[dict[str, Any]] = []
+    rows = _strict_dect_handset_rows(payload)
+    for row in rows[:_PRIVATE_QUERY_MAX_DECT_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _dect_handset_fingerprint(
+                row,
+                handset_id=target_id,
+            ),
+            "reference": target_id,
+        }
+        name = _first_private_query_value(
+            row,
+            ("dect_name", "name"),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_DECT_TARGETS,
+    }
+
+
+def _dect_repeater_fingerprint(_row: Mapping[str, Any], repeater_id: str) -> str:
+    """Bind a repeater action token to exact stable row identity."""
+    return sha256(f"dect-repeater\x1f{repeater_id}".encode()).hexdigest()
+
+
+def _project_dect_repeater_disconnect_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact repeater identities with an admin-visible opaque reference."""
+    rows = _strict_dect_repeater_rows(payload)
+    return {
+        "targets": [
+            {
+                "target_id": (target_id := cast("str", row["id"])),
+                "target_fingerprint": _dect_repeater_fingerprint(row, target_id),
+                "reference": target_id,
+            }
+            for row in rows[:_PRIVATE_QUERY_MAX_DECT_TARGETS]
+        ],
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_DECT_TARGETS,
+    }
+
+
+def _voip_provider_fingerprint(row: Mapping[str, Any], provider_id: str) -> str:
+    """Bind a provider token without retaining credentials or telephone data."""
+    provider_code = _bounded_integer(
+        row.get("isp_selection"),
+        minimum=0,
+        maximum=_MAX_VOIP_PROVIDER_CODE,
+    )
+    code = provider_code if provider_code is not None else ""
+    return sha256(f"voip-provider\x1f{provider_id}\x1f{code}".encode()).hexdigest()
+
+
+def _project_voip_provider_delete_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact provider targets without exposing credentials."""
+    rows = _strict_voip_provider_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _voip_provider_fingerprint(row, target_id),
+            "reference": target_id,
+        }
+        provider_code = _bounded_integer(
+            row.get("isp_selection"),
+            minimum=0,
+            maximum=_MAX_VOIP_PROVIDER_CODE,
+        )
+        if provider_code is not None:
+            target["provider_code"] = provider_code
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _project_voip_line_delete_targets(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project all exact VoIP number targets with only a masked suffix."""
+    rows = _strict_voip_line_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _voip_line_fingerprint(
+                row,
+                line_id=target_id,
+            ),
+            "reference": target_id,
+        }
+        status = row.get("number_status")
+        if status in {"ok", "inactive"}:
+            target["active"] = status == "ok"
+        number = _first_private_query_value(
+            row,
+            ("ip_number", "phone_number", "number"),
+            _private_query_phone_number,
+            max_length=_PRIVATE_QUERY_MAX_PHONE_LENGTH,
+        )
+        digits = "".join(character for character in number or "" if character.isdigit())
+        if len(digits) > _MASKED_PHONE_SUFFIX_DIGITS:
+            target["number_suffix"] = digits[-_MASKED_PHONE_SUFFIX_DIGITS:]
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _ip_pbx_client_fingerprint(row: Mapping[str, Any], client_id: str) -> str:
+    """Bind a PBX-client token to stable non-secret identity fields."""
+    name = _first_private_query_value(
+        row,
+        ("ipclient_mdevice_name",),
+        _private_query_text,
+        max_length=64,
+    )
+    mac = _private_query_mac(row.get("ipclient_mdevice_mac"))
+    return sha256(
+        f"ip-pbx-client\x1f{client_id}\x1f{name or ''}\x1f{mac or ''}".encode()
+    ).hexdigest()
+
+
+def _project_ip_pbx_client_delete_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact PBX-client targets without credentials."""
+    rows = _strict_ip_pbx_client_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _ip_pbx_client_fingerprint(row, target_id),
+            "reference": target_id,
+        }
+        name = _first_private_query_value(
+            row,
+            ("ipclient_mdevice_name",),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        status_code = _bounded_integer(
+            row.get("ipclient_status"),
+            minimum=0,
+            maximum=2,
+        )
+        if status_code is not None:
+            target["status"] = _IP_PBX_STATUS_VALUES[status_code]
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _phonebook_entry_fingerprint(
+    row: Mapping[str, Any],
+    *,
+    contact_id: str,
+    phonebook_id: int,
+) -> str:
+    """Bind one contact token without returning its private fields."""
+    values = [
+        _first_private_query_value(
+            row,
+            (field,),
+            (
+                _private_query_phone_number
+                if field.startswith("number")
+                else _private_query_text
+            ),
+            max_length=_PRIVATE_QUERY_MAX_DISPLAY_NAME_LENGTH,
+        )
+        or ""
+        for field in ("name", "vorname", "number_p", "number_a", "number_m", "number_n")
+    ]
+    fingerprint_value = "\x1f".join(
+        ("phonebook-entry", str(phonebook_id), contact_id, *values)
+    )
+    return sha256(fingerprint_value.encode()).hexdigest()
+
+
+def _project_phonebook_entry_delete_targets(
+    payload: Mapping[str, Any],
+    *,
+    phonebook_id: int,
+) -> dict[str, Any]:
+    """Project exact contact targets from one complete phonebook response."""
+    rows = _strict_phonebook_rows(payload)
+    _require_complete_phonebook_result(payload, rows)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _phonebook_entry_fingerprint(
+                row,
+                contact_id=target_id,
+                phonebook_id=phonebook_id,
+            ),
+            "phonebook_id": phonebook_id,
+            "reference": target_id,
+        }
+        name_parts = [
+            value
+            for value in (
+                _first_private_query_value(
+                    row,
+                    ("vorname",),
+                    _private_query_text,
+                    max_length=32,
+                ),
+                _first_private_query_value(
+                    row,
+                    ("name",),
+                    _private_query_text,
+                    max_length=32,
+                ),
+            )
+            if value is not None
+        ]
+        display_name = " ".join(name_parts)
+        if 0 < len(display_name) <= _PRIVATE_QUERY_MAX_DISPLAY_NAME_LENGTH:
+            target["display_name"] = display_name
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _nas_share_fingerprint(row: Mapping[str, Any], share_id: str) -> str:
+    """Bind one NAS-share token without credentials."""
+    name = _first_private_query_value(
+        row,
+        ("nas_folder_name", "nas_share_name", "share_name"),
+        _private_query_text,
+        max_length=64,
+    )
+    flags = tuple(
+        _strict_router_boolean(row[field]) if field in row else None
+        for field in ("nas_active", "nas_folder_nur_lesen", "nas_secure")
+    )
+    return sha256(
+        f"nas-share\x1f{share_id}\x1f{name or ''}\x1f{flags!r}".encode()
+    ).hexdigest()
+
+
+def _project_nas_share_delete_targets(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project exact NAS-share targets without credentials."""
+    rows = _strict_nas_share_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _nas_share_fingerprint(row, target_id),
+            "reference": target_id,
+        }
+        name = _first_private_query_value(
+            row,
+            ("nas_folder_name", "nas_share_name", "share_name"),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
 
 
 def _require_phonebook_id(value: object) -> int:
@@ -3399,6 +4587,13 @@ def _project_phonebook_entries(
     )
     if total is not None:
         result["total"] = total
+    free_entries = _bounded_integer(
+        _mapping_value(response, "free_entry_num"),
+        minimum=0,
+        maximum=1000,
+    )
+    if free_entries is not None:
+        result["free_entries"] = free_entries
     return result
 
 
@@ -3489,6 +4684,192 @@ def _private_query_rows(value: Any) -> tuple[dict[str, Any], ...]:
         return ()
     rows = tuple(_casefold_private_query_mapping(candidate) for candidate in candidates)
     return tuple(row for row in rows if row)
+
+
+def _strict_private_query_rows(
+    payload: Mapping[str, Any],
+    collection: str,
+) -> tuple[dict[str, Any], ...]:
+    """Return one complete collection without dropping malformed rows."""
+    value = _mapping_value(payload, collection)
+    if value is None:
+        raise SpeedportUnsupportedError(
+            "Router target inventory is missing or ambiguous"
+        )
+    if isinstance(value, Mapping):
+        sequence_columns = {
+            str(key): tuple(items)
+            for key, items in value.items()
+            if isinstance(items, Sequence)
+            and not isinstance(items, (str, bytes, bytearray))
+        }
+        if sequence_columns:
+            lengths = {len(items) for items in sequence_columns.values()}
+            if len(lengths) != 1:
+                raise SpeedportUnsupportedError("Router target inventory is malformed")
+            length = lengths.pop()
+            if length > _PRIVATE_QUERY_MAX_ROWS:
+                raise SpeedportUnsupportedError("Router target inventory is truncated")
+            scalar_columns = {
+                str(key): item
+                for key, item in value.items()
+                if str(key) not in sequence_columns
+            }
+            candidates: tuple[Mapping[Any, Any], ...] = tuple(
+                {
+                    **scalar_columns,
+                    **{key: items[index] for key, items in sequence_columns.items()},
+                }
+                for index in range(length)
+            )
+        else:
+            candidates = (value,) if value else ()
+    elif isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        if len(value) > _PRIVATE_QUERY_MAX_ROWS or any(
+            not isinstance(item, Mapping) for item in value
+        ):
+            raise SpeedportUnsupportedError("Router target inventory is truncated")
+        candidates = tuple(cast("Mapping[Any, Any]", item) for item in value)
+    else:
+        raise SpeedportUnsupportedError("Router target inventory is malformed")
+
+    rows = tuple(_casefold_private_query_mapping(candidate) for candidate in candidates)
+    if any(not row for row in rows):
+        raise SpeedportUnsupportedError("Router target inventory is malformed")
+    return rows
+
+
+def _strict_identified_rows(
+    payload: Mapping[str, Any],
+    collection: str,
+    *,
+    identifier_fields: tuple[str, ...] = ("id",),
+) -> tuple[dict[str, Any], ...]:
+    """Return complete rows with unique canonical opaque IDs."""
+    rows = _strict_private_query_rows(payload, collection)
+    identified: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        identifiers = {
+            identifier
+            for field in identifier_fields
+            if (identifier := _private_query_identifier(row.get(field))) is not None
+        }
+        if len(identifiers) != 1:
+            raise SpeedportUnsupportedError("Router target identity is ambiguous")
+        identifier = identifiers.pop()
+        if identifier in seen:
+            raise SpeedportUnsupportedError("Router target identity is ambiguous")
+        seen.add(identifier)
+        identified.append({**row, "id": identifier})
+    return tuple(identified)
+
+
+def _strict_dect_handset_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    collections = [
+        key
+        for key in ("adddectdevice", "adddect")
+        if _mapping_value(payload, key) is not None
+    ]
+    if len(collections) != 1:
+        raise SpeedportUnsupportedError(
+            "DECT handset inventory is missing or ambiguous"
+        )
+    return _strict_identified_rows(payload, collections[0])
+
+
+def _strict_dect_repeater_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addrepeater")
+
+
+def _strict_voip_provider_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addipphoneprovider")
+
+
+def _strict_voip_line_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(
+        payload,
+        "addipnumber",
+        identifier_fields=("id", "ipphonenumber_id"),
+    )
+
+
+def _strict_ip_pbx_client_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addipclient")
+
+
+def _strict_phonebook_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addbookentry")
+
+
+def _strict_nas_share_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Return complete NAS-share rows, including the firmware's flat form."""
+    for collection in ("addnasfolder", "nas_folders", "nasfolder"):
+        if _mapping_value(payload, collection) is not None:
+            return _strict_identified_rows(
+                payload,
+                collection,
+                identifier_fields=("sid", "id"),
+            )
+    row = _casefold_private_query_mapping(payload)
+    raw_identifier = row.get("sid", row.get("id"))
+    if (
+        isinstance(raw_identifier, (str, int))
+        and not isinstance(raw_identifier, bool)
+        and str(raw_identifier).strip() == "-1"
+    ):
+        return ()
+    identifier = _private_query_identifier(raw_identifier)
+    if identifier is None:
+        raise SpeedportUnsupportedError("NAS share inventory is missing or ambiguous")
+    return ({**row, "id": identifier},)
+
+
+def _target_membership(
+    rows: tuple[dict[str, Any], ...],
+    *,
+    target_id: str,
+    target_fingerprint: str,
+    fingerprint: Callable[[Mapping[str, Any], str], str],
+) -> bool:
+    """Prove exact target presence or complete absence."""
+    matches = [row for row in rows if row["id"] == target_id]
+    if not matches:
+        return False
+    if len(matches) != 1 or fingerprint(matches[0], target_id) != target_fingerprint:
+        raise SpeedportUnsupportedError("Administrator action target identity changed")
+    return True
+
+
+def _require_complete_phonebook_result(
+    payload: Mapping[str, Any],
+    rows: tuple[dict[str, Any], ...],
+) -> None:
+    """Require explicit proof that a phonebook response is untruncated."""
+    total = _bounded_integer(
+        _mapping_value(payload, "num_entries"),
+        minimum=0,
+        maximum=_PRIVATE_QUERY_MAX_ROWS,
+    )
+    if total is None or total != len(rows):
+        raise SpeedportUnsupportedError("Phonebook target inventory is incomplete")
 
 
 def _casefold_private_query_mapping(value: Mapping[Any, Any]) -> dict[str, Any]:
@@ -3653,6 +5034,31 @@ def _logout_response_rejected(data: Mapping[str, Any]) -> bool:
             and str(value).strip().casefold() in _LOGOUT_REJECTED_STATES
         ):
             return True
+    return any(
+        key in data and data[key] not in (None, "", False, 0, (), [], {})
+        for key in ("error", "errors")
+    )
+
+
+def _logout_response_confirmed(data: Mapping[str, Any]) -> bool:
+    """Return whether a decoded logout response explicitly confirms release."""
+    if _logout_response_rejected(data):
+        return False
+    for key in ("logout", "status", "result"):
+        value = data.get(key)
+        if type(value) is bool:
+            if value:
+                return True
+            continue
+        if type(value) is int:
+            if value == 1:
+                return True
+            continue
+        if (
+            isinstance(value, str)
+            and value.strip().casefold() in _LOGOUT_ACCEPTED_STATES
+        ):
+            return True
     return False
 
 
@@ -3711,13 +5117,33 @@ def _has_capability_evidence(
         except SpeedportUnsupportedError:
             return False
         return True
+    if capability.family == "dect_status":
+        try:
+            _require_dect_scan_active(data)
+        except SpeedportUnsupportedError:
+            return False
+        return True
+    strict_collections = {
+        "dect": _strict_dect_handset_rows,
+        "dect_repeater": _strict_dect_repeater_rows,
+        "voip_lines": _strict_voip_line_rows,
+        "voip_providers": _strict_voip_provider_rows,
+        "pbx_clients": _strict_ip_pbx_client_rows,
+        "phonebook": _strict_phonebook_rows,
+        "nas_folders": _strict_nas_share_rows,
+    }
+    strict_collection = strict_collections.get(capability.family)
+    if strict_collection is not None:
+        try:
+            rows = strict_collection(data)
+            if capability.family == "phonebook":
+                _require_complete_phonebook_result(data, rows)
+        except SpeedportUnsupportedError:
+            return False
+        return True
     if not capability.evidence_keys:
         return True
     keys = tuple(_iter_mapping_keys(data))
-    if capability.family == "pbx_clients":
-        return bool({"addipclient", "ipclient_status"} & set(keys))
-    if capability.family == "phonebook":
-        return bool({"addbookentry", "num_entries"} & set(keys))
     return any(
         evidence.casefold() in key
         for evidence in capability.evidence_keys

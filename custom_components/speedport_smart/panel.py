@@ -38,7 +38,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 19
+PANEL_SCHEMA_VERSION: Final = 20
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -479,6 +479,7 @@ def _entry_panel_data(
     management: dict[str, Any] | None = None
     access_sources: list[dict[str, Any]] = []
     capability_families: list[dict[str, str]] = []
+    admin_actions: list[dict[str, Any]] = []
     if hub is not None:
         identity = hub.router_identity
         model = identity.model
@@ -490,6 +491,9 @@ def _entry_panel_data(
             management = _management_panel_data(hub)
             access_sources = source_data
             capability_families = family_data
+            action_metadata = getattr(hub, "admin_actions_metadata", None)
+            if callable(action_metadata):
+                admin_actions = action_metadata()
         else:
             access_sources = _permission_scoped_access_sources(source_data, entities)
             if any(
@@ -508,6 +512,7 @@ def _entry_panel_data(
         "access_sources": access_sources,
         "capabilities": capabilities,
         "capability_families": capability_families,
+        "admin_actions": admin_actions,
         "entities": entities,
     }
 
@@ -763,13 +768,16 @@ def _management_panel_data(hub: SpeedportHub) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {
             "state": "unavailable",
+            "generation": 0,
             "browser_logout_required": False,
             "controls_available": False,
             "retry_after_seconds": None,
             "last_successful_update": None,
         }
+    generation = value.get("generation", 0)
     return {
         "state": value.get("state", "unknown"),
+        "generation": generation if type(generation) is int and generation >= 0 else 0,
         "browser_logout_required": bool(value.get("browser_logout_required", False)),
         "controls_available": hub.management_controls_available,
         "retry_after_seconds": value.get("retry_after_seconds"),

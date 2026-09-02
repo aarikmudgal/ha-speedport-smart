@@ -1248,6 +1248,8 @@ def test_mesh_exact_topology_fields_are_bounded() -> None:
                     "mesh_downspeed": "1200000000",
                     "mesh_upspeed": "600000000",
                     "mesh_ipv4": "192.168.2.2",
+                    "mesh_mac_wlan": "AA-BB-CC-DD-EE-01",
+                    "mesh_mac_wlan5": "AA-BB-CC-DD-EE-02",
                     "mesh_lan1": "1000000000",
                     "mesh_lan2": "0",
                     "mesh_use_wlan": "1",
@@ -1266,6 +1268,8 @@ def test_mesh_exact_topology_fields_are_bounded() -> None:
         "medium": "wifi_5",
         "device_type": 2,
         "ipv4": "192.168.2.2",
+        "wifi_2_4_mac": "AA:BB:CC:DD:EE:01",
+        "wifi_5_mac": "AA:BB:CC:DD:EE:02",
         "wifi_enabled": True,
         "download_link_speed_bps": 1_200_000_000,
         "upload_link_speed_bps": 600_000_000,
@@ -1345,6 +1349,7 @@ def test_usb_tethering_and_nas_keep_admin_inventory_without_credentials() -> Non
         "storage_device_count": 1,
         "storage_items": [
             {
+                "serial": "PRIVATE-DISK-SERIAL",
                 "name": "PRIVATE-DISK-NAME",
                 "storage_type": "NAS",
                 "total_bytes": 2_097_152,
@@ -1358,7 +1363,6 @@ def test_usb_tethering_and_nas_keep_admin_inventory_without_credentials() -> Non
     }
     rendered = repr(nas)
     for private_value in (
-        "PRIVATE-DISK-SERIAL",
         "/PRIVATE/PATH",
         "PRIVATE-NAS-USER",
     ):
@@ -1726,6 +1730,66 @@ def test_telephony_management_keeps_admin_rows_without_numbers_or_credentials() 
         assert private_value not in rendered
 
 
+def test_exact_automatic_telephony_families_publish_only_safe_rows() -> None:
+    """Exact automatic endpoint families reach their reviewed normalizers."""
+    telephony = normalize_feature_payload(
+        "voip_providers",
+        {
+            "addipphoneprovider": [
+                {
+                    "id": "provider-1",
+                    "isp_selection": "42",
+                    "provider_name": "PRIVATE-PROVIDER-NAME",
+                    "username": "PRIVATE-VOIP-USERNAME",
+                    "password": "PRIVATE-VOIP-PASSWORD",
+                    "phone_number": "+49 30 123456",
+                }
+            ]
+        },
+    )["telephony"]
+    pbx = normalize_feature_payload(
+        "pbx_clients",
+        {
+            "addipclient": [
+                {
+                    "id": "client-1",
+                    "ipclient_status": "1",
+                    "ipclient_mdevice_name": "Desk phone",
+                    "ipclient_mdevice_ipv4": "192.168.2.10",
+                    "ipclient_mdevice_mac": "AA-BB-CC-DD-EE-FF",
+                    "ipclient_username": "PRIVATE-PBX-USERNAME",
+                    "ipclient_password": "PRIVATE-PBX-PASSWORD",
+                }
+            ]
+        },
+    )["pbx"]
+
+    assert telephony == {
+        "provider_count": 1,
+        "providers": [{"id": "provider-1", "provider_code": 42}],
+    }
+    assert pbx["configured_client_count"] == 1
+    assert pbx["clients"] == [
+        {
+            "id": "client-1",
+            "status": "registered",
+            "name": "Desk phone",
+            "ipv4": "192.168.2.10",
+            "mac": "AA:BB:CC:DD:EE:FF",
+        }
+    ]
+    rendered = repr((telephony, pbx))
+    for secret in (
+        "PRIVATE-PROVIDER-NAME",
+        "PRIVATE-VOIP-USERNAME",
+        "PRIVATE-VOIP-PASSWORD",
+        "+49 30 123456",
+        "PRIVATE-PBX-USERNAME",
+        "PRIVATE-PBX-PASSWORD",
+    ):
+        assert secret not in rendered
+
+
 def test_voip_error_code_requires_opaque_stable_line_identity() -> None:
     """A status error may attach only to a non-dialable stable line row."""
     lines = normalize_feature_payload(
@@ -1821,6 +1885,7 @@ def test_voip_lines_keep_status_not_phone_numbers() -> None:
                     "ip_number": "+49 30 123456",
                     "number_status": "warning",
                     "isp_selection": "99",
+                    "template_id": "provider-1",
                     "connection_failure_code": "403",
                     "connection_failure_reason": "registration rejected",
                     "sip_password": "PRIVATE-SIP-PASSWORD",
@@ -1837,6 +1902,7 @@ def test_voip_lines_keep_status_not_phone_numbers() -> None:
             "id": "line-1",
             "status": "warning",
             "provider_code": 99,
+            "provider_id": "provider-1",
             "error_code": "403",
         },
         {"id": "line-2"},
@@ -1898,6 +1964,7 @@ def test_nas_admin_inventory_excludes_credentials() -> None:
         {
             "addnasdevice": [
                 {
+                    "serial": "DISK-SERIAL-1",
                     "nas_device_name": "Backup SSD",
                     "nas_device_type": "NAS",
                     "nas_device_connection": "USB",
@@ -1910,6 +1977,7 @@ def test_nas_admin_inventory_excludes_credentials() -> None:
                 {"mediareplay_active": "0", "path": "/private/archive"},
             ],
             "nas_active": "1",
+            "sid": "share-1",
             "nas_folder_name": "/mnt/backup",
             "nas_folder_nur_lesen": "1",
             "nas_secure": "1",
@@ -1920,6 +1988,7 @@ def test_nas_admin_inventory_excludes_credentials() -> None:
 
     assert usb["storage_items"] == [
         {
+            "serial": "DISK-SERIAL-1",
             "name": "Backup SSD",
             "storage_type": "NAS",
             "connection": "USB",
@@ -1932,6 +2001,7 @@ def test_nas_admin_inventory_excludes_credentials() -> None:
     assert usb["active_media_share_count"] == 1
     assert usb["shares"] == [
         {
+            "id": "share-1",
             "name": "/mnt/backup",
             "enabled": True,
             "read_only": True,
@@ -1951,6 +2021,7 @@ def test_nas_folder_flags_stay_scoped_to_an_identified_share() -> None:
         "nas_folders",
         {
             "nas_active": "1",
+            "sid": "share-1",
             "nas_folder_name": "/mnt/backup",
             "nas_folder_nur_lesen": "1",
             "nas_secure": "1",
@@ -1961,6 +2032,7 @@ def test_nas_folder_flags_stay_scoped_to_an_identified_share() -> None:
         "usb": {
             "shares": [
                 {
+                    "id": "share-1",
                     "name": "/mnt/backup",
                     "enabled": True,
                     "read_only": True,
@@ -1969,6 +2041,19 @@ def test_nas_folder_flags_stay_scoped_to_an_identified_share() -> None:
             ]
         }
     }
+
+
+def test_nas_folder_empty_sentinel_does_not_create_phantom_share() -> None:
+    """The firmware's flat -1 sentinel is an explicit empty inventory."""
+    assert normalize_feature_payload(
+        "nas_folders",
+        {
+            "sid": "-1",
+            "nas_active": "1",
+            "nas_folder_nur_lesen": "1",
+            "nas_secure": "1",
+        },
+    ) == {"usb": {"shares": []}}
 
 
 def test_media_server_normalizer_is_scoped_to_safe_summary_counts() -> None:
@@ -2004,6 +2089,7 @@ def test_vpn_rows_derive_connection_without_retaining_address_or_secrets() -> No
         {
             "addvpn": [
                 {
+                    "id": "peer-1",
                     "vpn_name": "Road warrior",
                     "vpn_status": "1",
                     "vpn_userip": "192.0.2.50",
@@ -2011,6 +2097,7 @@ def test_vpn_rows_derive_connection_without_retaining_address_or_secrets() -> No
                     "vpn_key": "PRIVATE-VPN-KEY",
                 },
                 {
+                    "id": "peer-2",
                     "vpn_name": "Tablet",
                     "vpn_status": "0",
                     "vpn_userip": "",
@@ -2020,14 +2107,65 @@ def test_vpn_rows_derive_connection_without_retaining_address_or_secrets() -> No
     )["vpn"]
 
     assert vpn["peers"] == [
-        {"name": "Road warrior", "enabled": True, "connected": True},
-        {"name": "Tablet", "enabled": False, "connected": False},
+        {
+            "id": "peer-1",
+            "name": "Road warrior",
+            "enabled": True,
+            "connected": True,
+        },
+        {"id": "peer-2", "name": "Tablet", "enabled": False, "connected": False},
     ]
     assert vpn["connected_peer_count"] == 1
     rendered = repr(vpn)
     assert "192.0.2.50" not in rendered
     assert "PRIVATE-VPN-PASSWORD" not in rendered
     assert "PRIVATE-VPN-KEY" not in rendered
+
+
+def test_admin_identifiers_fail_closed_for_unreviewed_shapes() -> None:
+    """Malformed or identity-like private values never pass exact field parsers."""
+    mesh = normalize_feature_payload(
+        "mesh",
+        {
+            "addmeshdevice": [
+                {
+                    "id": "mesh-1",
+                    "mesh_mac_wlan": "not-a-mac",
+                    "mesh_mac_wlan5": {"unexpected": "shape"},
+                }
+            ]
+        },
+    )["mesh"]["nodes"][0]
+    vpn = normalize_feature_payload(
+        "vpn_details",
+        {"addvpn": [{"id": "x" * 300, "vpn_status": "1"}]},
+    )["vpn"]["peers"][0]
+    telephony = normalize_feature_payload(
+        "telephony",
+        {
+            "addipnumber": [
+                {
+                    "id": "line-1",
+                    "template_id": "+49 30 123456",
+                    "number_status": "ok",
+                }
+            ]
+        },
+    )["telephony"]["numbers"][0]
+    usb = normalize_feature_payload(
+        "nas",
+        {
+            "addnasdevice": [{"nas_device_name": "Disk", "serial": "x" * 300}],
+            "addnasfolder": [{"nas_folder_name": "Share", "sid": "x" * 300}],
+        },
+    )["usb"]
+
+    assert "wifi_2_4_mac" not in mesh
+    assert "wifi_5_mac" not in mesh
+    assert "id" not in vpn
+    assert "provider_id" not in telephony
+    assert "serial" not in usb["storage_items"][0]
+    assert "id" not in usb["shares"][0]
 
 
 def test_client_time_fields_are_not_router_global() -> None:

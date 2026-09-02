@@ -60,7 +60,15 @@ _IDENTIFIER_KEY_PARTS = frozenset(
     }
 )
 _IDENTIFIER_KEYS = frozenset(
-    {"device_id", "id", "router_id", "source_row_id", "uid", "uuid"}
+    {
+        "device_id",
+        "id",
+        "provider_id",
+        "router_id",
+        "source_row_id",
+        "uid",
+        "uuid",
+    }
 )
 _CHILD_LABEL_KEYS = frozenset(
     {
@@ -148,6 +156,7 @@ _PHONE_KEYS = frozenset({"callee", "destination", "number", "phone", "telephone"
 _RAW_LOG_KEYS = frozenset({"event_log", "logs", "security_log", "system_log"})
 _UNTRUSTED_TEXT_KEYS = frozenset(
     {
+        "error_code",
         "error_reason",
         "failure_reason",
         "message",

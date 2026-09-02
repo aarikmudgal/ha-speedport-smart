@@ -165,6 +165,10 @@ class ManagementVerificationCadence(StrEnum):
     SLOW = "slow"
 
 
+_MAX_EXACT_READBACK_RETRIES: Final = 3
+_MAX_EXACT_READBACK_DELAY_SECONDS: Final = 2.0
+
+
 @dataclass(frozen=True, slots=True)
 class ManagementReadbackIdentity:
     """Map one command parameter to one normalized collection identity field."""
@@ -190,6 +194,8 @@ class ManagementVerificationPolicy:
     expected_parameter: str | None = None
     collection_value_field: str | None = None
     collection_identity: tuple[ManagementReadbackIdentity, ...] = ()
+    readback_families: tuple[str, ...] = ()
+    readback_retry_delays: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         """Require a concrete group and path for every immediate readback."""
@@ -198,11 +204,18 @@ class ManagementVerificationPolicy:
                 self.cadence is None
                 or len(self.readback_paths) != 1
                 or self.expected_parameter is None
+                or not self.readback_families
             ):
                 msg = (
-                    "Exact verification requires one readback path, a cadence, "
-                    "and an expected parameter"
+                    "Exact verification requires one readback path, at least one "
+                    "readback family, a cadence, and an expected parameter"
                 )
+                raise ValueError(msg)
+            if len(set(self.readback_families)) != len(self.readback_families) or any(
+                not family.isidentifier() or family.casefold() != family
+                for family in self.readback_families
+            ):
+                msg = "Exact verification readback families must be unique identifiers"
                 raise ValueError(msg)
             if self.collection_value_field is None and self.collection_identity:
                 msg = "Scalar verification cannot declare collection identity"
@@ -210,10 +223,23 @@ class ManagementVerificationPolicy:
             if self.collection_value_field is not None and not self.collection_identity:
                 msg = "Collection verification requires stable identity fields"
                 raise ValueError(msg)
+            if len(self.readback_retry_delays) > _MAX_EXACT_READBACK_RETRIES or any(
+                type(delay) not in {int, float}
+                or not 0 <= delay <= _MAX_EXACT_READBACK_DELAY_SECONDS
+                for delay in self.readback_retry_delays
+            ):
+                msg = (
+                    "Exact verification retry schedule requires at most three "
+                    "delays between zero and two seconds"
+                )
+                raise ValueError(msg)
             return
         if self.strategy is ManagementVerificationStrategy.REFRESH_ONLY:
             if self.cadence is None or not self.readback_paths:
                 msg = "Refresh-only verification requires a cadence and readback path"
+                raise ValueError(msg)
+            if self.readback_families or self.readback_retry_delays:
+                msg = "Refresh-only verification cannot declare exact readback metadata"
                 raise ValueError(msg)
             if (
                 self.expected_parameter is not None
@@ -229,6 +255,8 @@ class ManagementVerificationPolicy:
             or self.expected_parameter is not None
             or self.collection_value_field is not None
             or self.collection_identity
+            or self.readback_families
+            or self.readback_retry_delays
         ):
             msg = "Deferred verification cannot declare immediate readback metadata"
             raise ValueError(msg)
@@ -424,6 +452,7 @@ _SHA256_INPUT: Final = ManagementInputSpec(
     maximum=64,
     string_format=ManagementStringFormat.LOWERCASE_SHA256,
 )
+_EXACT_READBACK_RETRY_DELAYS: Final = (0.5, 0.5, 1.0)
 
 
 def _exact(
@@ -431,6 +460,7 @@ def _exact(
     readback_path: str,
     expected_parameter: str,
     *,
+    readback_families: tuple[str, ...],
     collection_value_field: str | None = None,
     collection_identity: tuple[ManagementReadbackIdentity, ...] = (),
 ) -> ManagementVerificationPolicy:
@@ -442,6 +472,8 @@ def _exact(
         expected_parameter=expected_parameter,
         collection_value_field=collection_value_field,
         collection_identity=collection_identity,
+        readback_families=readback_families,
+        readback_retry_delays=_EXACT_READBACK_RETRY_DELAYS,
     )
 
 
@@ -529,6 +561,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "clients.items",
             "name",
+            readback_families=("clients",),
             collection_value_field="name",
             collection_identity=_MANAGED_CLIENT_READBACK_IDENTITY,
         ),
@@ -551,6 +584,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "clients.items",
             "enabled",
+            readback_families=("clients",),
             collection_value_field="fixed_dhcp",
             collection_identity=_MANAGED_CLIENT_READBACK_IDENTITY,
         ),
@@ -569,6 +603,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "wifi.guest.enabled",
             "enabled",
+            readback_families=("wifi",),
         ),
         risk=ManagementRisk.SENSITIVE,
         confirmation=ManagementConfirmation.CONFIRM,
@@ -584,6 +619,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "hybrid.enabled",
             "enabled",
+            readback_families=("hybrid",),
         ),
         risk=ManagementRisk.DISRUPTIVE,
         confirmation=ManagementConfirmation.CONFIRM,
@@ -599,6 +635,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.SLOW,
             "internet.privacy_level",
             "level",
+            readback_families=("connection_privacy",),
         ),
         risk=ManagementRisk.DISRUPTIVE,
         confirmation=ManagementConfirmation.CONFIRM,
@@ -614,6 +651,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "wifi.office.enabled",
             "enabled",
+            readback_families=("wifi",),
         ),
         risk=ManagementRisk.SENSITIVE,
         confirmation=ManagementConfirmation.CONFIRM,
@@ -629,6 +667,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "wifi.enabled",
             "enabled",
+            readback_families=("wifi",),
         ),
         risk=ManagementRisk.LOCKOUT,
         confirmation=ManagementConfirmation.TYPED,
@@ -644,6 +683,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.NORMAL,
             "receiver.led_mode",
             "mode",
+            readback_families=("receiver_led",),
         ),
         risk=ManagementRisk.NORMAL,
         confirmation=ManagementConfirmation.NONE,
@@ -677,6 +717,7 @@ _CONTRACTS: Final = (
             ManagementVerificationCadence.SLOW,
             "nat.port_forward_rules",
             "enabled",
+            readback_families=("nat", "port_forwarding"),
             collection_value_field="active",
             collection_identity=_PORT_FORWARD_READBACK_IDENTITY,
         ),

@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=19";
+import { keepDialogFocus } from "./accessibility.js?schema=20";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -13,22 +13,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=19";
+} from "./controls.js?schema=20";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=19";
+} from "./entity-state.js?schema=20";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=19";
+} from "./render-state.js?schema=20";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=19";
+} from "./translations.js?schema=20";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -50,7 +50,170 @@ const ADMIN_PRIVATE_QUERY_PBX_STATUSES = Object.freeze([
   "registered",
   "locked",
 ]);
-const PANEL_SCHEMA_VERSION = 19;
+const ADMIN_ACTION_SCHEMA_VERSION = 1;
+const ADMIN_ACTION_MAX_DECT_TARGETS = 16;
+const ADMIN_ACTION_MAX_VOIP_TARGETS = 32;
+const ADMIN_ACTION_TOKEN = /^[a-f0-9]{32}$/;
+const ADMIN_ACTION_MAX_HANDSET_NAME_LENGTH = 64;
+const ADMIN_ACTION_VOIP_NUMBER_SUFFIX = /^[0-9]{4}$/;
+const ADMIN_ACTION_UNAVAILABLE_REASONS = new Set([
+  "controls_disabled",
+  "unsupported_firmware",
+  "capability_not_proven",
+  "implementation_unavailable",
+  "management_unavailable",
+]);
+export const ADMIN_ACTION_INFO = Object.freeze({
+  dect_handset_enroll: Object.freeze({
+    apiType: `${API_TYPE}/action/dect_handset_enroll`,
+    featureId: "telephony_dect_handset_enrollment",
+    icon: "mdi:phone-plus-outline",
+    confirmation: "confirm",
+    typedConfirmation: null,
+    prerequisite: null,
+    targetQuery: null,
+    targetTokenTtlSeconds: null,
+    risk: "sensitive",
+  }),
+  dect_repeater_enroll: Object.freeze({
+    apiType: `${API_TYPE}/action/dect_repeater_enroll`,
+    featureId: "telephony_dect_repeater_enrollment",
+    icon: "mdi:access-point-plus",
+    confirmation: "confirm",
+    typedConfirmation: null,
+    prerequisite: "dect_repeater_requirements",
+    targetQuery: null,
+    targetTokenTtlSeconds: null,
+    risk: "sensitive",
+  }),
+  dect_handset_set_paging: Object.freeze({
+    apiType: `${API_TYPE}/action/dect_handset_set_paging`,
+    featureId: "telephony_dect_handset_paging",
+    icon: "mdi:bell-ring-outline",
+    confirmation: "confirm",
+    typedConfirmation: null,
+    prerequisite: null,
+    targetQuery: "dect_handset_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 16,
+    risk: "sensitive",
+  }),
+  voip_line_set_active: Object.freeze({
+    apiType: `${API_TYPE}/action/voip_line_set_active`,
+    featureId: "telephony_number_activation",
+    icon: "mdi:phone-check-outline",
+    confirmation: "confirm",
+    typedConfirmation: null,
+    prerequisite: null,
+    targetQuery: "voip_line_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 32,
+    risk: "disruptive",
+  }),
+  dect_handset_disconnect: Object.freeze({
+    apiType: `${API_TYPE}/action/dect_handset_disconnect`,
+    featureId: "telephony_dect_handset_disconnect",
+    icon: "mdi:phone-remove-outline",
+    confirmation: "typed",
+    typedConfirmation: "DISCONNECT DECT HANDSET",
+    prerequisite: null,
+    targetQuery: "dect_handset_disconnect_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 16,
+    risk: "destructive",
+  }),
+  dect_repeater_disconnect: Object.freeze({
+    apiType: `${API_TYPE}/action/dect_repeater_disconnect`,
+    featureId: "telephony_dect_repeater_disconnect",
+    icon: "mdi:access-point-remove",
+    confirmation: "typed",
+    typedConfirmation: "DISCONNECT DECT REPEATER",
+    prerequisite: null,
+    targetQuery: "dect_repeater_disconnect_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 16,
+    risk: "destructive",
+  }),
+  voip_provider_delete: Object.freeze({
+    apiType: `${API_TYPE}/action/voip_provider_delete`,
+    featureId: "telephony_provider_delete",
+    icon: "mdi:account-remove-outline",
+    confirmation: "typed",
+    typedConfirmation: "DELETE VOIP PROVIDER",
+    prerequisite: null,
+    targetQuery: "voip_provider_delete_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 32,
+    risk: "destructive",
+  }),
+  voip_line_delete: Object.freeze({
+    apiType: `${API_TYPE}/action/voip_line_delete`,
+    featureId: "telephony_number_delete",
+    icon: "mdi:phone-minus-outline",
+    confirmation: "typed",
+    typedConfirmation: "DELETE VOIP NUMBER",
+    prerequisite: null,
+    targetQuery: "voip_line_delete_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 32,
+    risk: "destructive",
+  }),
+  ip_pbx_client_delete: Object.freeze({
+    apiType: `${API_TYPE}/action/ip_pbx_client_delete`,
+    featureId: "telephony_ip_pbx_client_delete",
+    icon: "mdi:account-minus-outline",
+    confirmation: "typed",
+    typedConfirmation: "DELETE IP PBX CLIENT",
+    prerequisite: null,
+    targetQuery: "ip_pbx_client_delete_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 32,
+    risk: "destructive",
+  }),
+  phonebook_entry_delete: Object.freeze({
+    apiType: `${API_TYPE}/action/phonebook_entry_delete`,
+    featureId: "telephony_phonebook_entry_delete",
+    icon: "mdi:book-remove-outline",
+    confirmation: "typed",
+    typedConfirmation: "DELETE PHONEBOOK ENTRY",
+    prerequisite: null,
+    targetQuery: "phonebook_entry_delete_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 32,
+    risk: "destructive",
+  }),
+  nas_share_delete: Object.freeze({
+    apiType: `${API_TYPE}/action/nas_share_delete`,
+    featureId: "storage_nas_share_delete",
+    icon: "mdi:folder-remove-outline",
+    confirmation: "typed",
+    typedConfirmation: "DELETE NAS SHARE",
+    prerequisite: null,
+    targetQuery: "nas_share_delete_targets",
+    targetTokenTtlSeconds: 60,
+    maxTargets: 32,
+    risk: "destructive",
+  }),
+});
+const DESTRUCTIVE_ADMIN_ACTION_IDS = Object.freeze(
+  Object.keys(ADMIN_ACTION_INFO).filter(
+    (actionId) => ADMIN_ACTION_INFO[actionId].risk === "destructive",
+  ),
+);
+const ADMIN_ACTION_BY_FEATURE_ID = new Map(
+  Object.entries(ADMIN_ACTION_INFO).map(([actionId, info]) => [
+    info.featureId,
+    actionId,
+  ]),
+);
+const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
+  "disconnected",
+  "registered",
+  "locked",
+]);
+const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
+const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
+const PANEL_SCHEMA_VERSION = 20;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -283,6 +446,8 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "device_type",
       "medium",
       "ipv4",
+      "wifi_2_4_mac",
+      "wifi_5_mac",
       "wifi_enabled",
       ...ADMIN_TRAFFIC_FIELDS,
       "signal_dbm",
@@ -325,7 +490,7 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
   vpn_peers: {
     titleKey: "admin.section.vpn_peers",
     icon: "mdi:vpn",
-    fields: ["name", "enabled", "connected", "last_handshake"],
+    fields: ["id", "name", "enabled", "connected", "last_handshake"],
   },
   telephony_providers: {
     titleKey: "admin.section.telephony_providers",
@@ -344,6 +509,7 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "id",
       "status",
       "provider_code",
+      "provider_id",
       "error_code",
     ],
   },
@@ -423,6 +589,7 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
     icon: "mdi:harddisk",
     fields: [
       "name",
+      "serial",
       "storage_type",
       "connection",
       "total_bytes",
@@ -433,7 +600,7 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
   nas_shares: {
     titleKey: "admin.section.nas_shares",
     icon: "mdi:folder-network",
-    fields: ["name", "enabled", "read_only", "secure"],
+    fields: ["id", "name", "enabled", "read_only", "secure"],
   },
   powerline_nodes: {
     titleKey: "admin.section.powerline_nodes",
@@ -561,6 +728,8 @@ function fixedAdminFeature(
     entityGroups = [],
     readSections = [],
     queries = [],
+    adminActions = [],
+    adminActionReplacesBlocked = false,
     capabilities = [],
     risk,
     blockedReasonKey,
@@ -577,6 +746,8 @@ function fixedAdminFeature(
     entityGroups: Object.freeze(entityGroups),
     readSections: Object.freeze(readSections),
     queries: Object.freeze(queries),
+    adminActions: Object.freeze(adminActions),
+    adminActionReplacesBlocked,
     capabilities: Object.freeze(capabilities),
     risk,
     destructive: risk === "destructive",
@@ -768,6 +939,10 @@ export const ADMIN_IA = Object.freeze([
           readSections: ["ddns_identity"],
           capabilities: ["ddns"],
         }),
+        fixedAdminFeature("internet_ddns_configuration_delete", {
+          capabilities: ["ddns"],
+          risk: "destructive",
+        }),
       ],
     }),
   ]),
@@ -794,14 +969,20 @@ export const ADMIN_IA = Object.freeze([
           risk: "sensitive",
         }),
         fixedAdminFeature("telephony_provider_delete", {
+          adminActions: ["voip_provider_delete"],
+          adminActionReplacesBlocked: true,
           capabilities: ["telephony"],
           risk: "destructive",
         }),
         fixedAdminFeature("telephony_number_delete", {
+          adminActions: ["voip_line_delete"],
+          adminActionReplacesBlocked: true,
           capabilities: ["telephony"],
           risk: "destructive",
         }),
         fixedAdminFeature("telephony_number_activation", {
+          contract: "reviewed",
+          adminActions: ["voip_line_set_active"],
           capabilities: ["telephony"],
           risk: "disruptive",
         }),
@@ -878,8 +1059,11 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["dect"],
         }),
         fixedAdminFeature("telephony_dect_handset_enrollment", {
+          contract: "reviewed",
+          adminActions: ["dect_handset_enroll"],
           entityGroups: ["telephony_dect_scan"],
           capabilities: ["dect"],
+          risk: "sensitive",
         }),
         fixedAdminFeature("telephony_dect_handset_configuration", {
           entityGroups: ["telephony_dect_handsets"],
@@ -890,6 +1074,8 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["dect"],
         }),
         fixedAdminFeature("telephony_dect_handset_disconnect", {
+          adminActions: ["dect_handset_disconnect"],
+          adminActionReplacesBlocked: true,
           entityGroups: ["telephony_dect_handsets"],
           readSections: ["dect_handsets"],
           capabilities: ["dect"],
@@ -898,17 +1084,23 @@ export const ADMIN_IA = Object.freeze([
             "admin.feature.blocked_reason.dect_handset_disconnect",
         }),
         fixedAdminFeature("telephony_dect_handset_paging", {
+          contract: "reviewed",
+          adminActions: ["dect_handset_set_paging"],
           entityGroups: ["telephony_dect_paging"],
           capabilities: ["dect"],
-          blockedReasonKey:
-            "admin.feature.blocked_reason.dect_handset_paging",
+          risk: "sensitive",
         }),
         fixedAdminFeature("telephony_dect_repeater_enrollment", {
+          contract: "reviewed",
+          adminActions: ["dect_repeater_enroll"],
           entityGroups: ["telephony_dect_repeaters"],
           readSections: ["dect_repeaters"],
           capabilities: ["dect"],
+          risk: "sensitive",
         }),
         fixedAdminFeature("telephony_dect_repeater_disconnect", {
+          adminActions: ["dect_repeater_disconnect"],
+          adminActionReplacesBlocked: true,
           entityGroups: ["telephony_dect_repeaters"],
           readSections: ["dect_repeaters"],
           capabilities: ["dect"],
@@ -947,6 +1139,12 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["pbx"],
           risk: "destructive",
         }),
+        fixedAdminFeature("telephony_ip_pbx_client_delete", {
+          adminActions: ["ip_pbx_client_delete"],
+          adminActionReplacesBlocked: true,
+          capabilities: ["pbx"],
+          risk: "destructive",
+        }),
       ],
     }),
     fixedAdminSubsection({
@@ -973,6 +1171,12 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["telephony_phonebooks"],
           queries: ["phonebook_search"],
           capabilities: ["telephony", "phonebook"],
+        }),
+        fixedAdminFeature("telephony_phonebook_entry_delete", {
+          adminActions: ["phonebook_entry_delete"],
+          adminActionReplacesBlocked: true,
+          capabilities: ["telephony", "phonebook"],
+          risk: "destructive",
         }),
       ],
     }),
@@ -1218,6 +1422,12 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["system_nas", "system_usb"],
           readSections: ["nas_shares", "storage_devices"],
           capabilities: ["usb", "nas"],
+        }),
+        fixedAdminFeature("storage_nas_share_delete", {
+          adminActions: ["nas_share_delete"],
+          adminActionReplacesBlocked: true,
+          capabilities: ["usb", "nas"],
+          risk: "destructive",
         }),
         fixedAdminFeature("network_media_folders", {
           entityGroups: ["system_nas", "system_usb"],
@@ -1547,13 +1757,8 @@ const CAPABILITY_GROUP_INFO = {
   controls_wireless: { titleKey: "group.controls_wireless", icon: "mdi:wifi-cog" },
   controls_internet: { titleKey: "group.controls_internet", icon: "mdi:web-sync" },
   controls_mobile: { titleKey: "group.controls_mobile", icon: "mdi:signal-5g" },
-  controls_mesh: { titleKey: "group.controls_mesh", icon: "mdi:access-point-network" },
   controls_clients: { titleKey: "group.controls_clients", icon: "mdi:account-lock-outline" },
   controls_forwarding: { titleKey: "group.controls_forwarding", icon: "mdi:router-network" },
-  controls_ddns: { titleKey: "group.controls_ddns", icon: "mdi:dns-outline" },
-  controls_vpn: { titleKey: "group.controls_vpn", icon: "mdi:vpn" },
-  controls_parental: { titleKey: "group.controls_parental", icon: "mdi:account-child-outline" },
-  controls_media: { titleKey: "group.controls_media", icon: "mdi:multimedia" },
   controls_system: { titleKey: "group.controls_system", icon: "mdi:power-cycle" },
   controls_session: { titleKey: "group.controls_session", icon: "mdi:account-sync-outline" },
   controls_diagnostics: { titleKey: "group.controls_diagnostics", icon: "mdi:database-search-outline" },
@@ -1568,7 +1773,7 @@ const CAPABILITY_GROUP_ORDER = {
   telephony: ["telephony_registration", "telephony_calls", "telephony_lines", "telephony_dect", "telephony_dect_base", "telephony_dect_scan", "telephony_dect_paging", "telephony_dect_handsets", "telephony_dect_repeaters", "telephony_pbx", "telephony_voip", "telephony_call_encryption", "telephony_hd_voice", "telephony_ip", "telephony_phonebooks"],
   system: ["system_health", "system_firmware", "system_support", "system_easysupport", "system_easysupport_firmware", "system_remote_support", "system_security", "system_security_dns", "system_security_port_block", "system_security_qos", "system_ddns", "system_vpn", "system_parental", "system_usb", "system_usb_tethering", "system_nas", "system_services", "system_local_display"],
   management: ["management_session", "management_health"],
-  controls: ["controls_session", "controls_diagnostics", "controls_wireless", "controls_internet", "controls_mobile", "controls_mesh", "controls_clients", "controls_forwarding", "controls_ddns", "controls_vpn", "controls_parental", "controls_media", "controls_system"],
+  controls: ["controls_session", "controls_diagnostics", "controls_wireless", "controls_internet", "controls_mobile", "controls_clients", "controls_forwarding", "controls_system"],
 };
 
 const ESCAPE_MAP = {
@@ -1670,6 +1875,390 @@ export function normalizeAdminReadPayload(payload, entryId) {
     schema_version: ADMIN_READ_SCHEMA_VERSION,
     entry_id: entryId,
     sections,
+  };
+}
+
+function hasExactKeys(value, expected) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join("\u0000") === [...expected].sort().join("\u0000")
+  );
+}
+
+function adminActionToken(value) {
+  return typeof value === "string" && ADMIN_ACTION_TOKEN.test(value)
+    ? value
+    : undefined;
+}
+
+/** Normalize only the closed administrator-action advertisements understood here. */
+export function normalizeAdminActionMetadata(value) {
+  const actions = new Map();
+  if (!Array.isArray(value) || value.length > Object.keys(ADMIN_ACTION_INFO).length) {
+    return actions;
+  }
+  for (const raw of value) {
+    const info = Object.hasOwn(ADMIN_ACTION_INFO, raw?.id)
+      ? ADMIN_ACTION_INFO[raw.id]
+      : undefined;
+    const reasonValid =
+      raw?.available === true
+        ? raw.unavailable_reason === null
+        : ADMIN_ACTION_UNAVAILABLE_REASONS.has(raw?.unavailable_reason);
+    if (
+      !info ||
+      actions.has(raw.id) ||
+      raw.feature_id !== info.featureId ||
+      typeof raw.supported !== "boolean" ||
+      typeof raw.available !== "boolean" ||
+      (raw.available && !raw.supported) ||
+      raw.risk !== info.risk ||
+      raw.confirmation !== info.confirmation ||
+      raw.typed_confirmation !== info.typedConfirmation ||
+      (raw.confirmation === "confirm"
+        ? raw.typed_confirmation !== null
+        : typeof raw.typed_confirmation !== "string" ||
+          raw.typed_confirmation.length < 8 ||
+          raw.typed_confirmation.length > 64 ||
+          !/^[\x20-\x7E]+$/.test(raw.typed_confirmation)) ||
+      raw.prerequisite !== info.prerequisite ||
+      raw.prerequisite_confirmation_required !==
+        (info.prerequisite !== null) ||
+      raw.target_query !== info.targetQuery ||
+      raw.target_token_ttl_seconds !== info.targetTokenTtlSeconds ||
+      !reasonValid
+    ) {
+      continue;
+    }
+    actions.set(
+      raw.id,
+      Object.freeze({
+        id: raw.id,
+        feature_id: raw.feature_id,
+        supported: raw.supported,
+        available: raw.available,
+        unavailable_reason: raw.unavailable_reason,
+        risk: raw.risk,
+        confirmation: raw.confirmation,
+        typed_confirmation: raw.typed_confirmation,
+        prerequisite: raw.prerequisite,
+        prerequisite_confirmation_required:
+          raw.prerequisite_confirmation_required,
+        target_query: raw.target_query,
+        target_token_ttl_seconds: raw.target_token_ttl_seconds,
+      }),
+    );
+  }
+  return actions;
+}
+
+/** Build one exact, fixed WebSocket action request. */
+export function adminActionRequest(
+  actionId,
+  entryId,
+  parameters = {},
+  confirmationText,
+) {
+  const info = Object.hasOwn(ADMIN_ACTION_INFO, actionId)
+    ? ADMIN_ACTION_INFO[actionId]
+    : undefined;
+  if (
+    !info ||
+    typeof entryId !== "string" ||
+    entryId.length === 0 ||
+    entryId.length > 64
+  ) {
+    return undefined;
+  }
+  let typedConfirmation = {};
+  if (info.confirmation === "typed") {
+    if (
+      typeof confirmationText !== "string" ||
+      confirmationText !== info.typedConfirmation ||
+      confirmationText.length < 8 ||
+      confirmationText.length > 64 ||
+      !/^[\x20-\x7E]+$/.test(confirmationText)
+    ) {
+      return undefined;
+    }
+    typedConfirmation = { confirmation_text: confirmationText };
+  } else if (confirmationText !== undefined) {
+    return undefined;
+  }
+  const base = {
+    type: info.apiType,
+    entry_id: entryId,
+    confirmed: true,
+    ...typedConfirmation,
+  };
+  if (actionId === "dect_handset_enroll" && hasExactKeys(parameters, [])) {
+    return base;
+  }
+  if (
+    actionId === "dect_repeater_enroll" &&
+    hasExactKeys(parameters, [
+      "pin_is_default",
+      "full_power_enabled",
+      "full_eco_disabled",
+    ]) &&
+    parameters.pin_is_default === true &&
+    parameters.full_power_enabled === true &&
+    parameters.full_eco_disabled === true
+  ) {
+    return {
+      ...base,
+      pin_is_default: true,
+      full_power_enabled: true,
+      full_eco_disabled: true,
+    };
+  }
+  if (
+    actionId === "dect_handset_set_paging" &&
+    hasExactKeys(parameters, ["target_token", "enabled"]) &&
+    adminActionToken(parameters.target_token) &&
+    typeof parameters.enabled === "boolean"
+  ) {
+    return {
+      ...base,
+      target_token: parameters.target_token,
+      enabled: parameters.enabled,
+    };
+  }
+  if (
+    actionId === "voip_line_set_active" &&
+    hasExactKeys(parameters, ["target_token", "active"]) &&
+    adminActionToken(parameters.target_token) &&
+    typeof parameters.active === "boolean"
+  ) {
+    return {
+      ...base,
+      target_token: parameters.target_token,
+      active: parameters.active,
+    };
+  }
+  if (
+    info.risk === "destructive" &&
+    info.targetQuery &&
+    hasExactKeys(parameters, ["target_token"]) &&
+    adminActionToken(parameters.target_token)
+  ) {
+    return {
+      ...base,
+      target_token: parameters.target_token,
+    };
+  }
+  return undefined;
+}
+
+/** Verify an action acknowledgement without retaining router response data. */
+export function normalizeAdminActionResult(payload, actionId, expectedActive) {
+  if (
+    payload?.schema_version !== ADMIN_ACTION_SCHEMA_VERSION ||
+    payload?.action !== actionId
+  ) {
+    return false;
+  }
+  if (
+    actionId === "dect_handset_enroll" ||
+    actionId === "dect_repeater_enroll"
+  ) {
+    return (
+      payload?.result?.status === "verified" &&
+      payload.result.lifecycle === "scan_active"
+    );
+  }
+  if (ADMIN_ACTION_INFO[actionId]?.risk === "destructive") {
+    return (
+      ["verified", "unchanged"].includes(payload?.result?.status) &&
+      payload.result.deleted === true
+    );
+  }
+  return (
+    ["dect_handset_set_paging", "voip_line_set_active"].includes(actionId) &&
+    ["verified", "unchanged"].includes(payload?.result?.status) &&
+    typeof expectedActive === "boolean" &&
+    payload.result.active === expectedActive
+  );
+}
+
+/** Normalize the bounded, ephemeral DECT paging target query. */
+export function normalizeDectHandsetTargets(payload) {
+  if (
+    payload?.schema_version !== ADMIN_ACTION_SCHEMA_VERSION ||
+    payload?.query !== "dect_handset_targets" ||
+    !Array.isArray(payload?.result?.targets) ||
+    typeof payload?.result?.truncated !== "boolean"
+  ) {
+    return undefined;
+  }
+  const seen = new Set();
+  const targets = [];
+  for (const raw of payload.result.targets.slice(0, ADMIN_ACTION_MAX_DECT_TARGETS)) {
+    const targetToken = adminActionToken(raw?.target_token);
+    const reference = adminPrivateQueryIdentifier(raw?.reference);
+    if (
+      !targetToken ||
+      !reference ||
+      seen.has(targetToken) ||
+      typeof raw?.paging !== "boolean"
+    ) {
+      continue;
+    }
+    seen.add(targetToken);
+    const target = {
+      target_token: targetToken,
+      reference,
+      paging: raw.paging,
+    };
+    if (
+      typeof raw.name === "string" &&
+      raw.name.length > 0 &&
+      raw.name.length <= ADMIN_ACTION_MAX_HANDSET_NAME_LENGTH &&
+      raw.name === raw.name.trim() &&
+      !/[\p{C}\p{Zl}\p{Zp}]/u.test(raw.name)
+    ) {
+      target.name = raw.name;
+    }
+    targets.push(target);
+  }
+  return {
+    targets,
+    truncated:
+      payload.result.truncated ||
+      payload.result.targets.length > ADMIN_ACTION_MAX_DECT_TARGETS,
+  };
+}
+
+/** Normalize action-safe VoIP target tokens without joining broad cached rows. */
+export function normalizeVoipLineTargets(payload) {
+  if (
+    payload?.schema_version !== ADMIN_ACTION_SCHEMA_VERSION ||
+    payload?.query !== "voip_line_targets" ||
+    !Array.isArray(payload?.result?.targets) ||
+    typeof payload?.result?.truncated !== "boolean"
+  ) {
+    return undefined;
+  }
+  const seen = new Set();
+  const targets = [];
+  for (const raw of payload.result.targets.slice(0, ADMIN_ACTION_MAX_VOIP_TARGETS)) {
+    const targetToken = adminActionToken(raw?.target_token);
+    const reference = adminPrivateQueryIdentifier(raw?.reference);
+    if (
+      !targetToken ||
+      !reference ||
+      seen.has(targetToken) ||
+      typeof raw?.active !== "boolean"
+    ) {
+      continue;
+    }
+    seen.add(targetToken);
+    const target = { target_token: targetToken, reference, active: raw.active };
+    if (
+      typeof raw.number_suffix === "string" &&
+      ADMIN_ACTION_VOIP_NUMBER_SUFFIX.test(raw.number_suffix)
+    ) {
+      target.number_suffix = raw.number_suffix;
+    }
+    targets.push(target);
+  }
+  return {
+    targets,
+    truncated:
+      payload.result.truncated ||
+      payload.result.targets.length > ADMIN_ACTION_MAX_VOIP_TARGETS,
+  };
+}
+
+/** Normalize one destructive action's bounded, one-use target handshake. */
+export function normalizeDestructiveAdminActionTargets(payload, actionId) {
+  const info = Object.hasOwn(ADMIN_ACTION_INFO, actionId)
+    ? ADMIN_ACTION_INFO[actionId]
+    : undefined;
+  if (
+    info?.risk !== "destructive" ||
+    payload?.schema_version !== ADMIN_ACTION_SCHEMA_VERSION ||
+    payload?.query !== info.targetQuery ||
+    !Array.isArray(payload?.result?.targets) ||
+    typeof payload?.result?.truncated !== "boolean"
+  ) {
+    return undefined;
+  }
+  const seen = new Set();
+  const targets = [];
+  for (const raw of payload.result.targets.slice(0, info.maxTargets)) {
+    const targetToken = adminActionToken(raw?.target_token);
+    const reference = adminPrivateQueryIdentifier(raw?.reference);
+    if (!targetToken || !reference || seen.has(targetToken)) continue;
+    seen.add(targetToken);
+    const target = { target_token: targetToken, reference };
+    if (
+      ["dect_handset_disconnect", "ip_pbx_client_delete", "nas_share_delete"].includes(
+        actionId,
+      )
+    ) {
+      const name = adminPrivateQueryText(raw.name, 64);
+      if (name !== undefined) target.name = name;
+    } else if (actionId === "voip_provider_delete") {
+      if (
+        Number.isInteger(raw.provider_code) &&
+        raw.provider_code >= 0 &&
+        raw.provider_code <= 9_999
+      ) {
+        target.provider_code = raw.provider_code;
+      }
+    } else if (actionId === "voip_line_delete") {
+      if (typeof raw.active === "boolean") target.active = raw.active;
+      if (
+        typeof raw.number_suffix === "string" &&
+        ADMIN_ACTION_VOIP_NUMBER_SUFFIX.test(raw.number_suffix)
+      ) {
+        target.number_suffix = raw.number_suffix;
+      }
+    } else if (actionId === "phonebook_entry_delete") {
+      const displayName = adminPrivateQueryText(raw.display_name, 64);
+      if (displayName !== undefined) target.display_name = displayName;
+    }
+    if (
+      actionId === "ip_pbx_client_delete" &&
+      ADMIN_ACTION_PBX_TARGET_STATUSES.has(raw.status)
+    ) {
+      target.status = raw.status;
+    }
+    targets.push(target);
+  }
+  return {
+    targets,
+    truncated:
+      payload.result.truncated || payload.result.targets.length > info.maxTargets,
+  };
+}
+
+function emptyAdminActionTargetState() {
+  return {
+    errorKey: "",
+    loaded: false,
+    loading: false,
+    request: 0,
+    expiresAt: 0,
+    generation: undefined,
+    result: undefined,
+  };
+}
+
+function emptyAdminActionState() {
+  return {
+    handsetTargets: emptyAdminActionTargetState(),
+    voipLineTargets: emptyAdminActionTargetState(),
+    destructiveTargets: Object.fromEntries(
+      DESTRUCTIVE_ADMIN_ACTION_IDS.map((actionId) => [
+        actionId,
+        emptyAdminActionTargetState(),
+      ]),
+    ),
+    phonebookId: 0,
   };
 }
 
@@ -1834,6 +2423,13 @@ function normalizeAdminPrivateSearchResult(result, expected) {
     result.total <= 1000
   ) {
     normalized.total = result.total;
+  }
+  if (
+    Number.isInteger(result.free_entries) &&
+    result.free_entries >= 0 &&
+    result.free_entries <= 1000
+  ) {
+    normalized.free_entries = result.free_entries;
   }
   return normalized;
 }
@@ -2211,7 +2807,6 @@ export function capabilityGroupFor(meta) {
         "hybrid_bonding",
         "internet_privacy_level_control",
         "reconnect_internet",
-        "restart_dsl",
       ].includes(key)
     ) {
       return "controls_internet";
@@ -2220,7 +2815,6 @@ export function capabilityGroupFor(meta) {
     if (["wifi", "guest_wifi", "office_wifi", "wps"].includes(key)) {
       return "controls_wireless";
     }
-    if (key === "optimize_mesh") return "controls_mesh";
     if (
       ["client_fixed_dhcp", "client_internet_access", "client_name"].includes(
         key,
@@ -2231,10 +2825,6 @@ export function capabilityGroupFor(meta) {
     if (key === "port_forward_rule" || key === "upnp") {
       return "controls_forwarding";
     }
-    if (key === "ddns" || key === "update_ddns") return "controls_ddns";
-    if (key === "vpn" || key === "restart_vpn") return "controls_vpn";
-    if (key === "parental_controls") return "controls_parental";
-    if (key === "media_server") return "controls_media";
     if (key === "reboot_router" || key === "firmware") {
       return "controls_system";
     }
@@ -2640,6 +3230,10 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminPrivateQueries = emptyAdminPrivateQueryState();
     this._adminPrivateQueryEpoch = 0;
     this._focusAfterPrivateQuery = undefined;
+    this._adminActionState = emptyAdminActionState();
+    this._adminActionEpoch = 0;
+    this._adminActionNow = () => Date.now();
+    this._focusAfterAdminAction = undefined;
     this._loading = false;
     this._loadError = "";
     this._pendingAction = undefined;
@@ -2653,15 +3247,23 @@ export class SpeedportSmartPanel extends HTMLElement {
     this.shadowRoot.addEventListener("input", (event) => this._handleInput(event));
     this.shadowRoot.addEventListener("keydown", (event) => this._handleKeyDown(event));
     this.shadowRoot.addEventListener("submit", (event) => this._handleSubmit(event));
+    this.shadowRoot.addEventListener("toggle", (event) => this._handleToggle(event), true);
   }
 
   set hass(value) {
     const previous = this._hass;
     const firstAssignment = !previous;
+    const currentRouter = this._currentRouter();
     const userContextChanged = Boolean(
       previous &&
         (previous.user?.id !== value.user?.id ||
           previous.user?.is_admin !== value.user?.is_admin),
+    );
+    const managementAvailabilityChanged = Boolean(
+      previous &&
+        currentRouter &&
+        this._adminManagementAvailable(previous, currentRouter) !==
+          this._adminManagementAvailable(value, currentRouter),
     );
     const shouldRender = this._shouldRenderForHass(previous, value);
     this._hass = value;
@@ -2676,6 +3278,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           this._loadAdminRead(router.entry_id);
         }
       }
+    } else if (managementAvailabilityChanged) {
+      this._clearAdminActionState();
     }
     if (firstAssignment) {
       this._loadPlatformIcons();
@@ -2832,6 +3436,11 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._loadError = "";
     try {
       const previousRouter = this._currentRouter();
+      const previousActionGeneration = this._adminActionGeneration(previousRouter);
+      const previousManagementAvailable = this._adminManagementAvailable(
+        this._hass,
+        previousRouter,
+      );
       const metadata = await this._hass.connection.sendMessagePromise({
         type: API_TYPE,
       });
@@ -2852,8 +3461,19 @@ export class SpeedportSmartPanel extends HTMLElement {
       );
       const selectionChanged = previousEntry !== this._selectedEntry;
       const selectedEntryLoaded = selectedRouter?.entry_state === "loaded";
+      const actionSessionChanged = Boolean(
+        previousRouter &&
+          selectedRouter &&
+          previousRouter.entry_id === selectedRouter.entry_id &&
+          (previousActionGeneration !==
+            this._adminActionGeneration(selectedRouter) ||
+            previousManagementAvailable !==
+              this._adminManagementAvailable(this._hass, selectedRouter)),
+      );
       if (selectionChanged || !selectedEntryLoaded) {
         this._clearAdminRead();
+      } else if (actionSessionChanged) {
+        this._clearAdminActionState();
       }
       if (
         selectedEntryLoaded &&
@@ -2888,20 +3508,55 @@ export class SpeedportSmartPanel extends HTMLElement {
     );
   }
 
+  _adminManagementAvailable(hass, router = this._currentRouter()) {
+    const managementMeta = router?.entities?.find(
+      (entity) => entity.translation_key === "management_access",
+    );
+    const entityState = managementMeta
+      ? hass?.states?.[managementMeta.entity_id]?.state
+      : undefined;
+    return (
+      router?.management?.controls_available === true &&
+      (entityState || router?.management?.state) === "available"
+    );
+  }
+
+  _adminActionGeneration(router = this._currentRouter()) {
+    const generation = router?.management?.generation;
+    return Number.isSafeInteger(generation) && generation >= 0
+      ? generation
+      : undefined;
+  }
+
   _clearAdminRead() {
+    this._invalidateAdminReadSnapshot();
+    this._clearAdminPrivateQueries();
+    this._clearAdminActionState();
+  }
+
+  _invalidateAdminReadSnapshot() {
     this._adminReadRequest += 1;
     this._adminRead = undefined;
     this._adminReadEntry = undefined;
     this._adminReadLoading = false;
     this._adminReadError = "";
     this._adminReadRefreshPending = undefined;
-    this._clearAdminPrivateQueries();
   }
 
   _clearAdminPrivateQueries() {
     this._adminPrivateQueryEpoch += 1;
     this._adminPrivateQueries = emptyAdminPrivateQueryState();
     this._focusAfterPrivateQuery = undefined;
+  }
+
+  _clearAdminActionState() {
+    this._adminActionEpoch += 1;
+    this._adminActionState = emptyAdminActionState();
+    this._focusAfterAdminAction = undefined;
+    if (this._pendingAction?.source === "admin_action") {
+      this._pendingAction = undefined;
+      this._actionBusy = false;
+    }
   }
 
   async _loadAdminRead(entryId, { force = false } = {}) {
@@ -2993,7 +3648,10 @@ export class SpeedportSmartPanel extends HTMLElement {
     const previousView = this._activeView;
     this._activeView = view;
     this._notice = "";
-    if (view !== "administration") this._clearAdminPrivateQueries();
+    if (view !== "administration") {
+      this._clearAdminPrivateQueries();
+      this._clearAdminActionState();
+    }
     // Switch the visible panel immediately. A cached administrator snapshot must
     // never make `_loadAdminRead` short-circuit before the selected tab renders.
     this._render();
@@ -3178,6 +3836,21 @@ export class SpeedportSmartPanel extends HTMLElement {
       }
       return;
     }
+    if (target.dataset.adminActionTargetsRefresh !== undefined) {
+      this._loadDectHandsetTargets({ force: true });
+      return;
+    }
+    if (target.dataset.adminActionLinesRefresh !== undefined) {
+      this._loadVoipLineTargets({ force: true });
+      return;
+    }
+    if (target.dataset.adminDestructiveTargetsRefresh) {
+      this._loadDestructiveAdminActionTargets(
+        target.dataset.adminDestructiveTargetsRefresh,
+        { force: true },
+      );
+      return;
+    }
     if (target.dataset.refresh !== undefined) {
       this._loadMetadata();
       return;
@@ -3189,6 +3862,13 @@ export class SpeedportSmartPanel extends HTMLElement {
           bubbles: true,
           composed: true,
         }),
+      );
+      return;
+    }
+    if (target.dataset.adminAction) {
+      this._prepareAdminAction(
+        target.dataset.adminAction,
+        target.dataset.adminTargetToken,
       );
       return;
     }
@@ -3229,9 +3909,44 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _handleInput(event) {
     if (this._handleAdminPrivateQueryInput(event)) return;
-    const pending = this._pendingAction;
     const target = event.target;
-    if (!pending || !target?.dataset) {
+    if (!target?.dataset) {
+      return;
+    }
+    if (target.dataset.adminActionPhonebookId !== undefined) {
+      const phonebookId = Number(target.value);
+      if (Number.isInteger(phonebookId) && phonebookId >= 0 && phonebookId <= 4) {
+        this._adminActionState.phonebookId = phonebookId;
+        this._resetDestructiveActionTargets("phonebook_entry_delete");
+        this._loadDestructiveAdminActionTargets("phonebook_entry_delete");
+      }
+      return;
+    }
+    const pending = this._pendingAction;
+    if (!pending) return;
+    if (
+      pending.source === "admin_action" &&
+      target.dataset.repeaterPrerequisite !== undefined
+    ) {
+      const prerequisite = target.dataset.repeaterPrerequisite;
+      if (
+        ![
+          "pinIsDefault",
+          "fullPowerEnabled",
+          "fullEcoDisabled",
+        ].includes(prerequisite)
+      ) {
+        return;
+      }
+      pending[prerequisite] = target.checked === true;
+      const button = this.shadowRoot.querySelector("[data-confirm-action]");
+      if (button) {
+        button.disabled =
+          this._actionBusy ||
+          !pending.pinIsDefault ||
+          !pending.fullPowerEnabled ||
+          !pending.fullEcoDisabled;
+      }
       return;
     }
     if (pending.kind === "select" && target.dataset.selectDraft !== undefined) {
@@ -3258,6 +3973,19 @@ export class SpeedportSmartPanel extends HTMLElement {
       if (button) button.disabled = this._actionBusy || !matches;
       const error = this.shadowRoot.querySelector("[data-confirm-error]");
       if (error) error.textContent = "";
+    }
+  }
+
+  _handleToggle(event) {
+    const target = event.target;
+    if (target?.open !== true) return;
+    const actionId = ADMIN_ACTION_BY_FEATURE_ID.get(target.dataset?.adminFeature);
+    if (actionId === "dect_handset_set_paging") {
+      this._loadDectHandsetTargets();
+    } else if (actionId === "voip_line_set_active") {
+      this._loadVoipLineTargets();
+    } else if (ADMIN_ACTION_INFO[actionId]?.risk === "destructive") {
+      this._loadDestructiveAdminActionTargets(actionId);
     }
   }
 
@@ -3564,8 +4292,561 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._render();
   }
 
+  _adminActionDescriptor(actionId) {
+    if (this._hass?.user?.is_admin !== true) return undefined;
+    return normalizeAdminActionMetadata(this._currentRouter()?.admin_actions).get(
+      actionId,
+    );
+  }
+
+  _adminActionContextIsCurrent(entryId, epoch, generation) {
+    const currentGeneration = this._adminActionGeneration();
+    return (
+      epoch === this._adminActionEpoch &&
+      this._activeView === "administration" &&
+      this._hass?.user?.is_admin === true &&
+      this._currentRouter()?.entry_id === entryId &&
+      this._currentRouter()?.entry_state === "loaded" &&
+      this._adminManagementAvailable(this._hass) &&
+      currentGeneration !== undefined &&
+      (generation === undefined || generation === currentGeneration)
+    );
+  }
+
+  _adminActionErrorKey(error) {
+    const code = error?.code;
+    return [
+      "action_unavailable",
+      "confirmation_required",
+      "action_busy",
+      "action_rate_limited",
+      "action_rejected",
+      "action_failed",
+      "action_outcome_unknown",
+      "action_verification_failed",
+    ].includes(code)
+      ? `admin.action.error.${code}`
+      : "admin.action.error.action_failed";
+  }
+
+  _adminActionUnavailableKey(reason) {
+    return ADMIN_ACTION_UNAVAILABLE_REASONS.has(reason)
+      ? `admin.action.unavailable.${reason}`
+      : "admin.action.error.action_unavailable";
+  }
+
+  _resetAdminActionTargets(key) {
+    const previousRequest = this._adminActionState[key]?.request || 0;
+    const replacement = emptyAdminActionState()[key];
+    replacement.request = previousRequest + 1;
+    this._adminActionState[key] = replacement;
+  }
+
+  _currentAdminActionTargets(key) {
+    const state = this._adminActionState[key];
+    if (
+      state?.result &&
+      (state.generation !== this._adminActionGeneration() ||
+        state.expiresAt <= this._adminActionNow())
+    ) {
+      this._resetAdminActionTargets(key);
+      return this._adminActionState[key];
+    }
+    return state;
+  }
+
+  _resetDestructiveActionTargets(actionId) {
+    const current = this._adminActionState.destructiveTargets[actionId];
+    if (!current) return;
+    const replacement = emptyAdminActionTargetState();
+    replacement.request = current.request + 1;
+    this._adminActionState.destructiveTargets[actionId] = replacement;
+  }
+
+  _currentDestructiveActionTargets(actionId) {
+    const state = this._adminActionState.destructiveTargets[actionId];
+    if (
+      state?.result &&
+      (state.generation !== this._adminActionGeneration() ||
+        state.expiresAt <= this._adminActionNow())
+    ) {
+      this._resetDestructiveActionTargets(actionId);
+      return this._adminActionState.destructiveTargets[actionId];
+    }
+    return state;
+  }
+
+  async _loadDectHandsetTargets({ force = false } = {}) {
+    const actionId = "dect_handset_set_paging";
+    const descriptor = this._adminActionDescriptor(actionId);
+    const state = this._currentAdminActionTargets("handsetTargets");
+    const entryId = this._currentRouter()?.entry_id;
+    const generation = this._adminActionGeneration();
+    if (
+      !descriptor?.supported ||
+      !descriptor.available ||
+      !this._adminActionContextIsCurrent(entryId, this._adminActionEpoch) ||
+      state.loading ||
+      (!force && state.loaded)
+    ) {
+      return;
+    }
+
+    const epoch = this._adminActionEpoch;
+    const request = ++state.request;
+    state.errorKey = "";
+    state.loading = true;
+    if (force) state.result = undefined;
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise({
+        type: DECT_HANDSET_TARGETS_API_TYPE,
+        entry_id: entryId,
+      });
+      if (
+        !this._adminActionContextIsCurrent(entryId, epoch, generation) ||
+        request !== this._adminActionState.handsetTargets.request
+      ) {
+        return;
+      }
+      const result = normalizeDectHandsetTargets(payload);
+      if (!result) throw new Error("Unsupported DECT handset targets");
+      state.result = result;
+      state.loaded = true;
+      state.generation = generation;
+      state.expiresAt =
+        this._adminActionNow() + descriptor.target_token_ttl_seconds * 1_000;
+    } catch (error) {
+      if (this._adminActionContextIsCurrent(entryId, epoch, generation)) {
+        state.errorKey =
+          error?.code === "rate_limited"
+            ? "admin.action.error.action_rate_limited"
+            : "admin.action.targets_unavailable";
+      }
+    } finally {
+      if (
+        this._adminActionContextIsCurrent(entryId, epoch, generation) &&
+        request === this._adminActionState.handsetTargets.request
+      ) {
+        state.loading = false;
+        this._render();
+      }
+    }
+  }
+
+  async _loadVoipLineTargets({ force = false } = {}) {
+    const actionId = "voip_line_set_active";
+    const descriptor = this._adminActionDescriptor(actionId);
+    const state = this._currentAdminActionTargets("voipLineTargets");
+    const entryId = this._currentRouter()?.entry_id;
+    const generation = this._adminActionGeneration();
+    if (
+      !descriptor?.supported ||
+      !descriptor.available ||
+      !this._adminActionContextIsCurrent(entryId, this._adminActionEpoch) ||
+      state.loading ||
+      (!force && state.loaded)
+    ) {
+      return;
+    }
+
+    const epoch = this._adminActionEpoch;
+    const request = ++state.request;
+    state.errorKey = "";
+    state.loading = true;
+    if (force) state.result = undefined;
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise({
+        type: VOIP_LINE_TARGETS_API_TYPE,
+        entry_id: entryId,
+      });
+      if (
+        !this._adminActionContextIsCurrent(entryId, epoch, generation) ||
+        request !== this._adminActionState.voipLineTargets.request
+      ) {
+        return;
+      }
+      const result = normalizeVoipLineTargets(payload);
+      if (!result) throw new Error("Unsupported VoIP line targets");
+      state.result = result;
+      state.loaded = true;
+      state.generation = generation;
+      state.expiresAt =
+        this._adminActionNow() + descriptor.target_token_ttl_seconds * 1_000;
+    } catch (error) {
+      if (this._adminActionContextIsCurrent(entryId, epoch, generation)) {
+        state.errorKey =
+          error?.code === "rate_limited"
+            ? "admin.action.error.action_rate_limited"
+            : "admin.action.targets_unavailable";
+      }
+    } finally {
+      if (
+        this._adminActionContextIsCurrent(entryId, epoch, generation) &&
+        request === this._adminActionState.voipLineTargets.request
+      ) {
+        state.loading = false;
+        this._render();
+      }
+    }
+  }
+
+  async _loadDestructiveAdminActionTargets(
+    actionId,
+    { force = false } = {},
+  ) {
+    const info = Object.hasOwn(ADMIN_ACTION_INFO, actionId)
+      ? ADMIN_ACTION_INFO[actionId]
+      : undefined;
+    const descriptor = this._adminActionDescriptor(actionId);
+    const state = this._currentDestructiveActionTargets(actionId);
+    const entryId = this._currentRouter()?.entry_id;
+    const generation = this._adminActionGeneration();
+    if (
+      info?.risk !== "destructive" ||
+      !state ||
+      !descriptor?.supported ||
+      !descriptor.available ||
+      !this._adminActionContextIsCurrent(entryId, this._adminActionEpoch) ||
+      state.loading ||
+      (!force && state.loaded)
+    ) {
+      return;
+    }
+
+    const epoch = this._adminActionEpoch;
+    const request = ++state.request;
+    state.errorKey = "";
+    state.loading = true;
+    if (force) state.result = undefined;
+    this._render();
+    const message = {
+      type: `${API_TYPE}/action/${info.targetQuery}`,
+      entry_id: entryId,
+    };
+    if (actionId === "phonebook_entry_delete") {
+      message.phonebook_id = this._adminActionState.phonebookId;
+    }
+    try {
+      const payload = await this._hass.connection.sendMessagePromise(message);
+      if (
+        !this._adminActionContextIsCurrent(entryId, epoch, generation) ||
+        request !==
+          this._adminActionState.destructiveTargets[actionId]?.request
+      ) {
+        return;
+      }
+      const result = normalizeDestructiveAdminActionTargets(payload, actionId);
+      if (!result) throw new Error("Unsupported destructive action targets");
+      state.result = result;
+      state.loaded = true;
+      state.generation = generation;
+      state.expiresAt =
+        this._adminActionNow() + descriptor.target_token_ttl_seconds * 1_000;
+    } catch (error) {
+      if (this._adminActionContextIsCurrent(entryId, epoch, generation)) {
+        state.errorKey =
+          error?.code === "rate_limited"
+            ? "admin.action.error.action_rate_limited"
+            : "admin.action.targets_unavailable";
+      }
+    } finally {
+      if (
+        this._adminActionContextIsCurrent(entryId, epoch, generation) &&
+        request ===
+          this._adminActionState.destructiveTargets[actionId]?.request
+      ) {
+        state.loading = false;
+        this._render();
+      }
+    }
+  }
+
+  _adminActionTarget(actionId, targetToken) {
+    if (actionId === "dect_handset_set_paging") {
+      return this._currentAdminActionTargets(
+        "handsetTargets",
+      ).result?.targets.find(
+        (target) => target.target_token === targetToken,
+      );
+    }
+    if (actionId === "voip_line_set_active") {
+      return this._currentAdminActionTargets(
+        "voipLineTargets",
+      ).result?.targets.find(
+        (target) => target.target_token === targetToken,
+      );
+    }
+    if (ADMIN_ACTION_INFO[actionId]?.risk === "destructive") {
+      return this._currentDestructiveActionTargets(
+        actionId,
+      )?.result?.targets.find(
+        (target) => target.target_token === targetToken,
+      );
+    }
+    return undefined;
+  }
+
+  _prepareAdminAction(actionId, targetToken) {
+    const info = Object.hasOwn(ADMIN_ACTION_INFO, actionId)
+      ? ADMIN_ACTION_INFO[actionId]
+      : undefined;
+    const descriptor = this._adminActionDescriptor(actionId);
+    const entryId = this._currentRouter()?.entry_id;
+    if (
+      !info ||
+      !descriptor?.available ||
+      !this._adminActionContextIsCurrent(entryId, this._adminActionEpoch)
+    ) {
+      this._notice = this._t(
+        this._adminActionUnavailableKey(descriptor?.unavailable_reason),
+      );
+      this._noticeKind = "status";
+      this._render();
+      return;
+    }
+
+    let target;
+    let observedActive;
+    let expectedActive;
+    if (info.targetQuery) {
+      target = this._adminActionTarget(actionId, targetToken);
+      if (!target) {
+        this._notice = this._t("admin.action.error.action_unavailable");
+        this._noticeKind = "status";
+        this._render();
+        return;
+      }
+      if (["dect_handset_set_paging", "voip_line_set_active"].includes(actionId)) {
+        observedActive =
+          actionId === "dect_handset_set_paging"
+            ? target.paging
+            : target.active;
+        expectedActive = !observedActive;
+      }
+    }
+
+    const targetLabel = target
+      ? this._adminActionTargetLabel(actionId, target)
+      : undefined;
+    const confirmationPhrase =
+      descriptor.confirmation === "typed"
+        ? descriptor.typed_confirmation
+        : undefined;
+    if (descriptor.confirmation === "typed" && !confirmationPhrase) {
+      this._notice = this._t("admin.action.error.action_unavailable");
+      this._noticeKind = "status";
+      this._render();
+      return;
+    }
+    const actionLabelKey = expectedActive === false ? "stop" : "run";
+    this._pendingAction = {
+      source: "admin_action",
+      actionId,
+      entryId,
+      targetToken,
+      targetLabel,
+      observedActive,
+      expectedActive,
+      generation: this._adminActionGeneration(),
+      focusKey: `${actionId}:${targetToken || "global"}`,
+      label: this._t(`admin.action.${actionId}.label`, {
+        target: targetLabel || "",
+      }),
+      actionLabel: this._t(`admin.action.${actionId}.${actionLabelKey}`),
+      message: this._t(`admin.action.${actionId}.confirm`, {
+        target: targetLabel || "",
+      }),
+      recovery:
+        info.risk === "destructive"
+          ? this._t(`admin.action.${actionId}.recovery`)
+          : undefined,
+      disruptive: ["disruptive", "lockout", "destructive"].includes(
+        descriptor.risk,
+      ),
+      kind: "admin_action",
+      confirmationPhrase,
+      confirmationDraft: "",
+      confirmationPolicy: descriptor.confirmation,
+      risk: descriptor.risk,
+      confirmationError: false,
+      pinIsDefault: actionId === "dect_repeater_enroll" ? false : undefined,
+      fullPowerEnabled:
+        actionId === "dect_repeater_enroll" ? false : undefined,
+      fullEcoDisabled:
+        actionId === "dect_repeater_enroll" ? false : undefined,
+    };
+    this._notice = "";
+    this._noticeKind = "status";
+    this._render();
+  }
+
+  async _runPendingAdminAction(pending) {
+    const descriptor = this._adminActionDescriptor(pending.actionId);
+    const info = Object.hasOwn(ADMIN_ACTION_INFO, pending.actionId)
+      ? ADMIN_ACTION_INFO[pending.actionId]
+      : undefined;
+    const entryId = pending.entryId;
+    const epoch = this._adminActionEpoch;
+    if (
+      !info ||
+      !descriptor?.available ||
+      descriptor.confirmation !== pending.confirmationPolicy ||
+      descriptor.risk !== pending.risk ||
+      (descriptor.typed_confirmation || undefined) !==
+        pending.confirmationPhrase ||
+      pending.generation !== this._adminActionGeneration() ||
+      !this._adminActionContextIsCurrent(entryId, epoch)
+    ) {
+      this._pendingAction = undefined;
+      this._focusAfterAdminAction = pending.focusKey;
+      this._notice = this._t("admin.action.error.action_unavailable");
+      this._noticeKind = "status";
+      this._render();
+      return;
+    }
+    if (
+      pending.confirmationPhrase &&
+      !typedConfirmationMatches(
+        pending.confirmationPhrase,
+        pending.confirmationDraft,
+      )
+    ) {
+      pending.confirmationError = true;
+      this._render();
+      return;
+    }
+    if (
+      pending.actionId === "dect_repeater_enroll" &&
+      (!pending.pinIsDefault ||
+        !pending.fullPowerEnabled ||
+        !pending.fullEcoDisabled)
+    ) {
+      this._render();
+      return;
+    }
+
+    let parameters = {};
+    if (["dect_handset_set_paging", "voip_line_set_active"].includes(pending.actionId)) {
+      const target = this._adminActionTarget(
+        pending.actionId,
+        pending.targetToken,
+      );
+      const currentActive =
+        pending.actionId === "dect_handset_set_paging"
+          ? target?.paging
+          : target?.active;
+      if (typeof currentActive !== "boolean" || currentActive !== pending.observedActive) {
+        this._pendingAction = undefined;
+        this._focusAfterAdminAction = pending.focusKey;
+        this._notice = this._t("admin.action.error.action_unavailable");
+        this._noticeKind = "status";
+        this._render();
+        return;
+      }
+      parameters =
+        pending.actionId === "dect_handset_set_paging"
+          ? {
+              target_token: pending.targetToken,
+              enabled: pending.expectedActive,
+            }
+          : {
+              target_token: pending.targetToken,
+              active: pending.expectedActive,
+            };
+    } else if (info.risk === "destructive") {
+      const target = this._adminActionTarget(
+        pending.actionId,
+        pending.targetToken,
+      );
+      if (!target) {
+        this._pendingAction = undefined;
+        this._focusAfterAdminAction = pending.focusKey;
+        this._notice = this._t("admin.action.error.action_unavailable");
+        this._noticeKind = "status";
+        this._render();
+        return;
+      }
+      parameters = { target_token: pending.targetToken };
+    } else if (pending.actionId === "dect_repeater_enroll") {
+      parameters = {
+        pin_is_default: true,
+        full_power_enabled: true,
+        full_eco_disabled: true,
+      };
+    }
+    const message = adminActionRequest(
+      pending.actionId,
+      entryId,
+      parameters,
+      pending.confirmationPhrase,
+    );
+    if (!message) {
+      this._pendingAction = undefined;
+      this._notice = this._t("admin.action.error.action_unavailable");
+      this._noticeKind = "status";
+      this._render();
+      return;
+    }
+
+    if (pending.actionId === "dect_handset_set_paging") {
+      this._resetAdminActionTargets("handsetTargets");
+    } else if (pending.actionId === "voip_line_set_active") {
+      this._resetAdminActionTargets("voipLineTargets");
+    } else if (info.risk === "destructive") {
+      this._resetDestructiveActionTargets(pending.actionId);
+    }
+    this._clearAdminPrivateQueries();
+    this._invalidateAdminReadSnapshot();
+
+    this._actionBusy = true;
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise(message);
+      if (
+        !this._adminActionContextIsCurrent(entryId, epoch) ||
+        this._pendingAction !== pending
+      ) {
+        return;
+      }
+      if (
+        !normalizeAdminActionResult(
+          payload,
+          pending.actionId,
+          pending.expectedActive,
+        )
+      ) {
+        const error = new Error("Unverified administrator action response");
+        error.code = "action_verification_failed";
+        throw error;
+      }
+      this._pendingAction = undefined;
+      this._focusAfterAdminAction = pending.focusKey;
+      this._notice = this._t(`admin.action.${pending.actionId}.success`);
+      this._noticeKind = "status";
+    } catch (error) {
+      if (this._adminActionContextIsCurrent(entryId, epoch)) {
+        this._notice = this._t(this._adminActionErrorKey(error));
+        this._noticeKind = "alert";
+        this._pendingAction = undefined;
+        this._focusAfterAdminAction = pending.focusKey;
+      }
+    } finally {
+      if (this._adminActionContextIsCurrent(entryId, epoch)) {
+        this._actionBusy = false;
+        await this._loadAdminRead(entryId, { force: true });
+        this._render();
+      }
+    }
+  }
+
   _closeConfirmation() {
-    this._focusAfterRenderEntityId = this._pendingAction?.entityId;
+    if (this._pendingAction?.source === "admin_action") {
+      this._focusAfterAdminAction = this._pendingAction.focusKey;
+    } else {
+      this._focusAfterRenderEntityId = this._pendingAction?.entityId;
+    }
     this._pendingAction = undefined;
     this._render();
   }
@@ -3696,6 +4977,10 @@ export class SpeedportSmartPanel extends HTMLElement {
   async _runPendingAction() {
     if (!this._pendingAction || this._actionBusy || !this._hass) return;
     const pending = this._pendingAction;
+    if (pending.source === "admin_action") {
+      await this._runPendingAdminAction(pending);
+      return;
+    }
     const actionEntryId = this._currentRouter()?.entry_id;
     const meta = this._entityMetadata(pending.entityId);
     const state = this._state(meta);
@@ -4758,9 +6043,20 @@ export class SpeedportSmartPanel extends HTMLElement {
             <div>
               <strong>${escapeHtml(this._t("admin.query.phonebook.result", { count: result.entries.length }))}</strong>
               <small>${escapeHtml(
-                result.total === undefined
-                  ? this._t("admin.query.ephemeral")
-                  : this._t("admin.query.phonebook.total", { count: result.total }),
+                [
+                  result.total === undefined
+                    ? this._t("admin.query.ephemeral")
+                    : this._t("admin.query.phonebook.total", {
+                        count: result.total,
+                      }),
+                  result.free_entries === undefined
+                    ? undefined
+                    : this._t("admin.query.phonebook.free_entries", {
+                        count: result.free_entries,
+                      }),
+                ]
+                  .filter(Boolean)
+                  .join(" · "),
               )}</small>
             </div>
             <button class="secondary compact" type="button" data-admin-query-clear="phonebook_search">${escapeHtml(this._t("admin.query.clear"))}</button>
@@ -4840,6 +6136,257 @@ export class SpeedportSmartPanel extends HTMLElement {
       .join("");
   }
 
+  _adminActionTargetLabel(actionId, target) {
+    let label;
+    if (
+      ["dect_handset_set_paging", "dect_handset_disconnect"].includes(actionId)
+    ) {
+      label = target.name || this._t("admin.action.target.handset");
+    } else if (
+      ["voip_line_set_active", "voip_line_delete"].includes(actionId) &&
+      target.number_suffix
+    ) {
+      label = this._t("admin.action.target.line_ending", {
+        suffix: target.number_suffix,
+      });
+    } else if (actionId === "dect_repeater_disconnect") {
+      label = this._t("admin.action.target.dect_repeater");
+    } else if (actionId === "voip_provider_delete") {
+      label = Number.isInteger(target.provider_code)
+        ? this._t("admin.action.target.voip_provider_code", {
+            code: target.provider_code,
+          })
+        : this._t("admin.action.target.voip_provider");
+    } else if (actionId === "ip_pbx_client_delete") {
+      label = target.name || this._t("admin.action.target.ip_pbx_client");
+    } else if (actionId === "phonebook_entry_delete") {
+      label =
+        target.display_name || this._t("admin.action.target.phonebook_entry");
+    } else if (actionId === "nas_share_delete") {
+      label = target.name || this._t("admin.action.target.nas_share");
+    } else {
+      label = this._t("admin.action.target.voip_line");
+    }
+    return target.reference
+      ? this._t("admin.action.target.with_reference", {
+          target: label,
+          reference: target.reference,
+        })
+      : label;
+  }
+
+  _adminActionTargetStatus(actionId, target, active) {
+    if (typeof active === "boolean") {
+      return this._t(
+        active ? "admin.action.state.active" : "admin.action.state.inactive",
+      );
+    }
+    if (actionId === "voip_line_delete" && typeof target.active === "boolean") {
+      return this._t(
+        target.active
+          ? "admin.action.state.active"
+          : "admin.action.state.inactive",
+      );
+    }
+    if (
+      actionId === "ip_pbx_client_delete" &&
+      ADMIN_ACTION_PBX_TARGET_STATUSES.has(target.status)
+    ) {
+      return this._t(`admin.action.target.status.${target.status}`);
+    }
+    return "";
+  }
+
+  _renderAdminActionTarget(actionId, target, active) {
+    const targetToken = target.target_token;
+    const label = this._adminActionTargetLabel(actionId, target);
+    const status = this._adminActionTargetStatus(actionId, target, active);
+    const focusKey = `${actionId}:${targetToken}`;
+    const destructive = ADMIN_ACTION_INFO[actionId]?.risk === "destructive";
+    const actionLabel = this._t(
+      !destructive && active
+        ? `admin.action.${actionId}.stop`
+        : `admin.action.${actionId}.run`,
+    );
+    const accessibleLabel = this._t("admin.action.target.button_label", {
+      action: actionLabel,
+      target: label,
+    });
+    return `
+      <article class="admin-action-target">
+        <span>
+          <strong>${escapeHtml(label)}</strong>
+          ${status ? `<small>${escapeHtml(status)}</small>` : ""}
+        </span>
+        <button
+          class="secondary compact"
+          data-admin-action="${escapeHtml(actionId)}"
+          data-admin-target-token="${escapeHtml(targetToken)}"
+          data-admin-action-key="${escapeHtml(focusKey)}"
+          aria-label="${escapeHtml(accessibleLabel)}"
+        >${escapeHtml(actionLabel)}</button>
+      </article>
+    `;
+  }
+
+  _renderDectPagingTargets() {
+    const state = this._currentAdminActionTargets("handsetTargets");
+    if (state.loading) {
+      return `<p class="admin-action-status" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.action.targets_loading"))}</p>`;
+    }
+    if (state.errorKey) {
+      return `
+        <p class="admin-action-status error" role="alert"><ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t(state.errorKey))}</p>
+        <button class="secondary compact" data-admin-action-targets-refresh>${escapeHtml(this._t("admin.action.targets_retry"))}</button>
+      `;
+    }
+    if (!state.loaded) {
+      return `
+        <p class="admin-action-status"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.targets_open_hint"))}</p>
+        <button class="secondary compact" data-admin-action-targets-refresh>${escapeHtml(this._t("admin.action.targets_retry"))}</button>
+      `;
+    }
+    const targets = state.result?.targets || [];
+    const rows = targets
+      .map((target) =>
+        this._renderAdminActionTarget(
+          "dect_handset_set_paging",
+          target,
+          target.paging,
+        ),
+      )
+      .join("");
+    return `
+      ${rows ? `<div class="admin-action-targets">${rows}</div>` : `<p class="admin-action-status">${escapeHtml(this._t("admin.action.targets_empty"))}</p>`}
+      ${state.result?.truncated ? `<p class="admin-action-status warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.targets_truncated"))}</p>` : ""}
+    `;
+  }
+
+  _renderVoipLineTargets() {
+    const state = this._currentAdminActionTargets("voipLineTargets");
+    if (state.loading) {
+      return `<p class="admin-action-status" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.action.lines_loading"))}</p>`;
+    }
+    if (state.errorKey) {
+      return `
+        <p class="admin-action-status error" role="alert"><ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t(state.errorKey))}</p>
+        <button class="secondary compact" data-admin-action-lines-refresh>${escapeHtml(this._t("admin.action.lines_retry"))}</button>
+      `;
+    }
+    if (!state.loaded) {
+      return `
+        <p class="admin-action-status"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.lines_open_hint"))}</p>
+        <button class="secondary compact" data-admin-action-lines-refresh>${escapeHtml(this._t("admin.action.lines_retry"))}</button>
+      `;
+    }
+    const targets = state.result?.targets || [];
+    const rows = targets
+      .map((target) =>
+        this._renderAdminActionTarget(
+          "voip_line_set_active",
+          target,
+          target.active,
+        ),
+      )
+      .join("");
+    return `
+      ${rows ? `<div class="admin-action-targets">${rows}</div>` : `<p class="admin-action-status">${escapeHtml(this._t("admin.action.lines_empty"))}</p>`}
+      ${state.result?.truncated ? `<p class="admin-action-status warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.lines_truncated"))}</p>` : ""}
+    `;
+  }
+
+  _renderDestructiveActionTargets(actionId) {
+    const info = Object.hasOwn(ADMIN_ACTION_INFO, actionId)
+      ? ADMIN_ACTION_INFO[actionId]
+      : undefined;
+    const state = this._currentDestructiveActionTargets(actionId);
+    if (info?.risk !== "destructive" || !state) return "";
+    const phonebookSelector =
+      actionId === "phonebook_entry_delete"
+        ? `
+          <label class="admin-action-context">
+            <span>${escapeHtml(this._t("admin.action.phonebook.selection"))}</span>
+            <select data-admin-action-phonebook-id ${state.loading ? "disabled" : ""}>
+              ${Array.from({ length: 5 }, (_, index) => `
+                <option value="${index}" ${this._adminActionState.phonebookId === index ? "selected" : ""}>${escapeHtml(this._t("admin.query.phonebook.book", { number: index + 1 }))}</option>
+              `).join("")}
+            </select>
+          </label>
+        `
+        : "";
+    let result = "";
+    if (state.loading) {
+      result = `<p class="admin-action-status" role="status"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.action.destructive.targets_loading"))}</p>`;
+    } else if (state.errorKey) {
+      result = `
+        <p class="admin-action-status error" role="alert"><ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t(state.errorKey))}</p>
+        <button class="secondary compact" data-admin-destructive-targets-refresh="${escapeHtml(actionId)}">${escapeHtml(this._t("admin.action.destructive.targets_retry"))}</button>
+      `;
+    } else if (!state.loaded) {
+      result = `
+        <p class="admin-action-status"><ha-icon icon="mdi:information-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.destructive.targets_open_hint"))}</p>
+        <button class="secondary compact" data-admin-destructive-targets-refresh="${escapeHtml(actionId)}">${escapeHtml(this._t("admin.action.destructive.targets_retry"))}</button>
+      `;
+    } else {
+      const rows = (state.result?.targets || [])
+        .map((target) =>
+          this._renderAdminActionTarget(actionId, target, undefined),
+        )
+        .join("");
+      result = `
+        ${rows ? `<div class="admin-action-targets">${rows}</div>` : `<p class="admin-action-status">${escapeHtml(this._t("admin.action.destructive.targets_empty"))}</p>`}
+        ${state.result?.truncated ? `<p class="admin-action-status warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.destructive.targets_truncated", { count: info.maxTargets }))}</p>` : ""}
+      `;
+    }
+    return `${phonebookSelector}${result}`;
+  }
+
+  _renderAdminActions(feature) {
+    return feature.adminActions
+      .map((actionId) => {
+        const info = ADMIN_ACTION_INFO[actionId];
+        const descriptor = this._adminActionDescriptor(actionId);
+        if (!info || info.featureId !== feature.id || !descriptor) return "";
+        const available = descriptor.supported && descriptor.available;
+        let controls = "";
+        if (!available) {
+          controls = `
+            <p class="admin-action-status unavailable"><ha-icon icon="mdi:shield-lock-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t(this._adminActionUnavailableKey(descriptor.unavailable_reason)))}</p>
+            <button class="primary" disabled>${escapeHtml(this._t(`admin.action.${actionId}.run`))}</button>
+          `;
+        } else if (actionId === "dect_handset_set_paging") {
+          controls = this._renderDectPagingTargets();
+        } else if (actionId === "voip_line_set_active") {
+          controls = this._renderVoipLineTargets();
+        } else if (info.risk === "destructive") {
+          controls = this._renderDestructiveActionTargets(actionId);
+        } else {
+          controls = `
+            <button
+              class="primary"
+              data-admin-action="${escapeHtml(actionId)}"
+              data-admin-action-key="${escapeHtml(`${actionId}:global`)}"
+            >${escapeHtml(this._t(`admin.action.${actionId}.run`))}</button>
+          `;
+        }
+        return `
+          <section class="admin-action-card risk-${escapeHtml(descriptor.risk)}" data-admin-action-card="${escapeHtml(actionId)}">
+            <header class="admin-action-heading">
+              <span aria-hidden="true"><ha-icon icon="${escapeHtml(info.icon)}"></ha-icon></span>
+              <div>
+                <strong>${escapeHtml(this._t(`admin.action.${actionId}.label`))}</strong>
+                <p>${escapeHtml(this._t(`admin.action.${actionId}.description`))}</p>
+              </div>
+              <span class="admin-action-confirmation">${escapeHtml(this._t(descriptor.confirmation === "typed" ? "admin.action.typed_required" : "admin.action.confirm_required"))}</span>
+            </header>
+            ${info.risk === "destructive" ? `<p class="admin-action-impact"><ha-icon icon="mdi:alert-octagon-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t(`admin.action.${actionId}.impact`))}</p>` : ""}
+            ${controls}
+          </section>
+        `;
+      })
+      .join("");
+  }
+
   _adminFeaturePresentation(
     feature,
     entities,
@@ -4864,6 +6411,19 @@ export class SpeedportSmartPanel extends HTMLElement {
     const capabilityKnown = feature.capabilities.some((capability) =>
       capabilities.has(capability),
     );
+    const adminActions = feature.adminActions
+      .map((actionId) => this._adminActionDescriptor(actionId))
+      .filter(
+        (action) =>
+          action &&
+          (!feature.adminActionReplacesBlocked || action.supported === true),
+      );
+
+    if (adminActions.length > 0) {
+      return adminActions.some((action) => action.available)
+        ? { key: "control_available", icon: "mdi:gesture-tap-button" }
+        : { key: "control_unavailable", icon: "mdi:shield-lock-outline" };
+    }
 
     if (controls.length > 0) {
       const available = controls.some(
@@ -4921,6 +6481,14 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (features.length === 0) return "";
     const cards = features
       .map((feature) => {
+        const supportedReplacementAction =
+          feature.adminActionReplacesBlocked &&
+          feature.adminActions.some(
+            (actionId) => this._adminActionDescriptor(actionId)?.supported,
+          );
+        const featureContract = supportedReplacementAction
+          ? "reviewed"
+          : feature.contract;
         const featureSourceAvailable = feature.readSections.length
           ? feature.readSections.some((sectionId) => {
               const source =
@@ -4939,24 +6507,24 @@ export class SpeedportSmartPanel extends HTMLElement {
           featureSourceAvailable,
         );
         const statusKey =
-          feature.contract === "unsupported"
+          featureContract === "unsupported"
             ? "no_local_control"
-            : feature.contract === "blocked" && presentation.key === "read_only"
+            : featureContract === "blocked" && presentation.key === "read_only"
               ? "read_only_control_unproven"
-              : feature.contract === "blocked" && presentation.key === "not_observed"
+              : featureContract === "blocked" && presentation.key === "not_observed"
                 ? "not_exposed"
                 : presentation.key;
         const status = this._t(`admin.feature.status.${statusKey}`);
-        const contract = this._t(`admin.contract.${feature.contract}`);
+        const contract = this._t(`admin.contract.${featureContract}`);
         const contractHint =
-          feature.contract === "blocked"
+          featureContract === "blocked"
             ? ` title="${escapeHtml(this._t("admin.contract.blocked_hint"))}"`
             : "";
         const featureRisk = feature.risk
           ? this._renderRiskBadge(feature.risk)
           : "";
         const blockedReason =
-          feature.contract === "blocked" && feature.blockedReasonKey
+          featureContract === "blocked" && feature.blockedReasonKey
             ? `<span class="admin-feature-blocked-reason">${escapeHtml(this._t(feature.blockedReasonKey))}</span>`
             : "";
         const featureControls = entities.filter(
@@ -4997,9 +6565,14 @@ export class SpeedportSmartPanel extends HTMLElement {
         const queryMarkup = canReadAdmin
           ? this._renderAdminPrivateQueries(feature.queries)
           : "";
+        const actionMarkup =
+          canReadAdmin &&
+          (!feature.adminActionReplacesBlocked || supportedReplacementAction)
+          ? this._renderAdminActions(feature)
+          : "";
         const ownedMarkup =
-          controlMarkup || readMarkup || queryMarkup
-            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${controlMarkup}${readMarkup}${queryMarkup}</div>`
+          controlMarkup || readMarkup || queryMarkup || actionMarkup
+            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${controlMarkup}${readMarkup}${queryMarkup}${actionMarkup}</div>`
             : "";
         const headingId = `speedport-admin-feature-${feature.id}`.replace(
           /[^a-z0-9_-]/gi,
@@ -5011,7 +6584,7 @@ export class SpeedportSmartPanel extends HTMLElement {
             <strong id="${escapeHtml(headingId)}">${escapeHtml(this._t(feature.titleKey))}</strong>
             <span class="admin-feature-badges">
               <span class="admin-feature-status">${escapeHtml(status)}</span>
-              <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}"${contractHint}>${escapeHtml(contract)}</span>
+              <span class="admin-contract-badge contract-${escapeHtml(featureContract)}"${contractHint}>${escapeHtml(contract)}</span>
               ${featureRisk}
             </span>
             ${blockedReason}
@@ -5287,6 +6860,10 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (pending.confirmationPhrase) {
       describedByIds.push("speedport-confirm-phrase", "speedport-confirm-error");
     }
+    if (pending.actionId === "dect_repeater_enroll") {
+      describedByIds.push("speedport-repeater-prerequisite-warning");
+    }
+    if (pending.recovery) describedByIds.push("speedport-action-recovery");
     const describedBy = describedByIds.join(" ");
     let editor = "";
     if (textEditor) {
@@ -5367,6 +6944,42 @@ export class SpeedportSmartPanel extends HTMLElement {
         }</p>
       `
       : "";
+    const prerequisiteEditor =
+      pending.actionId === "dect_repeater_enroll"
+        ? `
+          <p id="speedport-repeater-prerequisite-warning" class="confirm-warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.action.dect_repeater_enroll.pin_warning"))}</p>
+          <label class="confirm-assertion">
+            <input
+              data-repeater-prerequisite="pinIsDefault"
+              type="checkbox"
+              ${pending.pinIsDefault ? "checked" : ""}
+              ${this._actionBusy ? "disabled" : ""}
+            >
+            <span>${escapeHtml(this._t("admin.action.dect_repeater_enroll.pin_assertion"))}</span>
+          </label>
+          <label class="confirm-assertion">
+            <input
+              data-repeater-prerequisite="fullPowerEnabled"
+              type="checkbox"
+              ${pending.fullPowerEnabled ? "checked" : ""}
+              ${this._actionBusy ? "disabled" : ""}
+            >
+            <span>${escapeHtml(this._t("admin.action.dect_repeater_enroll.power_assertion"))}</span>
+          </label>
+          <label class="confirm-assertion">
+            <input
+              data-repeater-prerequisite="fullEcoDisabled"
+              type="checkbox"
+              ${pending.fullEcoDisabled ? "checked" : ""}
+              ${this._actionBusy ? "disabled" : ""}
+            >
+            <span>${escapeHtml(this._t("admin.action.dect_repeater_enroll.eco_assertion"))}</span>
+          </label>
+        `
+        : "";
+    const recoveryWarning = pending.recovery
+      ? `<p id="speedport-action-recovery" class="confirm-warning action-recovery"><ha-icon icon="mdi:backup-restore" aria-hidden="true"></ha-icon>${escapeHtml(pending.recovery)}</p>`
+      : "";
     return `
       <div class="modal-backdrop" role="presentation">
         <section
@@ -5384,6 +6997,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           <h2 id="speedport-confirm-title">${escapeHtml(pending.label)}</h2>
           <p id="speedport-confirm-description">${escapeHtml(pending.message)}</p>
           ${editor}
+          ${recoveryWarning}
+          ${prerequisiteEditor}
           ${confirmationEditor}
           <div class="confirm-actions">
             <button class="secondary" data-cancel-action ${this._actionBusy ? "disabled" : ""}>
@@ -5391,6 +7006,10 @@ export class SpeedportSmartPanel extends HTMLElement {
             </button>
             <button class="primary" data-confirm-action ${
               this._actionBusy ||
+              (pending.actionId === "dect_repeater_enroll" &&
+                (!pending.pinIsDefault ||
+                  !pending.fullPowerEnabled ||
+                  !pending.fullEcoDisabled)) ||
               (pending.confirmationPhrase && !confirmationMatches)
                 ? "disabled"
                 : ""
@@ -5575,7 +7194,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       window.requestAnimationFrame(() => {
         const dialog = this.shadowRoot.querySelector(".confirm-dialog");
         const editor = this.shadowRoot.querySelector(
-          "[data-text-draft]:not([disabled]), [data-select-draft]:not([disabled]), [data-confirm-draft]:not([disabled])",
+          "[data-text-draft]:not([disabled]), [data-select-draft]:not([disabled]), [data-confirm-draft]:not([disabled]), [data-repeater-prerequisite]:not([disabled])",
         );
         const cancel = this.shadowRoot.querySelector(
           "[data-cancel-action]:not([disabled])",
@@ -5597,6 +7216,33 @@ export class SpeedportSmartPanel extends HTMLElement {
         this.shadowRoot
           .querySelector(`[data-admin-query-result="${query}"]`)
           ?.focus();
+      });
+    } else if (this._focusAfterAdminAction) {
+      const focusKey = this._focusAfterAdminAction;
+      this._focusAfterAdminAction = undefined;
+      window.requestAnimationFrame(() => {
+        let restored = false;
+        for (const element of this.shadowRoot.querySelectorAll(
+          "[data-admin-action-key]",
+        )) {
+          if (element.dataset.adminActionKey === focusKey) {
+            element.focus();
+            restored = true;
+            break;
+          }
+        }
+        if (!restored) {
+          const actionId = focusKey.split(":", 1)[0];
+          const featureId = ADMIN_ACTION_INFO[actionId]?.featureId;
+          for (const element of this.shadowRoot.querySelectorAll(
+            "[data-admin-feature]",
+          )) {
+            if (element.dataset.adminFeature === featureId) {
+              (element.querySelector?.("summary") || element).focus?.();
+              break;
+            }
+          }
+        }
       });
     } else if (renderState.focus) {
       window.requestAnimationFrame(() => {
@@ -6226,6 +7872,142 @@ export class SpeedportSmartPanel extends HTMLElement {
         .admin-query-entry strong { font-size: 11px; }
         .admin-query-entry small { margin-top: 2px; color: var(--sp-muted); font-size: 10px; }
         .admin-query-empty { margin: 12px 0 0; color: var(--sp-muted); font-size: 11px; }
+        .admin-action-card {
+          min-width: 0;
+          padding: 14px;
+          border: 1px solid color-mix(in srgb, var(--sp-warning) 28%, var(--sp-border));
+          border-radius: 14px;
+          background: color-mix(in srgb, var(--sp-warning) 3%, var(--sp-surface-soft));
+        }
+        .admin-action-card.risk-disruptive {
+          border-color: color-mix(in srgb, var(--sp-error) 32%, var(--sp-border));
+          background: color-mix(in srgb, var(--sp-error) 3%, var(--sp-surface-soft));
+        }
+        .admin-action-card.risk-destructive {
+          border-color: color-mix(in srgb, var(--sp-error) 48%, var(--sp-border));
+          background: color-mix(in srgb, var(--sp-error) 5%, var(--sp-surface-soft));
+        }
+        .admin-action-heading {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: start;
+          gap: 11px;
+        }
+        .admin-action-heading > span:first-child {
+          display: grid;
+          place-items: center;
+          width: 36px;
+          height: 36px;
+          color: var(--sp-warning);
+          border-radius: 11px;
+          background: var(--sp-surface);
+        }
+        .admin-action-card.risk-disruptive .admin-action-heading > span:first-child,
+        .admin-action-card.risk-destructive .admin-action-heading > span:first-child {
+          color: var(--sp-error);
+        }
+        .admin-action-heading ha-icon { --mdc-icon-size: 20px; }
+        .admin-action-heading strong { display: block; font-size: 13px; }
+        .admin-action-heading p {
+          margin: 4px 0 0;
+          color: var(--sp-muted);
+          font-size: 11px;
+          line-height: 1.45;
+        }
+        .admin-action-confirmation {
+          padding: 5px 8px;
+          color: var(--sp-warning);
+          border: 1px solid color-mix(in srgb, var(--sp-warning) 38%, var(--sp-border));
+          border-radius: 999px;
+          background: var(--sp-surface);
+          font-size: 9px;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+        .admin-action-card.risk-disruptive .admin-action-confirmation,
+        .admin-action-card.risk-destructive .admin-action-confirmation {
+          color: var(--sp-error);
+          border-color: color-mix(in srgb, var(--sp-error) 38%, var(--sp-border));
+        }
+        .admin-action-impact {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          margin: 12px 0 0;
+          padding: 10px 12px;
+          color: var(--sp-error);
+          border: 1px solid color-mix(in srgb, var(--sp-error) 35%, var(--sp-border));
+          border-radius: 10px;
+          background: color-mix(in srgb, var(--sp-error) 6%, var(--sp-surface));
+          font-size: 11px;
+          font-weight: 700;
+          line-height: 1.45;
+        }
+        .admin-action-impact ha-icon { flex: none; --mdc-icon-size: 18px; }
+        .admin-action-context {
+          display: grid;
+          gap: 6px;
+          margin-top: 12px;
+          color: var(--sp-muted);
+          font-size: 11px;
+          font-weight: 700;
+        }
+        .admin-action-context select {
+          width: 100%;
+          min-height: 40px;
+          padding: 8px 10px;
+          color: var(--sp-text);
+          border: 1px solid var(--sp-border);
+          border-radius: 10px;
+          background: var(--sp-surface);
+          font: inherit;
+        }
+        .admin-action-card > .primary,
+        .admin-action-card > .secondary { margin-top: 13px; }
+        .admin-action-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 12px 0 0;
+          padding: 10px 12px;
+          color: var(--sp-muted);
+          border: 1px solid var(--sp-border);
+          border-radius: 10px;
+          background: var(--sp-surface);
+          font-size: 11px;
+          line-height: 1.4;
+        }
+        .admin-action-status.error { color: var(--sp-error); }
+        .admin-action-status.warning { color: var(--sp-warning); }
+        .admin-action-status ha-icon { flex: none; --mdc-icon-size: 18px; }
+        .admin-action-status .loading-mark {
+          display: flex;
+          align-items: flex-end;
+          gap: 3px;
+          height: 15px;
+        }
+        .admin-action-status .loading-mark i {
+          width: 4px;
+          height: 4px;
+          border-radius: 1px;
+          background: var(--sp-magenta);
+        }
+        .admin-action-status .loading-mark i:nth-child(2) { height: 12px; }
+        .admin-action-targets { display: grid; gap: 8px; margin-top: 12px; }
+        .admin-action-target {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+          padding: 10px;
+          border-radius: 11px;
+          background: var(--sp-surface);
+        }
+        .admin-action-target strong,
+        .admin-action-target small { display: block; overflow-wrap: anywhere; }
+        .admin-action-target strong { font-size: 12px; }
+        .admin-action-target small { margin-top: 3px; color: var(--sp-muted); font-size: 10px; }
         .admin-feature-catalog {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
@@ -7067,6 +8849,36 @@ export class SpeedportSmartPanel extends HTMLElement {
           color: var(--sp-error) !important;
           font-size: 12px;
         }
+        .confirm-warning {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          margin: 16px 0 0;
+          padding: 11px 12px;
+          color: var(--sp-warning) !important;
+          border: 1px solid color-mix(in srgb, var(--sp-warning) 38%, var(--sp-border));
+          border-radius: 11px;
+          background: color-mix(in srgb, var(--sp-warning) 7%, var(--sp-surface));
+          font-size: 12px;
+        }
+        .confirm-warning ha-icon { flex: none; --mdc-icon-size: 19px; }
+        .confirm-dialog.danger .action-recovery {
+          color: var(--sp-error) !important;
+          border-color: color-mix(in srgb, var(--sp-error) 40%, var(--sp-border));
+          background: color-mix(in srgb, var(--sp-error) 7%, var(--sp-surface));
+        }
+        .confirm-assertion {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: start;
+          gap: 10px;
+          margin-top: 13px;
+          color: var(--sp-text);
+          font-size: 12px;
+          line-height: 1.45;
+          cursor: pointer;
+        }
+        .confirm-assertion input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--sp-magenta); }
         .confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
         :host([narrow]) .sections { grid-template-columns: 1fr; }
         :host([narrow]) .dashboard-section { grid-column: auto; }
@@ -7103,6 +8915,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           .admin-query-form,
           .admin-query-form.phonebook { grid-template-columns: 1fr; }
           .admin-query-form .primary { width: 100%; }
+          .admin-action-heading { grid-template-columns: auto minmax(0, 1fr); }
+          .admin-action-confirmation { grid-column: 2; justify-self: start; }
           footer { flex-direction: column; }
         }
         @media (max-width: 430px) {
@@ -7118,6 +8932,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           .admin-query-heading { grid-template-columns: auto minmax(0, 1fr); }
           .admin-query-read-only { grid-column: 2; justify-self: start; }
           .admin-query-result > header { align-items: flex-start; }
+          .admin-action-target { grid-template-columns: 1fr; }
+          .admin-action-target button { width: 100%; }
           .administration-area > summary,
           .administration-subsection > summary {
             grid-template-columns: auto minmax(0, 1fr) auto;
