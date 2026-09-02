@@ -763,10 +763,26 @@ test("Administration catalog covers every reviewed management family without gen
   const webUiVersion = features.find(
     (feature) => feature.id === "system_web_ui_version",
   );
-  assert.equal(webUiVersion.contract, "read_only");
+  assert.equal(webUiVersion.contract, "blocked");
   assert.deepEqual(webUiVersion.controls, []);
   assert.deepEqual(webUiVersion.entityGroups, []);
   assert.deepEqual(webUiVersion.readSections, []);
+  assert.equal(webUiVersion.blockedReasonKey, undefined);
+  const receiverLed = features.find(
+    (feature) => feature.id === "internet_receiver_led",
+  );
+  assert.deepEqual(receiverLed?.capabilities, ["receiver_led"]);
+  const guestAccessPass = features.find(
+    (feature) => feature.id === "network_wifi_guest_access_pass",
+  );
+  assert.equal(guestAccessPass?.contract, "blocked");
+  assert.deepEqual(guestAccessPass?.controls, []);
+  assert.deepEqual(guestAccessPass?.entityGroups, []);
+  assert.deepEqual(guestAccessPass?.readSections, []);
+  assert.equal(
+    guestAccessPass?.blockedReasonKey,
+    "admin.feature.blocked_reason.wifi_guest_access_pass",
+  );
 
   const featureById = new Map(features.map((feature) => [feature.id, feature]));
   for (const featureId of [
@@ -981,7 +997,7 @@ test("manual capability gaps are explicit safe cards without invented controls",
     },
     network_wifi_guest_access_pass: {
       areaId: "network",
-      contract: "read_only",
+      contract: "blocked",
       entityGroups: [],
       subsectionId: "network_wifi_access",
     },
@@ -1027,6 +1043,13 @@ test("manual capability gaps are explicit safe cards without invented controls",
       ),
     );
   }
+  assert.ok(
+    html.includes(
+      PANEL_TRANSLATIONS.en[
+        "admin.feature.blocked_reason.wifi_guest_access_pass"
+      ],
+    ),
+  );
   assert.doesNotMatch(html, /data-control=/);
 
   assert.deepEqual(
@@ -1081,6 +1104,12 @@ test("DECT action candidates explain exact proof gaps without exposing controls"
       blockedReasonKey:
         "admin.feature.blocked_reason.dect_repeater_disconnect",
       destructive: true,
+    },
+    {
+      id: "network_wifi_guest_access_pass",
+      blockedReasonKey:
+        "admin.feature.blocked_reason.wifi_guest_access_pass",
+      destructive: false,
     },
   ];
 

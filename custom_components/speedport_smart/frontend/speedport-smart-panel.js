@@ -682,7 +682,7 @@ export const ADMIN_IA = Object.freeze([
           contract: "reviewed",
           controls: ["select:receiver_led_mode_control"],
           entityGroups: ["mobile_receiver_status"],
-          capabilities: ["receiver"],
+          capabilities: ["receiver_led"],
         }),
         fixedAdminFeature("internet_receiver_mode", {
           entityGroups: [
@@ -1128,8 +1128,9 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["wifi"],
         }),
         fixedAdminFeature("network_wifi_guest_access_pass", {
-          contract: "read_only",
           capabilities: ["wifi", "guest_wifi"],
+          blockedReasonKey:
+            "admin.feature.blocked_reason.wifi_guest_access_pass",
         }),
         fixedAdminFeature("network_wifi_allowlist", {
           entityGroups: ["wireless_access"],
@@ -1310,7 +1311,6 @@ export const ADMIN_IA = Object.freeze([
           risk: "disruptive",
         }),
         fixedAdminFeature("system_web_ui_version", {
-          contract: "read_only",
           capabilities: ["system"],
         }),
       ],
