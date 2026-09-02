@@ -22,6 +22,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .management import ManagementRisk, get_entity_write_contract
+from .panel_queries import async_register_admin_query_commands
 from .panel_read import admin_read_payload
 
 if TYPE_CHECKING:
@@ -37,7 +38,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 17
+PANEL_SCHEMA_VERSION: Final = 18
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -324,6 +325,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     if not panel_state.get("websocket_registered"):
         websocket_api.async_register_command(hass, websocket_panel_info)
         websocket_api.async_register_command(hass, websocket_panel_admin_read)
+        async_register_admin_query_commands(hass)
         panel_state["websocket_registered"] = True
 
     if panel_state.get("panel_owned"):
@@ -833,7 +835,9 @@ def _capability_panel_data(
             "id": "public_status",
             "label": "Browser-independent status",
             "supported": public_supported,
-            "available": public_supported and fast_available,
+            "available": (
+                public_supported and fast_available and "status" not in endpoint_errors
+            ),
         },
         {
             "id": "protected_json",

@@ -39,6 +39,7 @@ async def test_router_and_child_device_metadata(
     assert router_entity.unique_id == "SP4R-TEST-001_firmware"
     assert router_entity.value == "010152.5.0.001.0"
     assert router_entity.device_info["identifiers"] == {(DOMAIN, "SP4R-TEST-001")}
+    assert router_entity.device_info["configuration_url"] == "http://speedport.ip"
     assert router_entity.group_snapshot is None
 
     child = SpeedportDevice(
@@ -59,6 +60,7 @@ async def test_router_and_child_device_metadata(
         DOMAIN,
         "SP4R-TEST-001",
     )
+    assert "configuration_url" not in child_entity.device_info
     assert not SpeedportEntity(
         hub,
         coordinator,

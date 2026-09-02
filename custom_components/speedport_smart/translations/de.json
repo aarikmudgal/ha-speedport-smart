@@ -18,6 +18,20 @@
           "verify_ssl": "Nur aktivieren, wenn Home Assistant dem Router-Zertifikat vertraut."
         }
       },
+      "confirm": {
+        "title": "Erkannten Telekom Speedport Smart bestätigen",
+        "description": "Home Assistant hat unter **{host}** einen Router erkannt. Gib das Router-Passwort ein, um Modell und Verbindung vor der Einrichtung zu prüfen. Die Erkennungsmeldung allein wird nie als Nachweis verwendet.",
+        "data": {
+          "password": "Router-Passwort",
+          "use_https": "HTTPS verwenden",
+          "verify_ssl": "TLS-Zertifikat prüfen"
+        },
+        "data_description": {
+          "password": "Für dieselben schreibgeschützten Verbindungsprüfungen wie bei der manuellen Einrichtung erforderlich. Das Passwort bleibt in Home Assistant.",
+          "use_https": "Verschlüsselte Router- und ToTR64-Endpunkte verwenden.",
+          "verify_ssl": "Nur aktivieren, wenn Home Assistant dem Router-Zertifikat vertraut."
+        }
+      },
       "reauth_confirm": {
         "title": "Telekom Speedport Smart erneut authentifizieren",
         "description": "Gib das aktuelle Router-Passwort ein.",
@@ -50,8 +64,13 @@
     },
     "abort": {
       "already_configured": "Dieser Router ist bereits konfiguriert.",
+      "already_in_progress": "Die Einrichtung dieses Routers läuft bereits.",
+      "cannot_connect": "Verbindung zum erkannten Router nicht möglich.",
+      "invalid_discovery_info": "Die Erkennungsmeldung enthielt keine gültige lokale IPv4-Adresse.",
+      "not_supported": "Das erkannte Gerät hat nicht dasselbe unterstützte Modell Speedport Smart 4R Typ A mit derselben Serienkennung nachgewiesen.",
       "reauth_successful": "Die erneute Authentifizierung wurde abgeschlossen.",
       "reconfigure_successful": "Die Router-Konfiguration wurde aktualisiert.",
+      "unknown": "Unerwarteter Fehler beim Prüfen des erkannten Routers. Prüfe das Home-Assistant-Protokoll.",
       "wrong_account": "Der erkannte Router stimmt nicht mit diesem Konfigurationseintrag überein."
     }
   },
@@ -126,7 +145,7 @@
         }
       },
       "wan_fastest_proven_interval": { "name": "Schnellstes bestätigtes WAN-Intervall" },
-      "wan_last_sample": { "name": "Letzte erfolgreiche WAN-Messung" },
+      "wan_last_sample": { "name": "Letzte erfolgreiche WAN-Messung (minutengenau)" },
       "wan_mtu": { "name": "WAN-MTU" },
       "public_ipv4": { "name": "Öffentliche IPv4-Adresse" },
       "public_ipv6_prefix": { "name": "Öffentliches IPv6-Präfix" },

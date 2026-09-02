@@ -165,7 +165,10 @@ def test_every_administrator_field_has_one_exact_publication() -> None:
         )
         assert publication.administrator_section_id == section_id
         assert publication.administration_feature_ids
-        assert surface.cadence in {ReadCadence.NORMAL, ReadCadence.SLOW}
+        if section_id == "internet_status_technical":
+            assert surface.cadence is ReadCadence.FAST
+        else:
+            assert surface.cadence in {ReadCadence.NORMAL, ReadCadence.SLOW}
 
 
 def test_child_descriptor_catalog_has_exact_entity_publications() -> None:
@@ -571,6 +574,42 @@ def test_administrator_metadata_references_current_frontend_features() -> None:
     assert referenced_feature_ids <= frontend_feature_ids
 
 
+@pytest.mark.parametrize(
+    ("path", "publication_id", "expected_feature_ids"),
+    [
+        (
+            "dect.handsets[].name",
+            "dect_handsets:name",
+            (
+                "telephony_dect_handset_configuration",
+                "telephony_dect_handset_disconnect",
+            ),
+        ),
+        (
+            "dect.repeaters[].id",
+            "dect_repeaters:id",
+            (
+                "telephony_dect_repeater_enrollment",
+                "telephony_dect_repeater_disconnect",
+            ),
+        ),
+    ],
+)
+def test_dect_admin_reads_name_every_feature_owner(
+    path: str,
+    publication_id: str,
+    expected_feature_ids: tuple[str, ...],
+) -> None:
+    """Shared DECT reads stay attached to configuration and removal cards."""
+    publication = _publication(
+        path,
+        ReadPublicationSurface.ADMIN_COLLECTION,
+        publication_id,
+    )
+
+    assert publication.administration_feature_ids == expected_feature_ids
+
+
 def test_value_kinds_distinguish_counts_identifiers_and_durations() -> None:
     """Structural metadata does not mislabel identifiers as numeric counters."""
     assert READ_SURFACES["nat.port_forward_rules"].value_kind is ReadValueKind.COUNT
@@ -587,3 +626,27 @@ def test_value_kinds_distinguish_counts_identifiers_and_durations() -> None:
         READ_SURFACES["receiver.items[].cell_id"].privacy is ReadPrivacy.LOCAL_NETWORK
     )
     assert READ_SURFACES["receiver.cell_id"].privacy is ReadPrivacy.LOCAL_NETWORK
+    failure_reason = READ_SURFACES["internet.failure_reason"]
+    assert failure_reason.value_kind is ReadValueKind.ENUM
+    assert failure_reason.cadence is ReadCadence.FAST
+    assert failure_reason.privacy is ReadPrivacy.GENERAL
+    failure_publication = _publication(
+        "internet.failure_reason",
+        ReadPublicationSurface.ADMIN_RECORD,
+        "internet_status_technical:failure_reason",
+    )
+    assert failure_publication.administrator_section_id == ("internet_status_technical")
+    assert failure_publication.administration_feature_ids == (
+        "internet_connection_diagnostics",
+    )
+    domain_name = READ_SURFACES["system.domain_name"]
+    assert domain_name.value_kind is ReadValueKind.TEXT
+    assert domain_name.cadence is ReadCadence.NORMAL
+    assert domain_name.privacy is ReadPrivacy.LOCAL_NETWORK
+    publication = _publication(
+        "system.domain_name",
+        ReadPublicationSurface.ADMIN_RECORD,
+        "status_technical:domain_name",
+    )
+    assert publication.administrator_section_id == "status_technical"
+    assert publication.administration_feature_ids == ("system_information_services",)

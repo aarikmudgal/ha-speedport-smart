@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=17";
+import { keepDialogFocus } from "./accessibility.js?schema=18";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,44 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=17";
+} from "./controls.js?schema=18";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=17";
+} from "./entity-state.js?schema=18";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=17";
+} from "./render-state.js?schema=18";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=17";
+} from "./translations.js?schema=18";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
-const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 17;
+const ADMIN_READ_SCHEMA_VERSION = 2;
+const ADMIN_PRIVATE_QUERY_SCHEMA_VERSION = 1;
+const ADMIN_PRIVATE_QUERY_API_TYPES = Object.freeze({
+  ip_pbx_refresh: `${API_TYPE}/ip_pbx_refresh`,
+  phonebook_search: `${API_TYPE}/phonebook_search`,
+  phonebook_contact: `${API_TYPE}/phonebook_contact`,
+});
+const ADMIN_PRIVATE_QUERY_IDENTIFIER = /^[A-Za-z0-9_-]{1,32}$/;
+const ADMIN_PRIVATE_QUERY_PREFIX = /^[A-Za-z]?$/;
+const ADMIN_PRIVATE_QUERY_PHONE_NUMBER = /^\+?[0-9/\-*# ]*$/;
+const ADMIN_PRIVATE_QUERY_BIRTHDAY = /^\d{2}\.\d{2}\.\d{4}$/;
+const ADMIN_PRIVATE_QUERY_MAX_ROWS = 256;
+const ADMIN_PRIVATE_QUERY_MAX_TEXT_LENGTH = 256;
+const ADMIN_PRIVATE_QUERY_PBX_STATUSES = Object.freeze([
+  "disconnected",
+  "registered",
+  "locked",
+]);
+const PANEL_SCHEMA_VERSION = 18;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -212,6 +229,8 @@ export const ADMIN_READ_SECTION_ORDER = Object.freeze([
   "storage_devices",
   "nas_shares",
   "powerline_nodes",
+  "internet_status_technical",
+  "status_technical",
   "lan_ipv6_technical",
   "ddns_identity",
   "wifi_2_4_identity",
@@ -430,6 +449,18 @@ const ADMIN_READ_SECTION_INFO = Object.freeze({
       "upload_link_speed_bps",
     ],
   },
+  internet_status_technical: {
+    titleKey: "admin.section.internet_status_technical",
+    icon: "mdi:web-alert",
+    source: "public_status",
+    fields: ["failure_reason"],
+  },
+  status_technical: {
+    titleKey: "admin.section.status_technical",
+    icon: "mdi:identifier",
+    source: "public_status",
+    fields: ["domain_name"],
+  },
   lan_ipv6_technical: {
     titleKey: "admin.section.lan_ipv6_technical",
     icon: "mdi:ip-network-outline",
@@ -464,6 +495,14 @@ export const ADMIN_READ_SECTION_FIELDS = Object.freeze(
     ]),
   ),
 );
+export const ADMIN_READ_SECTION_SOURCES = Object.freeze(
+  Object.fromEntries(
+    ADMIN_READ_SECTION_ORDER.map((sectionId) => [
+      sectionId,
+      ADMIN_READ_SECTION_INFO[sectionId].source || "protected_json",
+    ]),
+  ),
+);
 export const ADMIN_READ_FIELD_KEYS = Object.freeze([
   ...new Set(
     ADMIN_READ_SECTION_ORDER.flatMap(
@@ -473,6 +512,19 @@ export const ADMIN_READ_FIELD_KEYS = Object.freeze([
 ]);
 const MAX_ADMIN_READ_ROWS = 256;
 const MAX_ADMIN_READ_TEXT_LENGTH = 256;
+export const ADMIN_READ_CLOSED_ENUM_VALUES = Object.freeze({
+  failure_reason: Object.freeze(["dsl", "net", "router", "user"]),
+});
+const ADMIN_READ_CLOSED_ENUMS = Object.freeze({
+  failure_reason: new Set(ADMIN_READ_CLOSED_ENUM_VALUES.failure_reason),
+});
+const ADMIN_RISK_ORDER = Object.freeze([
+  "normal",
+  "sensitive",
+  "disruptive",
+  "lockout",
+  "destructive",
+]);
 
 function fixedAdminSubsection({
   id,
@@ -507,10 +559,15 @@ function fixedAdminFeature(
     controls = [],
     entityGroups = [],
     readSections = [],
+    queries = [],
     capabilities = [],
-    destructive = false,
+    risk,
+    blockedReasonKey,
   } = {},
 ) {
+  if (risk !== undefined && !ADMIN_RISK_ORDER.includes(risk)) {
+    throw new Error(`Unknown Administration feature risk: ${risk}`);
+  }
   return Object.freeze({
     id,
     titleKey: `admin.feature.${id}`,
@@ -518,8 +575,11 @@ function fixedAdminFeature(
     controls: Object.freeze(controls),
     entityGroups: Object.freeze(entityGroups),
     readSections: Object.freeze(readSections),
+    queries: Object.freeze(queries),
     capabilities: Object.freeze(capabilities),
-    destructive,
+    risk,
+    destructive: risk === "destructive",
+    blockedReasonKey,
   });
 }
 
@@ -553,6 +613,9 @@ export const ADMIN_IA = Object.freeze([
         "button:reconnect_internet",
         "select:internet_privacy_level_control",
       ],
+      readSections: [
+        { id: "internet_status_technical", capabilities: ["internet"] },
+      ],
       features: [
         fixedAdminFeature("internet_reconnect", {
           contract: "reviewed",
@@ -562,6 +625,12 @@ export const ADMIN_IA = Object.freeze([
         }),
         fixedAdminFeature("internet_provider_configuration", {
           entityGroups: ["connection_internet", "bandwidth_interface"],
+          capabilities: ["internet"],
+        }),
+        fixedAdminFeature("internet_connection_diagnostics", {
+          contract: "read_only",
+          entityGroups: ["connection_internet"],
+          readSections: ["internet_status_technical"],
           capabilities: ["internet"],
         }),
         fixedAdminFeature("internet_ip_information", {
@@ -628,9 +697,14 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("internet_receiver_routing_exceptions", {
           capabilities: ["receiver", "mobile"],
         }),
-        fixedAdminFeature("internet_receiver_firmware", {
+        fixedAdminFeature("internet_receiver_firmware_update", {
           entityGroups: ["mobile_receiver_firmware"],
           capabilities: ["receiver"],
+          risk: "disruptive",
+        }),
+        fixedAdminFeature("internet_receiver_factory_esim_restore", {
+          capabilities: ["receiver"],
+          risk: "destructive",
         }),
       ],
     }),
@@ -716,6 +790,19 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["telephony_registration", "telephony_lines"],
           readSections: ["telephony_providers", "telephone_lines"],
           capabilities: ["telephony"],
+          risk: "sensitive",
+        }),
+        fixedAdminFeature("telephony_provider_delete", {
+          capabilities: ["telephony"],
+          risk: "destructive",
+        }),
+        fixedAdminFeature("telephony_number_delete", {
+          capabilities: ["telephony"],
+          risk: "destructive",
+        }),
+        fixedAdminFeature("telephony_number_activation", {
+          capabilities: ["telephony"],
+          risk: "disruptive",
         }),
         fixedAdminFeature("telephony_number_assignment", {
           capabilities: ["telephony"],
@@ -805,11 +892,15 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["telephony_dect_handsets"],
           readSections: ["dect_handsets"],
           capabilities: ["dect"],
-          destructive: true,
+          risk: "destructive",
+          blockedReasonKey:
+            "admin.feature.blocked_reason.dect_handset_disconnect",
         }),
         fixedAdminFeature("telephony_dect_handset_paging", {
           entityGroups: ["telephony_dect_paging"],
           capabilities: ["dect"],
+          blockedReasonKey:
+            "admin.feature.blocked_reason.dect_handset_paging",
         }),
         fixedAdminFeature("telephony_dect_repeater_enrollment", {
           entityGroups: ["telephony_dect_repeaters"],
@@ -820,7 +911,9 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["telephony_dect_repeaters"],
           readSections: ["dect_repeaters"],
           capabilities: ["dect"],
-          destructive: true,
+          risk: "destructive",
+          blockedReasonKey:
+            "admin.feature.blocked_reason.dect_repeater_disconnect",
         }),
       ],
     }),
@@ -836,6 +929,7 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("telephony_ip_pbx", {
           entityGroups: ["telephony_pbx"],
           readSections: ["pbx_clients"],
+          queries: ["ip_pbx_refresh"],
           capabilities: ["pbx"],
         }),
         fixedAdminFeature("telephony_ip_phone_enrollment", {
@@ -850,7 +944,7 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("telephony_ip_phone_disconnect", {
           entityGroups: ["telephony_ip"],
           capabilities: ["pbx"],
-          destructive: true,
+          risk: "destructive",
         }),
       ],
     }),
@@ -876,6 +970,7 @@ export const ADMIN_IA = Object.freeze([
       features: [
         fixedAdminFeature("telephony_phonebook_management", {
           entityGroups: ["telephony_phonebooks"],
+          queries: ["phonebook_search"],
           capabilities: ["telephony", "phonebook"],
         }),
       ],
@@ -912,7 +1007,7 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("network_client_delete", {
           entityGroups: ["clients_devices"],
           capabilities: ["clients"],
-          destructive: true,
+          risk: "destructive",
         }),
       ],
     }),
@@ -930,10 +1025,20 @@ export const ADMIN_IA = Object.freeze([
           readSections: ["mesh_nodes"],
           capabilities: ["mesh"],
         }),
+        fixedAdminFeature("network_mesh_node_rename"),
+        fixedAdminFeature("network_mesh_identify", {
+          capabilities: ["mesh"],
+          risk: "disruptive",
+        }),
+        fixedAdminFeature("network_mesh_node_delete", {
+          capabilities: ["mesh"],
+          risk: "destructive",
+        }),
         fixedAdminFeature("network_powerline_management", {
           readSections: ["powerline_nodes"],
           capabilities: ["powerline"],
         }),
+        fixedAdminFeature("network_powerline_node_rename"),
       ],
     }),
     fixedAdminSubsection({
@@ -1103,6 +1208,10 @@ export const ADMIN_IA = Object.freeze([
           readSections: ["usb_devices", "storage_devices"],
           capabilities: ["usb"],
         }),
+        fixedAdminFeature("network_usb_safe_remove", {
+          capabilities: ["usb"],
+          risk: "disruptive",
+        }),
         fixedAdminFeature("network_nas_shares", {
           entityGroups: ["system_nas", "system_usb"],
           readSections: ["nas_shares", "storage_devices"],
@@ -1153,33 +1262,33 @@ export const ADMIN_IA = Object.freeze([
         }),
         fixedAdminFeature("system_configuration_restore", {
           capabilities: ["system"],
-          destructive: true,
+          risk: "destructive",
         }),
         fixedAdminFeature("system_factory_reset", {
           capabilities: ["system"],
-          destructive: true,
+          risk: "destructive",
         }),
         fixedAdminFeature("system_dect_reset", {
           entityGroups: ["telephony_dect"],
           capabilities: ["dect"],
-          destructive: true,
+          risk: "destructive",
         }),
         fixedAdminFeature("system_mesh_restart", {
           entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
           readSections: ["mesh_nodes"],
           capabilities: ["mesh"],
-          destructive: true,
+          risk: "disruptive",
         }),
         fixedAdminFeature("system_mesh_reset", {
           entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
           readSections: ["mesh_nodes"],
           capabilities: ["mesh"],
-          destructive: true,
+          risk: "destructive",
         }),
         fixedAdminFeature("system_dsl_modem_mode", {
           entityGroups: ["dsl_status", "connection_internet"],
           capabilities: ["dsl"],
-          destructive: true,
+          risk: "lockout",
         }),
       ],
     }),
@@ -1191,13 +1300,13 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("system_router_firmware", {
           entityGroups: ["system_firmware"],
           capabilities: ["firmware"],
-          destructive: true,
+          risk: "disruptive",
         }),
         fixedAdminFeature("system_mesh_firmware", {
           entityGroups: ["wireless_mesh_nodes"],
           readSections: ["mesh_nodes"],
           capabilities: ["firmware", "mesh"],
-          destructive: true,
+          risk: "disruptive",
         }),
         fixedAdminFeature("system_web_ui_version", {
           contract: "read_only",
@@ -1243,6 +1352,7 @@ export const ADMIN_IA = Object.freeze([
         "system_lan_ports",
         "system_local_display",
       ],
+      readSections: [{ id: "status_technical", capabilities: ["system"] }],
       features: [
         fixedAdminFeature("system_front_led_schedule", {
           capabilities: ["system"],
@@ -1259,6 +1369,7 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("system_information_services", {
           contract: "read_only",
           entityGroups: ["system_health", "system_services"],
+          readSections: ["status_technical"],
           capabilities: ["system"],
         }),
         fixedAdminFeature("system_messages", {
@@ -1271,7 +1382,7 @@ export const ADMIN_IA = Object.freeze([
             "clients_lan",
           ],
           capabilities: ["receiver", "lan"],
-          destructive: true,
+          risk: "lockout",
         }),
         fixedAdminFeature("system_local_display_settings", {
           entityGroups: ["system_local_display"],
@@ -1346,14 +1457,6 @@ export const ADMIN_IA = Object.freeze([
       ],
     }),
   ]),
-]);
-
-const ADMIN_RISK_ORDER = Object.freeze([
-  "normal",
-  "sensitive",
-  "disruptive",
-  "lockout",
-  "destructive",
 ]);
 
 const DECIMAL_DATA_FACTORS = {
@@ -1513,17 +1616,18 @@ export function normalizeAdminReadPayload(payload, entryId) {
   const sections = [];
   for (const section of payload.sections) {
     const sectionId = section?.id;
+    const info = ADMIN_READ_SECTION_INFO[sectionId];
+    const expectedSource = info?.source || "protected_json";
     if (
       typeof sectionId !== "string" ||
       !Object.hasOwn(ADMIN_READ_SECTION_INFO, sectionId) ||
       seen.has(sectionId) ||
-      section.source !== "protected_json" ||
+      section.source !== expectedSource ||
       !Array.isArray(section.rows) ||
       typeof section.truncated !== "boolean"
     ) {
       return undefined;
     }
-    const info = ADMIN_READ_SECTION_INFO[sectionId];
     seen.add(sectionId);
 
     const rows = [];
@@ -1535,6 +1639,8 @@ export function normalizeAdminReadPayload(payload, entryId) {
       for (const field of info.fields) {
         if (!Object.hasOwn(rawRow, field)) continue;
         const value = rawRow[field];
+        const allowedValues = ADMIN_READ_CLOSED_ENUMS[field];
+        if (allowedValues && !allowedValues.has(value)) continue;
         if (typeof value === "string") {
           row[field] = value.slice(0, MAX_ADMIN_READ_TEXT_LENGTH);
         } else if (
@@ -1549,7 +1655,7 @@ export function normalizeAdminReadPayload(payload, entryId) {
     sections.push({
       id: sectionId,
       rows,
-      source: "protected_json",
+      source: expectedSource,
       truncated: section.truncated || section.rows.length > MAX_ADMIN_READ_ROWS,
     });
   }
@@ -1563,6 +1669,270 @@ export function normalizeAdminReadPayload(payload, entryId) {
     schema_version: ADMIN_READ_SCHEMA_VERSION,
     entry_id: entryId,
     sections,
+  };
+}
+
+function adminPrivateQueryText(value, maxLength = ADMIN_PRIVATE_QUERY_MAX_TEXT_LENGTH) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    value !== value.trim() ||
+    /[\p{C}\p{Zl}\p{Zp}]/u.test(value)
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function adminPrivateQueryIdentifier(value) {
+  return typeof value === "string" &&
+    ADMIN_PRIVATE_QUERY_IDENTIFIER.test(value)
+    ? value
+    : undefined;
+}
+
+function adminPrivateQueryPhoneNumber(value) {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 64 &&
+    value === value.trim() &&
+    ADMIN_PRIVATE_QUERY_PHONE_NUMBER.test(value)
+    ? value
+    : undefined;
+}
+
+function adminPrivateQueryIpv4(value) {
+  if (typeof value !== "string") return undefined;
+  const parts = value.split(".");
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => {
+      const numeric = Number(part);
+      return (
+        !/^\d{1,3}$/.test(part) ||
+        !Number.isInteger(numeric) ||
+        numeric < 0 ||
+        numeric > 255 ||
+        String(numeric) !== part
+      );
+    })
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+function adminPrivateQueryMac(value) {
+  return typeof value === "string" &&
+    /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function adminPrivateQueryPhonebookId(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 4
+    ? value
+    : undefined;
+}
+
+/** Return a translated validation key for one exact backend query contract. */
+export function adminPrivateQueryInputError(query, input) {
+  if (query === "ip_pbx_refresh") {
+    return adminPrivateQueryIdentifier(input?.clientId) === undefined
+      ? "admin.query.error.identifier"
+      : undefined;
+  }
+  if (query === "phonebook_search") {
+    if (adminPrivateQueryPhonebookId(input?.phonebookId) === undefined) {
+      return "admin.query.error.phonebook";
+    }
+    return typeof input?.prefix !== "string" ||
+      !ADMIN_PRIVATE_QUERY_PREFIX.test(input.prefix)
+      ? "admin.query.error.prefix"
+      : undefined;
+  }
+  if (query === "phonebook_contact") {
+    if (adminPrivateQueryPhonebookId(input?.phonebookId) === undefined) {
+      return "admin.query.error.phonebook";
+    }
+    return adminPrivateQueryIdentifier(input?.contactId) === undefined
+      ? "admin.query.error.identifier"
+      : undefined;
+  }
+  return "admin.query.error.unavailable";
+}
+
+function normalizeAdminPrivatePbxResult(result, expected) {
+  const clientId = adminPrivateQueryIdentifier(result?.client_id);
+  const statusCode = result?.status_code;
+  if (
+    clientId === undefined ||
+    clientId !== expected?.clientId ||
+    !Number.isInteger(statusCode) ||
+    statusCode < 0 ||
+    statusCode >= ADMIN_PRIVATE_QUERY_PBX_STATUSES.length ||
+    result?.status !== ADMIN_PRIVATE_QUERY_PBX_STATUSES[statusCode]
+  ) {
+    return undefined;
+  }
+  const normalized = {
+    client_id: clientId,
+    status: result.status,
+    status_code: statusCode,
+  };
+  const name = adminPrivateQueryText(result.name);
+  const ipv4 = adminPrivateQueryIpv4(result.ipv4);
+  const mac = adminPrivateQueryMac(result.mac);
+  if (name !== undefined) normalized.name = name;
+  if (ipv4 !== undefined) normalized.ipv4 = ipv4;
+  if (mac !== undefined) normalized.mac = mac;
+  return normalized;
+}
+
+function normalizeAdminPrivateSearchResult(result, expected) {
+  const phonebookId = adminPrivateQueryPhonebookId(result?.phonebook_id);
+  const prefix = result?.prefix;
+  if (
+    phonebookId === undefined ||
+    phonebookId !== expected?.phonebookId ||
+    typeof prefix !== "string" ||
+    !ADMIN_PRIVATE_QUERY_PREFIX.test(prefix) ||
+    prefix !== expected?.prefix ||
+    !Array.isArray(result?.entries) ||
+    typeof result?.truncated !== "boolean"
+  ) {
+    return undefined;
+  }
+  const entries = [];
+  for (const rawEntry of result.entries.slice(0, ADMIN_PRIVATE_QUERY_MAX_ROWS)) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      continue;
+    }
+    const contactId = adminPrivateQueryIdentifier(rawEntry.contact_id);
+    if (contactId === undefined) continue;
+    const entry = { contact_id: contactId };
+    const lastName = adminPrivateQueryText(rawEntry.last_name);
+    const firstName = adminPrivateQueryText(rawEntry.first_name);
+    const number = adminPrivateQueryPhoneNumber(rawEntry.number);
+    if (lastName !== undefined) entry.last_name = lastName;
+    if (firstName !== undefined) entry.first_name = firstName;
+    if (number !== undefined) entry.number = number;
+    entries.push(entry);
+  }
+  const normalized = {
+    phonebook_id: phonebookId,
+    prefix,
+    entries,
+    truncated:
+      result.truncated || result.entries.length > ADMIN_PRIVATE_QUERY_MAX_ROWS,
+  };
+  if (
+    Number.isInteger(result.total) &&
+    result.total >= 0 &&
+    result.total <= 1000
+  ) {
+    normalized.total = result.total;
+  }
+  return normalized;
+}
+
+function normalizeAdminPrivateContactResult(result, expected) {
+  const phonebookId = adminPrivateQueryPhonebookId(result?.phonebook_id);
+  const contactId = adminPrivateQueryIdentifier(result?.contact_id);
+  if (
+    phonebookId === undefined ||
+    phonebookId !== expected?.phonebookId ||
+    contactId === undefined ||
+    contactId !== expected?.contactId ||
+    !result?.contact ||
+    typeof result.contact !== "object" ||
+    Array.isArray(result.contact)
+  ) {
+    return undefined;
+  }
+  const fieldLimits = {
+    last_name: 256,
+    first_name: 256,
+    private_number: 64,
+    work_number: 64,
+    mobile_number: 64,
+    secondary_mobile_number: 64,
+    street: 256,
+    postal_code: 32,
+    city: 256,
+    birthday: 10,
+  };
+  const phoneFields = new Set([
+    "private_number",
+    "work_number",
+    "mobile_number",
+    "secondary_mobile_number",
+  ]);
+  const contact = {};
+  for (const [field, maxLength] of Object.entries(fieldLimits)) {
+    let value;
+    if (phoneFields.has(field)) {
+      value = adminPrivateQueryPhoneNumber(result.contact[field]);
+    } else if (field === "birthday") {
+      value =
+        typeof result.contact[field] === "string" &&
+        ADMIN_PRIVATE_QUERY_BIRTHDAY.test(result.contact[field])
+          ? result.contact[field]
+          : undefined;
+    } else {
+      value = adminPrivateQueryText(result.contact[field], maxLength);
+    }
+    if (value !== undefined) contact[field] = value;
+  }
+  if (Object.keys(contact).length === 0) return undefined;
+  return { phonebook_id: phonebookId, contact_id: contactId, contact };
+}
+
+/** Allowlist one ephemeral private-query response before it reaches the DOM. */
+export function normalizeAdminPrivateQueryPayload(payload, query, expected) {
+  if (
+    payload?.schema_version !== ADMIN_PRIVATE_QUERY_SCHEMA_VERSION ||
+    payload?.query !== query ||
+    !payload?.result ||
+    typeof payload.result !== "object" ||
+    Array.isArray(payload.result)
+  ) {
+    return undefined;
+  }
+  if (query === "ip_pbx_refresh") {
+    return normalizeAdminPrivatePbxResult(payload.result, expected);
+  }
+  if (query === "phonebook_search") {
+    return normalizeAdminPrivateSearchResult(payload.result, expected);
+  }
+  if (query === "phonebook_contact") {
+    return normalizeAdminPrivateContactResult(payload.result, expected);
+  }
+  return undefined;
+}
+
+function emptyAdminPrivateQueryState() {
+  return {
+    pbx: {
+      clientId: "",
+      errorKey: "",
+      loading: false,
+      request: 0,
+      result: undefined,
+    },
+    phonebook: {
+      contactErrorKey: "",
+      contactLoading: false,
+      contactRequest: 0,
+      contactResult: undefined,
+      phonebookId: 0,
+      prefix: "",
+      searchErrorKey: "",
+      searchLoading: false,
+      searchRequest: 0,
+      searchResult: undefined,
+    },
   };
 }
 
@@ -2171,7 +2541,9 @@ export function liveWanSourceFromEntityStates(source, entities, states) {
   );
   if (fastest !== undefined) live.last_stable_interval_seconds = fastest;
   const lastSample = usableState(stateFor("wan_last_sample"));
-  if (lastSample !== undefined) live.last_sampled_at = lastSample;
+  if (live.last_sampled_at === undefined && lastSample !== undefined) {
+    live.last_sampled_at = lastSample;
+  }
   return live;
 }
 
@@ -2264,6 +2636,9 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminReadError = "";
     this._adminReadRequest = 0;
     this._adminReadRefreshPending = undefined;
+    this._adminPrivateQueries = emptyAdminPrivateQueryState();
+    this._adminPrivateQueryEpoch = 0;
+    this._focusAfterPrivateQuery = undefined;
     this._loading = false;
     this._loadError = "";
     this._pendingAction = undefined;
@@ -2276,6 +2651,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this.shadowRoot.addEventListener("click", (event) => this._handleClick(event));
     this.shadowRoot.addEventListener("input", (event) => this._handleInput(event));
     this.shadowRoot.addEventListener("keydown", (event) => this._handleKeyDown(event));
+    this.shadowRoot.addEventListener("submit", (event) => this._handleSubmit(event));
   }
 
   set hass(value) {
@@ -2348,6 +2724,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (this._renderFrame) window.cancelAnimationFrame(this._renderFrame);
     this._renderFrame = undefined;
     this._clearAdminRead();
+    this.shadowRoot.innerHTML = "";
   }
 
   _shouldRenderForHass(previous, next) {
@@ -2517,6 +2894,13 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminReadLoading = false;
     this._adminReadError = "";
     this._adminReadRefreshPending = undefined;
+    this._clearAdminPrivateQueries();
+  }
+
+  _clearAdminPrivateQueries() {
+    this._adminPrivateQueryEpoch += 1;
+    this._adminPrivateQueries = emptyAdminPrivateQueryState();
+    this._focusAfterPrivateQuery = undefined;
   }
 
   async _loadAdminRead(entryId, { force = false } = {}) {
@@ -2608,6 +2992,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     const previousView = this._activeView;
     this._activeView = view;
     this._notice = "";
+    if (view !== "administration") this._clearAdminPrivateQueries();
     // Switch the visible panel immediately. A cached administrator snapshot must
     // never make `_loadAdminRead` short-circuit before the selected tab renders.
     this._render();
@@ -2753,6 +3138,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     );
     if (!target) return;
 
+    if (target.dataset.adminQueryClear) {
+      this._clearAdminPrivateQueryResult(target.dataset.adminQueryClear);
+      return;
+    }
+    if (target.dataset.phonebookContact) {
+      this._runPhonebookContactQuery(target.dataset.phonebookContact);
+      return;
+    }
+
     if (target.dataset.router) {
       this._selectRouter(target.dataset.router);
       return;
@@ -2818,6 +3212,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _handleInput(event) {
+    if (this._handleAdminPrivateQueryInput(event)) return;
     const pending = this._pendingAction;
     const target = event.target;
     if (!pending || !target?.dataset) {
@@ -2848,6 +3243,309 @@ export class SpeedportSmartPanel extends HTMLElement {
       const error = this.shadowRoot.querySelector("[data-confirm-error]");
       if (error) error.textContent = "";
     }
+  }
+
+  _handleSubmit(event) {
+    const form = event.target?.closest?.("[data-admin-query-form]");
+    if (!form) return;
+    event.preventDefault();
+    if (form.dataset.adminQueryForm === "ip_pbx_refresh") {
+      this._runIpPbxQuery();
+    } else if (form.dataset.adminQueryForm === "phonebook_search") {
+      this._runPhonebookSearchQuery();
+    }
+  }
+
+  _handleAdminPrivateQueryInput(event) {
+    const input = event.target;
+    const field = input?.dataset?.adminQueryInput;
+    if (!field) return false;
+    if (field === "pbx-client-id") {
+      this._adminPrivateQueries.pbx.clientId = String(input.value ?? "").slice(
+        0,
+        33,
+      );
+      this._adminPrivateQueries.pbx.errorKey = "";
+    } else if (field === "phonebook-id") {
+      const value = Number(input.value);
+      this._adminPrivateQueries.phonebook.phonebookId =
+        adminPrivateQueryPhonebookId(value) ?? -1;
+      this._adminPrivateQueries.phonebook.searchErrorKey = "";
+    } else if (field === "phonebook-prefix") {
+      this._adminPrivateQueries.phonebook.prefix = String(
+        input.value ?? "",
+      ).slice(0, 2);
+      this._adminPrivateQueries.phonebook.searchErrorKey = "";
+    } else {
+      return false;
+    }
+    input.removeAttribute?.("aria-invalid");
+    const error = this.shadowRoot.querySelector?.(
+      `[data-admin-query-input-error="${field}"]`,
+    );
+    if (error) error.textContent = "";
+    return true;
+  }
+
+  _adminPrivateQueryCapabilityObserved(query) {
+    const router = this._currentRouter();
+    const capabilities = new Set([
+      ...(router?.capabilities || []).map((capability) =>
+        String(capability).toLowerCase(),
+      ),
+      ...(router?.capability_families || []).map((family) =>
+        String(family?.name || "").toLowerCase(),
+      ),
+    ]);
+    const requiredCapability =
+      query === "ip_pbx_refresh"
+        ? "pbx_clients"
+        : ["phonebook_search", "phonebook_contact"].includes(query)
+          ? "phonebook"
+          : undefined;
+    return (
+      requiredCapability !== undefined &&
+      capabilities.has(requiredCapability)
+    );
+  }
+
+  _adminPrivateQueryAvailable(query) {
+    const router = this._currentRouter();
+    const protectedSource = router?.access_sources?.find(
+      (source) => source.id === "protected_json",
+    );
+    return (
+      this._adminPrivateQueryCapabilityObserved(query) &&
+      this._activeView === "administration" &&
+      this._hass?.user?.is_admin === true &&
+      router?.entry_state === "loaded" &&
+      router?.management?.state === "available" &&
+      protectedSource?.supported !== false &&
+      protectedSource?.available !== false
+    );
+  }
+
+  _adminPrivateQueryErrorKey(error) {
+    return error?.code === "rate_limited"
+      ? "admin.query.error.rate_limited"
+      : "admin.query.error.unavailable";
+  }
+
+  _adminPrivateQueryContextIsCurrent(entryId, epoch) {
+    return (
+      epoch === this._adminPrivateQueryEpoch &&
+      this._activeView === "administration" &&
+      this._hass?.user?.is_admin === true &&
+      this._currentRouter()?.entry_id === entryId
+    );
+  }
+
+  async _runIpPbxQuery() {
+    const state = this._adminPrivateQueries.pbx;
+    if (state.loading) return;
+    const expected = { clientId: state.clientId };
+    const inputError = adminPrivateQueryInputError("ip_pbx_refresh", expected);
+    if (inputError || !this._adminPrivateQueryAvailable("ip_pbx_refresh")) {
+      state.errorKey = inputError || "admin.query.error.unavailable";
+      state.result = undefined;
+      this._render();
+      return;
+    }
+    const entryId = this._currentRouter().entry_id;
+    const epoch = this._adminPrivateQueryEpoch;
+    const request = ++state.request;
+    state.errorKey = "";
+    state.loading = true;
+    state.result = undefined;
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise({
+        type: ADMIN_PRIVATE_QUERY_API_TYPES.ip_pbx_refresh,
+        entry_id: entryId,
+        client_id: expected.clientId,
+      });
+      if (
+        !this._adminPrivateQueryContextIsCurrent(entryId, epoch) ||
+        request !== this._adminPrivateQueries.pbx.request
+      ) {
+        return;
+      }
+      const result = normalizeAdminPrivateQueryPayload(
+        payload,
+        "ip_pbx_refresh",
+        expected,
+      );
+      if (!result) throw new Error("Unsupported private query response");
+      state.result = result;
+      this._focusAfterPrivateQuery = "ip_pbx_refresh";
+    } catch (error) {
+      if (this._adminPrivateQueryContextIsCurrent(entryId, epoch)) {
+        state.errorKey = this._adminPrivateQueryErrorKey(error);
+      }
+    } finally {
+      if (
+        this._adminPrivateQueryContextIsCurrent(entryId, epoch) &&
+        request === this._adminPrivateQueries.pbx.request
+      ) {
+        state.loading = false;
+        this._render();
+      }
+    }
+  }
+
+  async _runPhonebookSearchQuery() {
+    const state = this._adminPrivateQueries.phonebook;
+    if (state.searchLoading) return;
+    const expected = {
+      phonebookId: state.phonebookId,
+      prefix: state.prefix,
+    };
+    const inputError = adminPrivateQueryInputError("phonebook_search", expected);
+    if (inputError || !this._adminPrivateQueryAvailable("phonebook_search")) {
+      state.searchErrorKey = inputError || "admin.query.error.unavailable";
+      state.searchResult = undefined;
+      state.contactResult = undefined;
+      this._render();
+      return;
+    }
+    const entryId = this._currentRouter().entry_id;
+    const epoch = this._adminPrivateQueryEpoch;
+    const request = ++state.searchRequest;
+    state.contactRequest += 1;
+    state.searchErrorKey = "";
+    state.searchLoading = true;
+    state.searchResult = undefined;
+    state.contactErrorKey = "";
+    state.contactLoading = false;
+    state.contactResult = undefined;
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise({
+        type: ADMIN_PRIVATE_QUERY_API_TYPES.phonebook_search,
+        entry_id: entryId,
+        phonebook_id: expected.phonebookId,
+        prefix: expected.prefix,
+      });
+      if (
+        !this._adminPrivateQueryContextIsCurrent(entryId, epoch) ||
+        request !== this._adminPrivateQueries.phonebook.searchRequest
+      ) {
+        return;
+      }
+      const result = normalizeAdminPrivateQueryPayload(
+        payload,
+        "phonebook_search",
+        expected,
+      );
+      if (!result) throw new Error("Unsupported private query response");
+      state.searchResult = result;
+      this._focusAfterPrivateQuery = "phonebook_search";
+    } catch (error) {
+      if (this._adminPrivateQueryContextIsCurrent(entryId, epoch)) {
+        state.searchErrorKey = this._adminPrivateQueryErrorKey(error);
+      }
+    } finally {
+      if (
+        this._adminPrivateQueryContextIsCurrent(entryId, epoch) &&
+        request === this._adminPrivateQueries.phonebook.searchRequest
+      ) {
+        state.searchLoading = false;
+        this._render();
+      }
+    }
+  }
+
+  async _runPhonebookContactQuery(contactId) {
+    const state = this._adminPrivateQueries.phonebook;
+    const searchResult = state.searchResult;
+    if (
+      state.contactLoading ||
+      !searchResult?.entries?.some((entry) => entry.contact_id === contactId)
+    ) {
+      return;
+    }
+    const expected = {
+      phonebookId: searchResult.phonebook_id,
+      contactId,
+    };
+    const inputError = adminPrivateQueryInputError("phonebook_contact", expected);
+    if (inputError || !this._adminPrivateQueryAvailable("phonebook_contact")) {
+      state.contactErrorKey = inputError || "admin.query.error.unavailable";
+      state.contactResult = undefined;
+      this._render();
+      return;
+    }
+    const entryId = this._currentRouter().entry_id;
+    const epoch = this._adminPrivateQueryEpoch;
+    const request = ++state.contactRequest;
+    state.contactErrorKey = "";
+    state.contactLoading = true;
+    state.contactResult = undefined;
+    this._render();
+    try {
+      const payload = await this._hass.connection.sendMessagePromise({
+        type: ADMIN_PRIVATE_QUERY_API_TYPES.phonebook_contact,
+        entry_id: entryId,
+        phonebook_id: expected.phonebookId,
+        contact_id: expected.contactId,
+      });
+      if (
+        !this._adminPrivateQueryContextIsCurrent(entryId, epoch) ||
+        request !== this._adminPrivateQueries.phonebook.contactRequest
+      ) {
+        return;
+      }
+      const result = normalizeAdminPrivateQueryPayload(
+        payload,
+        "phonebook_contact",
+        expected,
+      );
+      if (!result) throw new Error("Unsupported private query response");
+      state.contactResult = result;
+      this._focusAfterPrivateQuery = "phonebook_contact";
+    } catch (error) {
+      if (this._adminPrivateQueryContextIsCurrent(entryId, epoch)) {
+        state.contactErrorKey = this._adminPrivateQueryErrorKey(error);
+      }
+    } finally {
+      if (
+        this._adminPrivateQueryContextIsCurrent(entryId, epoch) &&
+        request === this._adminPrivateQueries.phonebook.contactRequest
+      ) {
+        state.contactLoading = false;
+        this._render();
+      }
+    }
+  }
+
+  _clearAdminPrivateQueryResult(scope) {
+    if (scope === "ip_pbx_refresh") {
+      const state = this._adminPrivateQueries.pbx;
+      state.request += 1;
+      state.errorKey = "";
+      state.loading = false;
+      state.result = undefined;
+    } else if (scope === "phonebook_contact") {
+      const state = this._adminPrivateQueries.phonebook;
+      state.contactRequest += 1;
+      state.contactErrorKey = "";
+      state.contactLoading = false;
+      state.contactResult = undefined;
+    } else if (scope === "phonebook_search") {
+      const state = this._adminPrivateQueries.phonebook;
+      state.searchRequest += 1;
+      state.contactRequest += 1;
+      state.searchErrorKey = "";
+      state.searchLoading = false;
+      state.searchResult = undefined;
+      state.contactErrorKey = "";
+      state.contactLoading = false;
+      state.contactResult = undefined;
+    } else {
+      return;
+    }
+    this._focusAfterPrivateQuery = undefined;
+    this._render();
   }
 
   _closeConfirmation() {
@@ -3865,6 +4563,252 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
+  _renderAdminPrivateQueryStatus({ errorKey, loading, query }) {
+    if (loading) {
+      return `<div class="admin-query-status loading" role="status" aria-live="polite"><span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>${escapeHtml(this._t("admin.query.loading"))}</div>`;
+    }
+    if (errorKey) {
+      return `<div class="admin-query-status error" role="alert" data-admin-query-result="${escapeHtml(query)}" tabindex="-1"><ha-icon icon="mdi:alert-circle-outline" aria-hidden="true"></ha-icon><span>${escapeHtml(this._t(errorKey))}</span></div>`;
+    }
+    return "";
+  }
+
+  _renderAdminPrivatePbxQuery() {
+    const state = this._adminPrivateQueries.pbx;
+    const available = this._adminPrivateQueryAvailable("ip_pbx_refresh");
+    const observed = this._adminPrivateQueryCapabilityObserved(
+      "ip_pbx_refresh",
+    );
+    const error = this._renderAdminPrivateQueryStatus({
+      errorKey: state.errorKey,
+      loading: state.loading,
+      query: "ip_pbx_refresh",
+    });
+    const result = state.result
+      ? `
+        <section class="admin-query-result" data-admin-query-result="ip_pbx_refresh" tabindex="-1" aria-live="polite">
+          <header>
+            <div>
+              <strong>${escapeHtml(this._t("admin.query.pbx.result"))}</strong>
+              <small>${escapeHtml(this._t("admin.query.ephemeral"))}</small>
+            </div>
+            <button class="secondary compact" type="button" data-admin-query-clear="ip_pbx_refresh">${escapeHtml(this._t("admin.query.clear"))}</button>
+          </header>
+          <dl class="admin-query-values">
+            ${["client_id", "status", "name", "ipv4", "mac"]
+              .filter((field) => Object.hasOwn(state.result, field))
+              .map(
+                (field) => `<div><dt>${escapeHtml(this._t(`admin.query.field.${field}`))}</dt><dd>${escapeHtml(state.result[field])}</dd></div>`,
+              )
+              .join("")}
+          </dl>
+        </section>
+      `
+      : "";
+    return `
+      <section class="admin-query-card" data-admin-query="ip_pbx_refresh">
+        <header class="admin-query-heading">
+          <span aria-hidden="true"><ha-icon icon="mdi:phone-sync-outline"></ha-icon></span>
+          <div>
+            <strong>${escapeHtml(this._t("admin.query.pbx.title"))}</strong>
+            <p>${escapeHtml(this._t("admin.query.pbx.description"))}</p>
+          </div>
+          <span class="admin-query-read-only">${escapeHtml(this._t("admin.query.read_only"))}</span>
+        </header>
+        <form class="admin-query-form" data-admin-query-form="ip_pbx_refresh" novalidate>
+          <label>
+            <span>${escapeHtml(this._t("admin.query.field.client_id"))}</span>
+            <input
+              data-admin-query-input="pbx-client-id"
+              type="text"
+              value="${escapeHtml(state.clientId)}"
+              minlength="1"
+              maxlength="32"
+              pattern="[A-Za-z0-9_-]{1,32}"
+              aria-describedby="speedport-query-pbx-hint speedport-query-pbx-error"
+              ${state.errorKey === "admin.query.error.identifier" ? 'aria-invalid="true"' : ""}
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              ${!available || state.loading ? "disabled" : ""}
+            >
+            <small id="speedport-query-pbx-hint">${escapeHtml(this._t("admin.query.pbx.hint"))}</small>
+            <small id="speedport-query-pbx-error" class="admin-query-input-error" data-admin-query-input-error="pbx-client-id" role="alert">${state.errorKey === "admin.query.error.identifier" ? escapeHtml(this._t(state.errorKey)) : ""}</small>
+          </label>
+          <button class="primary" type="submit" ${!available || state.loading ? "disabled" : ""}>
+            ${escapeHtml(state.loading ? this._t("admin.query.working") : this._t("admin.query.pbx.run"))}
+          </button>
+        </form>
+        ${!available ? `<p class="admin-query-unavailable"><ha-icon icon="${observed ? "mdi:account-lock-outline" : "mdi:help-circle-outline"}" aria-hidden="true"></ha-icon>${escapeHtml(this._t(observed ? "admin.query.unavailable" : "admin.query.not_observed"))}</p>` : ""}
+        ${error}
+        ${result}
+      </section>
+    `;
+  }
+
+  _renderPhonebookEntry(entry) {
+    const displayName = [entry.first_name, entry.last_name]
+      .filter(Boolean)
+      .join(" ") || this._t("admin.query.phonebook.unnamed");
+    return `
+      <article class="admin-query-entry">
+        <div>
+          <strong>${escapeHtml(displayName)}</strong>
+          ${entry.number ? `<small>${escapeHtml(entry.number)}</small>` : ""}
+        </div>
+        <button
+          class="secondary compact"
+          type="button"
+          data-phonebook-contact="${escapeHtml(entry.contact_id)}"
+          ${this._adminPrivateQueries.phonebook.contactLoading ? "disabled" : ""}
+        >${escapeHtml(this._t("admin.query.phonebook.details"))}</button>
+      </article>
+    `;
+  }
+
+  _renderPhonebookContactResult() {
+    const state = this._adminPrivateQueries.phonebook;
+    const result = state.contactResult;
+    const status = this._renderAdminPrivateQueryStatus({
+      errorKey: state.contactErrorKey,
+      loading: state.contactLoading,
+      query: "phonebook_contact",
+    });
+    if (!result) return status;
+    const fields = [
+      "first_name",
+      "last_name",
+      "private_number",
+      "work_number",
+      "mobile_number",
+      "secondary_mobile_number",
+      "street",
+      "postal_code",
+      "city",
+      "birthday",
+    ];
+    return `${status}
+      <section class="admin-query-result contact" data-admin-query-result="phonebook_contact" tabindex="-1" aria-live="polite">
+        <header>
+          <div>
+            <strong>${escapeHtml(this._t("admin.query.phonebook.contact"))}</strong>
+            <small>${escapeHtml(this._t("admin.query.ephemeral"))}</small>
+          </div>
+          <button class="secondary compact" type="button" data-admin-query-clear="phonebook_contact">${escapeHtml(this._t("admin.query.clear"))}</button>
+        </header>
+        <dl class="admin-query-values">
+          ${fields
+            .filter((field) => Object.hasOwn(result.contact, field))
+            .map(
+              (field) => `<div><dt>${escapeHtml(this._t(`admin.query.field.${field}`))}</dt><dd>${escapeHtml(result.contact[field])}</dd></div>`,
+            )
+            .join("")}
+        </dl>
+      </section>
+    `;
+  }
+
+  _renderAdminPrivatePhonebookQuery() {
+    const state = this._adminPrivateQueries.phonebook;
+    const available = this._adminPrivateQueryAvailable("phonebook_search");
+    const observed = this._adminPrivateQueryCapabilityObserved(
+      "phonebook_search",
+    );
+    const searchStatus = this._renderAdminPrivateQueryStatus({
+      errorKey: state.searchErrorKey,
+      loading: state.searchLoading,
+      query: "phonebook_search",
+    });
+    const result = state.searchResult;
+    const resultMarkup = result
+      ? `
+        <section class="admin-query-result" data-admin-query-result="phonebook_search" tabindex="-1" aria-live="polite">
+          <header>
+            <div>
+              <strong>${escapeHtml(this._t("admin.query.phonebook.result", { count: result.entries.length }))}</strong>
+              <small>${escapeHtml(
+                result.total === undefined
+                  ? this._t("admin.query.ephemeral")
+                  : this._t("admin.query.phonebook.total", { count: result.total }),
+              )}</small>
+            </div>
+            <button class="secondary compact" type="button" data-admin-query-clear="phonebook_search">${escapeHtml(this._t("admin.query.clear"))}</button>
+          </header>
+          ${result.truncated ? `<p class="admin-query-warning"><ha-icon icon="mdi:alert-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.query.phonebook.truncated"))}</p>` : ""}
+          ${
+            result.entries.length
+              ? `<div class="admin-query-entries">${result.entries.map((entry) => this._renderPhonebookEntry(entry)).join("")}</div>`
+              : `<p class="admin-query-empty">${escapeHtml(this._t("admin.query.phonebook.empty"))}</p>`
+          }
+        </section>
+      `
+      : "";
+    const bookOptions = Array.from({ length: 5 }, (_, index) => `
+      <option value="${index}" ${state.phonebookId === index ? "selected" : ""}>${escapeHtml(this._t("admin.query.phonebook.book", { number: index + 1 }))}</option>
+    `).join("");
+    return `
+      <section class="admin-query-card" data-admin-query="phonebook_search">
+        <header class="admin-query-heading">
+          <span aria-hidden="true"><ha-icon icon="mdi:book-search-outline"></ha-icon></span>
+          <div>
+            <strong>${escapeHtml(this._t("admin.query.phonebook.title"))}</strong>
+            <p>${escapeHtml(this._t("admin.query.phonebook.description"))}</p>
+          </div>
+          <span class="admin-query-read-only">${escapeHtml(this._t("admin.query.read_only"))}</span>
+        </header>
+        <form class="admin-query-form phonebook" data-admin-query-form="phonebook_search" novalidate>
+          <label>
+            <span>${escapeHtml(this._t("admin.query.phonebook.selection"))}</span>
+            <select
+              data-admin-query-input="phonebook-id"
+              aria-describedby="speedport-query-phonebook-error"
+              ${state.searchErrorKey === "admin.query.error.phonebook" ? 'aria-invalid="true"' : ""}
+              ${!available || state.searchLoading ? "disabled" : ""}
+            >${bookOptions}</select>
+          </label>
+          <label>
+            <span>${escapeHtml(this._t("admin.query.phonebook.prefix"))}</span>
+            <input
+              data-admin-query-input="phonebook-prefix"
+              type="text"
+              value="${escapeHtml(state.prefix)}"
+              maxlength="1"
+              pattern="[A-Za-z]?"
+              placeholder="A"
+              aria-describedby="speedport-query-phonebook-hint speedport-query-phonebook-error"
+              ${state.searchErrorKey === "admin.query.error.prefix" ? 'aria-invalid="true"' : ""}
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              ${!available || state.searchLoading ? "disabled" : ""}
+            >
+            <small id="speedport-query-phonebook-hint">${escapeHtml(this._t("admin.query.phonebook.hint"))}</small>
+            <small id="speedport-query-phonebook-error" class="admin-query-input-error" data-admin-query-input-error="phonebook-prefix" role="alert">${["admin.query.error.phonebook", "admin.query.error.prefix"].includes(state.searchErrorKey) ? escapeHtml(this._t(state.searchErrorKey)) : ""}</small>
+          </label>
+          <button class="primary" type="submit" ${!available || state.searchLoading ? "disabled" : ""}>
+            ${escapeHtml(state.searchLoading ? this._t("admin.query.working") : this._t("admin.query.phonebook.run"))}
+          </button>
+        </form>
+        ${!available ? `<p class="admin-query-unavailable"><ha-icon icon="${observed ? "mdi:account-lock-outline" : "mdi:help-circle-outline"}" aria-hidden="true"></ha-icon>${escapeHtml(this._t(observed ? "admin.query.unavailable" : "admin.query.not_observed"))}</p>` : ""}
+        ${searchStatus}
+        ${resultMarkup}
+        ${this._renderPhonebookContactResult()}
+      </section>
+    `;
+  }
+
+  _renderAdminPrivateQueries(queryIds) {
+    return queryIds
+      .map((query) =>
+        query === "ip_pbx_refresh"
+          ? this._renderAdminPrivatePbxQuery()
+          : query === "phonebook_search"
+            ? this._renderAdminPrivatePhonebookQuery()
+            : "",
+      )
+      .join("");
+  }
+
   _adminFeaturePresentation(
     feature,
     entities,
@@ -3911,12 +4855,19 @@ export class SpeedportSmartPanel extends HTMLElement {
     const reportAvailable = reports.some(
       (report) => entityAvailability(report, this._state(report)) === "available",
     );
-    if (reportAvailable || (observedRead && sourceAvailable)) {
+    const privateQueryObserved = feature.queries.some((query) =>
+      this._adminPrivateQueryCapabilityObserved(query),
+    );
+    const privateQueryAvailable = feature.queries.some((query) =>
+      this._adminPrivateQueryAvailable(query),
+    );
+    if (reportAvailable || (observedRead && sourceAvailable) || privateQueryAvailable) {
       return { key: "read_only", icon: "mdi:eye-outline" };
     }
     if (
       reports.length > 0 ||
       (observedRead && !sourceAvailable) ||
+      privateQueryObserved ||
       (capabilityKnown && !sourceAvailable)
     ) {
       return {
@@ -3939,12 +4890,22 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (features.length === 0) return "";
     const cards = features
       .map((feature) => {
+        const featureSourceAvailable = feature.readSections.length
+          ? feature.readSections.some((sectionId) => {
+              const source =
+                ADMIN_READ_SECTION_INFO[sectionId]?.source || "protected_json";
+              return source === "protected_json"
+                ? sourceAvailable
+                : !this._adminReadError &&
+                    accessSourceStates[source]?.available !== false;
+            })
+          : sourceAvailable;
         const presentation = this._adminFeaturePresentation(
           feature,
           entities,
           sections,
           capabilities,
-          sourceAvailable,
+          featureSourceAvailable,
         );
         const statusKey =
           feature.contract === "unsupported"
@@ -3960,9 +4921,13 @@ export class SpeedportSmartPanel extends HTMLElement {
           feature.contract === "blocked"
             ? ` title="${escapeHtml(this._t("admin.contract.blocked_hint"))}"`
             : "";
-        const destructive = feature.destructive
-          ? `<span class="admin-feature-warning"><ha-icon icon="mdi:alert-octagon-outline" aria-hidden="true"></ha-icon>${escapeHtml(this._t("admin.feature.destructive"))}</span>`
+        const featureRisk = feature.risk
+          ? this._renderRiskBadge(feature.risk)
           : "";
+        const blockedReason =
+          feature.contract === "blocked" && feature.blockedReasonKey
+            ? `<span class="admin-feature-blocked-reason">${escapeHtml(this._t(feature.blockedReasonKey))}</span>`
+            : "";
         const featureControls = entities.filter(
           (entity) =>
             isSemanticControl(entity) &&
@@ -3984,14 +4949,26 @@ export class SpeedportSmartPanel extends HTMLElement {
                 this._renderAdminReadSection(
                   sectionId,
                   sections.get(sectionId),
-                  { sourceAvailable },
+                  {
+                    sourceAvailable:
+                      (ADMIN_READ_SECTION_INFO[sectionId]?.source ||
+                        "protected_json") === "protected_json"
+                        ? sourceAvailable
+                        : !this._adminReadError &&
+                          accessSourceStates[
+                            ADMIN_READ_SECTION_INFO[sectionId]?.source
+                          ]?.available !== false,
+                  },
                 ),
               )
               .join("")
           : "";
+        const queryMarkup = canReadAdmin
+          ? this._renderAdminPrivateQueries(feature.queries)
+          : "";
         const ownedMarkup =
-          controlMarkup || readMarkup
-            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${controlMarkup}${readMarkup}</div>`
+          controlMarkup || readMarkup || queryMarkup
+            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${controlMarkup}${readMarkup}${queryMarkup}</div>`
             : "";
         const headingId = `speedport-admin-feature-${feature.id}`.replace(
           /[^a-z0-9_-]/gi,
@@ -4004,13 +4981,14 @@ export class SpeedportSmartPanel extends HTMLElement {
             <span class="admin-feature-badges">
               <span class="admin-feature-status">${escapeHtml(status)}</span>
               <span class="admin-contract-badge contract-${escapeHtml(feature.contract)}"${contractHint}>${escapeHtml(contract)}</span>
-              ${destructive}
+              ${featureRisk}
             </span>
+            ${blockedReason}
           </span>
         `;
         if (ownedMarkup) {
           return `
-            <details class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.destructive ? "destructive-candidate" : ""} has-owned-content" data-admin-feature="${escapeHtml(feature.id)}" data-detail-id="admin-feature:${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
+            <details class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.risk ? `risk-${escapeHtml(feature.risk)}` : ""} ${feature.destructive ? "destructive-candidate" : ""} has-owned-content" data-admin-feature="${escapeHtml(feature.id)}" data-detail-id="admin-feature:${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
               <summary class="admin-feature-summary">
                 ${featureHeader}
                 <ha-icon class="admin-feature-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
@@ -4020,7 +4998,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           `;
         }
         return `
-          <article class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.destructive ? "destructive-candidate" : ""}" data-admin-feature="${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
+          <article class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.risk ? `risk-${escapeHtml(feature.risk)}` : ""} ${feature.destructive ? "destructive-candidate" : ""}" data-admin-feature="${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
             ${featureHeader}
           </article>
         `;
@@ -4581,6 +5559,14 @@ export class SpeedportSmartPanel extends HTMLElement {
           focus: { kind: "data", key: "control", value: entityId },
         });
       });
+    } else if (this._focusAfterPrivateQuery) {
+      const query = this._focusAfterPrivateQuery;
+      this._focusAfterPrivateQuery = undefined;
+      window.requestAnimationFrame(() => {
+        this.shadowRoot
+          .querySelector(`[data-admin-query-result="${query}"]`)
+          ?.focus();
+      });
     } else if (renderState.focus) {
       window.requestAnimationFrame(() => {
         restoreFocusState(this.shadowRoot, renderState);
@@ -5026,6 +6012,189 @@ export class SpeedportSmartPanel extends HTMLElement {
           padding: 0 14px 14px;
           border-top: 1px solid var(--sp-border);
         }
+        .admin-query-card {
+          min-width: 0;
+          padding: 14px;
+          border: 1px solid color-mix(in srgb, var(--sp-magenta) 24%, var(--sp-border));
+          border-radius: 14px;
+          background: color-mix(in srgb, var(--sp-magenta) 3%, var(--sp-surface-soft));
+        }
+        .admin-query-heading {
+          display: grid;
+          grid-template-columns: auto minmax(0, 1fr) auto;
+          align-items: start;
+          gap: 11px;
+        }
+        .admin-query-heading > span:first-child {
+          display: grid;
+          place-items: center;
+          width: 36px;
+          height: 36px;
+          color: var(--sp-magenta);
+          border-radius: 11px;
+          background: var(--sp-surface);
+        }
+        .admin-query-heading ha-icon { --mdc-icon-size: 20px; }
+        .admin-query-heading strong { display: block; font-size: 13px; }
+        .admin-query-heading p {
+          margin: 4px 0 0;
+          color: var(--sp-muted);
+          font-size: 11px;
+          line-height: 1.45;
+        }
+        .admin-query-read-only {
+          padding: 5px 8px;
+          color: var(--sp-success);
+          border: 1px solid color-mix(in srgb, var(--sp-success) 35%, var(--sp-border));
+          border-radius: 999px;
+          background: var(--sp-surface);
+          font-size: 9px;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+        .admin-query-form {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: start;
+          gap: 10px;
+          margin-top: 14px;
+        }
+        .admin-query-form.phonebook {
+          grid-template-columns: minmax(130px, .45fr) minmax(160px, 1fr) auto;
+        }
+        .admin-query-form label { display: grid; gap: 5px; min-width: 0; }
+        .admin-query-form label > span {
+          color: var(--sp-muted);
+          font-size: 10px;
+          font-weight: 700;
+        }
+        .admin-query-form input,
+        .admin-query-form select {
+          width: 100%;
+          min-height: 44px;
+          padding: 9px 11px;
+          color: var(--sp-text);
+          border: 1px solid var(--sp-border);
+          border-radius: 10px;
+          background: var(--sp-surface);
+          font: inherit;
+        }
+        .admin-query-form input[aria-invalid="true"] { border-color: var(--sp-error); }
+        .admin-query-form label small {
+          color: var(--sp-muted);
+          font-size: 9px;
+          line-height: 1.35;
+        }
+        .admin-query-form .primary { align-self: start; }
+        .admin-query-input-error {
+          min-height: 13px;
+          color: var(--sp-error) !important;
+        }
+        .admin-query-unavailable,
+        .admin-query-status,
+        .admin-query-warning {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin: 12px 0 0;
+          padding: 10px 12px;
+          border: 1px solid var(--sp-border);
+          border-radius: 10px;
+          color: var(--sp-muted);
+          background: var(--sp-surface);
+          font-size: 11px;
+          line-height: 1.4;
+        }
+        .admin-query-status.error {
+          color: var(--sp-error);
+          border-color: color-mix(in srgb, var(--sp-error) 35%, var(--sp-border));
+          background: color-mix(in srgb, var(--sp-error) 6%, var(--sp-surface));
+        }
+        .admin-query-status .loading-mark {
+          display: flex;
+          align-items: flex-end;
+          gap: 3px;
+          height: 15px;
+        }
+        .admin-query-status .loading-mark i {
+          width: 4px;
+          height: 4px;
+          border-radius: 1px;
+          background: var(--sp-magenta);
+        }
+        .admin-query-status .loading-mark i:nth-child(2) { height: 12px; }
+        .admin-query-status ha-icon,
+        .admin-query-unavailable ha-icon,
+        .admin-query-warning ha-icon { flex: none; --mdc-icon-size: 18px; }
+        .admin-query-warning { color: var(--sp-warning); }
+        .admin-query-result {
+          min-width: 0;
+          margin-top: 12px;
+          padding: 12px;
+          border: 1px solid var(--sp-border);
+          border-radius: 12px;
+          background: var(--sp-surface);
+        }
+        .admin-query-result:focus-visible {
+          outline: 2px solid var(--sp-magenta);
+          outline-offset: 2px;
+        }
+        .admin-query-result > header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+        .admin-query-result > header strong,
+        .admin-query-result > header small { display: block; }
+        .admin-query-result > header strong { font-size: 12px; }
+        .admin-query-result > header small {
+          margin-top: 2px;
+          color: var(--sp-muted);
+          font-size: 9px;
+        }
+        .secondary.compact {
+          flex: none;
+          min-height: 36px;
+          padding: 7px 10px;
+          font-size: 10px;
+        }
+        .admin-query-values {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+          gap: 9px 12px;
+          margin: 12px 0 0;
+        }
+        .admin-query-values div { min-width: 0; }
+        .admin-query-values dt {
+          color: var(--sp-muted);
+          font-size: 9px;
+          font-weight: 700;
+        }
+        .admin-query-values dd {
+          margin: 3px 0 0;
+          overflow-wrap: anywhere;
+          font-size: 11px;
+        }
+        .admin-query-entries { display: grid; gap: 7px; margin-top: 12px; }
+        .admin-query-entry {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+          padding: 9px 10px;
+          border-radius: 10px;
+          background: var(--sp-surface-soft);
+        }
+        .admin-query-entry strong,
+        .admin-query-entry small {
+          display: block;
+          overflow-wrap: anywhere;
+        }
+        .admin-query-entry strong { font-size: 11px; }
+        .admin-query-entry small { margin-top: 2px; color: var(--sp-muted); font-size: 10px; }
+        .admin-query-empty { margin: 12px 0 0; color: var(--sp-muted); font-size: 11px; }
         .admin-feature-catalog {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
@@ -5070,6 +6239,13 @@ export class SpeedportSmartPanel extends HTMLElement {
           border-color: color-mix(in srgb, var(--sp-warning) 42%, var(--sp-border));
         }
         .admin-feature-card.status-not_observed { opacity: .76; }
+        .admin-feature-card.risk-sensitive {
+          border-color: color-mix(in srgb, var(--sp-warning) 30%, var(--sp-border));
+        }
+        .admin-feature-card.risk-disruptive,
+        .admin-feature-card.risk-lockout {
+          border-color: color-mix(in srgb, var(--sp-error) 22%, var(--sp-border));
+        }
         .admin-feature-card.destructive-candidate {
           border-color: color-mix(in srgb, var(--sp-error) 30%, var(--sp-border));
         }
@@ -5096,6 +6272,14 @@ export class SpeedportSmartPanel extends HTMLElement {
           font-size: 13px;
           line-height: 1.35;
         }
+        .admin-feature-blocked-reason {
+          display: block;
+          margin-top: 8px;
+          color: var(--sp-muted);
+          font-size: 11px;
+          line-height: 1.45;
+          overflow-wrap: anywhere;
+        }
         .admin-feature-owned {
           display: grid;
           gap: 12px;
@@ -5120,8 +6304,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           margin-top: 8px;
         }
         .admin-feature-status,
-        .admin-contract-badge,
-        .admin-feature-warning {
+        .admin-contract-badge {
           display: inline-flex;
           align-items: center;
           gap: 4px;
@@ -5146,11 +6329,6 @@ export class SpeedportSmartPanel extends HTMLElement {
           color: var(--sp-warning);
           border-color: color-mix(in srgb, var(--sp-warning) 38%, var(--sp-border));
         }
-        .admin-feature-warning {
-          color: var(--sp-error);
-          border-color: color-mix(in srgb, var(--sp-error) 38%, var(--sp-border));
-        }
-        .admin-feature-warning ha-icon { --mdc-icon-size: 13px; }
         .administration-entity-grid { padding-top: 14px; }
         .administration-subsection-content > .child-device-grid,
         .administration-subsection-content > .admin-read-section:first-child {
@@ -5891,6 +7069,9 @@ export class SpeedportSmartPanel extends HTMLElement {
           .entity-source-heading { grid-template-columns: auto 1fr; }
           .entity-source-status { grid-column: 2; justify-self: start; }
           .entity-capability-grid { grid-template-columns: 1fr; }
+          .admin-query-form,
+          .admin-query-form.phonebook { grid-template-columns: 1fr; }
+          .admin-query-form .primary { width: 100%; }
           footer { flex-direction: column; }
         }
         @media (max-width: 430px) {
@@ -5903,6 +7084,9 @@ export class SpeedportSmartPanel extends HTMLElement {
           .confirm-actions button { width: 100%; }
           .view-tabs button { padding-inline: 9px; }
           .admin-read-row dl { grid-template-columns: 1fr; }
+          .admin-query-heading { grid-template-columns: auto minmax(0, 1fr); }
+          .admin-query-read-only { grid-column: 2; justify-self: start; }
+          .admin-query-result > header { align-items: flex-start; }
           .administration-area > summary,
           .administration-subsection > summary {
             grid-template-columns: auto minmax(0, 1fr) auto;

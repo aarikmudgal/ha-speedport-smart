@@ -119,6 +119,20 @@ Disable any other Home Assistant integration or local polling tool connected
 to the same Speedport; competing clients can contend for its single protected
 management lease.
 
+Home Assistant can propose routers announced by a `speedport*` DHCP hostname or
+the captured Deutsche Telekom SSDP fingerprint (`Speedport Smart 4 R Typ A` in
+the SSDP `modelName`, including its spacing, plus the WLAN access-point device
+type). Announcements are hints only. Before prompting, the integration reads
+only public status over HTTP and requires the Status API itself to report
+`Speedport Smart 4R Typ A` plus a stable serial number. Confirmation then runs
+the same read-only connection validation as manual setup and requires the model
+and serial to remain equal. Adjacent Smart models and other Telekom or
+Speedport products are rejected.
+
+Discovery never changes an existing entry's host and never sends a stored
+password to a newly announced address. If the router address changes, use the
+explicit reconfigure flow and enter the password there.
+
 Enter:
 
 - **Host:** router hostname or IP address; **speedport.ip** is the default
@@ -152,6 +166,9 @@ The panel:
   hardcoded
 - respects the signed-in user's entity permissions
 - asks for confirmation before executing a router-changing action
+
+The router device page also links directly to the configured local Speedport
+web interface through Home Assistant's standard **Visit** action.
 
 Home Assistant administrators can also open reviewed structured details for
 clients, Mesh nodes, port-forward and port-block rules, DNS-rebind exceptions,

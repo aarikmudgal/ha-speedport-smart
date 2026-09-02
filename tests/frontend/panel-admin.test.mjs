@@ -36,9 +36,11 @@ globalThis.customElements = {
 
 const {
   ADMIN_IA,
+  ADMIN_READ_CLOSED_ENUM_VALUES,
   ADMIN_READ_FIELD_KEYS,
   ADMIN_READ_SECTION_FIELDS,
   ADMIN_READ_SECTION_ORDER,
+  ADMIN_READ_SECTION_SOURCES,
   ADMIN_SHARED_ENTITY_GROUP_OWNERS,
   SpeedportSmartPanel,
   adminPlacementFor,
@@ -152,7 +154,7 @@ const ENDPOINT_FAILURE_META = Object.freeze({
 });
 
 function adminPayload(entryId = "entry-a", sections = []) {
-  return { entry_id: entryId, schema_version: 1, sections };
+  return { entry_id: entryId, schema_version: 2, sections };
 }
 
 function router(entryId, entities = [REPORTING_META, CONTROL_META]) {
@@ -403,6 +405,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
     ddns_identity: "internet",
     dns_rebind_exceptions: "network",
     ip_phones: "telephony",
+    internet_status_technical: "internet",
     lan_ipv6_technical: "network",
     mesh_nodes: "network",
     nas_shares: "network",
@@ -412,6 +415,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
     powerline_nodes: "network",
     qos_prioritized_clients: "network",
     receivers: "internet",
+    status_technical: "system",
     storage_devices: "network",
     telephony_providers: "telephony",
     telephone_lines: "telephony",
@@ -430,6 +434,11 @@ test("fixed Administration manifest places reviewed controls and collections", (
   assert.equal(readSubsectionPlacements.powerline_nodes, "network_mesh");
   assert.equal(readSubsectionPlacements.vpn_peers, "network_vpn");
   assert.equal(readSubsectionPlacements.ddns_identity, "internet_ddns");
+  assert.equal(
+    readSubsectionPlacements.internet_status_technical,
+    "internet_connection",
+  );
+  assert.equal(readSubsectionPlacements.status_technical, "system_information");
   assert.equal(readSubsectionPlacements.wifi_2_4_identity, "network_wifi");
   assert.equal(readSubsectionPlacements.wifi_5_identity, "network_wifi");
   assert.equal(readSubsectionPlacements.wifi_guest_identity, "network_wifi_access");
@@ -699,11 +708,24 @@ test("Administration catalog covers every reviewed management family without gen
   const featureIds = features.map((feature) => feature.id);
 
   assert.equal(subsections.length, 28);
-  assert.equal(features.length, 108);
+  assert.equal(features.length, 118);
   assert.equal(new Set(featureIds).size, featureIds.length);
   assert.deepEqual(
     [...new Set(features.map((feature) => feature.contract))].sort(),
     ["blocked", "read_only", "reviewed", "unsupported"],
+  );
+  assert.ok(
+    features.every(
+      (feature) =>
+        feature.risk === undefined ||
+        [
+          "normal",
+          "sensitive",
+          "disruptive",
+          "lockout",
+          "destructive",
+        ].includes(feature.risk),
+    ),
   );
   assert.ok(features.some((feature) => feature.destructive));
   assert.ok(
@@ -750,6 +772,15 @@ test("Administration catalog covers every reviewed management family without gen
     "telephony_dect_transmit_power",
     "telephony_dect_full_eco",
     "telephony_dect_handset_call_waiting",
+    "network_mesh_node_rename",
+    "network_powerline_node_rename",
+    "internet_receiver_factory_esim_restore",
+    "telephony_provider_delete",
+    "telephony_number_delete",
+    "telephony_number_activation",
+    "network_mesh_identify",
+    "network_mesh_node_delete",
+    "network_usb_safe_remove",
   ]) {
     assert.deepEqual(featureById.get(featureId).entityGroups, [], featureId);
     assert.deepEqual(featureById.get(featureId).readSections, [], featureId);
@@ -794,7 +825,11 @@ test("Administration catalog covers every reviewed management family without gen
   for (const featureId of [
     "internet_receiver_mode",
     "internet_receiver_routing_exceptions",
-    "internet_receiver_firmware",
+    "internet_receiver_firmware_update",
+    "internet_receiver_factory_esim_restore",
+    "telephony_provider_delete",
+    "telephony_number_delete",
+    "telephony_number_activation",
     "telephony_automatic_speed_dial",
     "telephony_number_use",
     "telephony_call_encryption",
@@ -821,7 +856,12 @@ test("Administration catalog covers every reviewed management family without gen
     "telephony_ip_phone_disconnect",
     "network_client_delete",
     "network_mesh_management",
+    "network_mesh_node_rename",
+    "network_mesh_identify",
+    "network_mesh_node_delete",
     "network_powerline_management",
+    "network_powerline_node_rename",
+    "network_usb_safe_remove",
     "network_wifi_wps_enablement",
     "network_wifi_wps_pin_mode",
     "system_lan_port_status",
@@ -1011,6 +1051,129 @@ test("manual capability gaps are explicit safe cards without invented controls",
   );
 });
 
+test("DECT action candidates explain exact proof gaps without exposing controls", () => {
+  const featureById = new Map(
+    ADMIN_IA.flatMap((area) =>
+      area.subsections.flatMap((subsection) =>
+        subsection.features.map((feature) => [feature.id, feature]),
+      ),
+    ),
+  );
+  const expected = [
+    {
+      id: "telephony_dect_handset_paging",
+      blockedReasonKey:
+        "admin.feature.blocked_reason.dect_handset_paging",
+      destructive: false,
+    },
+    {
+      id: "telephony_dect_handset_disconnect",
+      blockedReasonKey:
+        "admin.feature.blocked_reason.dect_handset_disconnect",
+      destructive: true,
+    },
+    {
+      id: "telephony_dect_repeater_disconnect",
+      blockedReasonKey:
+        "admin.feature.blocked_reason.dect_repeater_disconnect",
+      destructive: true,
+    },
+  ];
+
+  for (const candidate of expected) {
+    const feature = featureById.get(candidate.id);
+    assert.ok(feature, candidate.id);
+    assert.equal(feature.contract, "blocked", candidate.id);
+    assert.deepEqual(feature.controls, [], candidate.id);
+    assert.equal(feature.destructive, candidate.destructive, candidate.id);
+    assert.equal(
+      feature.blockedReasonKey,
+      candidate.blockedReasonKey,
+      candidate.id,
+    );
+  }
+
+  const fixture = panelFixture();
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", []),
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  for (const candidate of expected) {
+    assert.equal(
+      html.split(`data-admin-feature="${candidate.id}"`).length - 1,
+      1,
+      candidate.id,
+    );
+    assert.ok(
+      html.includes(PANEL_TRANSLATIONS.en[candidate.blockedReasonKey]),
+      candidate.blockedReasonKey,
+    );
+  }
+  assert.equal(
+    html.split('class="admin-feature-blocked-reason"').length - 1,
+    expected.length,
+  );
+  assert.doesNotMatch(html, /data-control=/);
+});
+
+test("static blocked operations stay noninteractive and use backend risk tiers", () => {
+  const features = new Map(
+    ADMIN_IA.flatMap((area) => area.subsections)
+      .flatMap((subsection) => subsection.features)
+      .map((feature) => [feature.id, feature]),
+  );
+  const expected = {
+    internet_receiver_firmware_update: "disruptive",
+    internet_receiver_factory_esim_restore: "destructive",
+    telephony_provider_registration: "sensitive",
+    telephony_provider_delete: "destructive",
+    telephony_number_delete: "destructive",
+    telephony_number_activation: "disruptive",
+    network_mesh_identify: "disruptive",
+    network_mesh_node_delete: "destructive",
+    network_usb_safe_remove: "disruptive",
+    system_mesh_restart: "disruptive",
+    system_dsl_modem_mode: "lockout",
+    system_router_firmware: "disruptive",
+  };
+
+  for (const [featureId, risk] of Object.entries(expected)) {
+    const feature = features.get(featureId);
+    assert.ok(feature, featureId);
+    assert.equal(feature.contract, "blocked", featureId);
+    assert.deepEqual(feature.controls, [], featureId);
+    assert.equal(feature.risk, risk, featureId);
+    assert.equal(feature.destructive, risk === "destructive", featureId);
+  }
+
+  const fixture = panelFixture();
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", []),
+    [],
+    [],
+    { protected_json: { available: true } },
+  );
+  const featureWindow = (featureId) => {
+    const marker = `data-admin-feature="${featureId}"`;
+    const start = html.indexOf(marker);
+    assert.notEqual(start, -1, featureId);
+    const following = html.slice(start + marker.length);
+    const next = following.search(/data-admin-feature="[^"]+"/);
+    return next === -1
+      ? html.slice(start)
+      : html.slice(start, start + marker.length + next);
+  };
+  for (const [featureId, risk] of Object.entries(expected)) {
+    const card = featureWindow(featureId);
+    const label = PANEL_TRANSLATIONS.en[`admin.risk.${risk}`];
+    assert.match(card, new RegExp(`risk-${risk}`), featureId);
+    assert.ok(card.includes(`aria-label="Risk: ${label}"`), featureId);
+    assert.doesNotMatch(card, /data-control=/, featureId);
+  }
+});
+
 test("reviewed controls and cached reads render once under deterministic feature owners", () => {
   const featureRecords = ADMIN_IA.flatMap((area) =>
     area.subsections.flatMap((subsection) =>
@@ -1128,11 +1291,15 @@ test("reviewed controls and cached reads render once under deterministic feature
   }
   assert.match(
     html,
-    /<article class="admin-feature-card[^>]*data-admin-feature="internet_provider_configuration"/,
+    /<details class="admin-feature-card[^>]*data-admin-feature="internet_connection_diagnostics"/,
   );
   assert.doesNotMatch(
     html,
-    /<details class="admin-feature-card[^>]*data-admin-feature="internet_provider_configuration"/,
+    /<article class="admin-feature-card[^>]*data-admin-feature="internet_connection_diagnostics"/,
+  );
+  assert.match(
+    html,
+    /<article class="admin-feature-card[^>]*data-admin-feature="internet_provider_configuration"/,
   );
 });
 
@@ -1283,6 +1450,8 @@ test("Administration explains blocked, absent, and unsupported features distinct
     "telephony_dect_transmit_power",
     "telephony_dect_full_eco",
     "telephony_dect_handset_call_waiting",
+    "network_mesh_node_rename",
+    "network_powerline_node_rename",
     "system_easysupport_automatic_firmware",
     "system_easysupport_wifi_backup",
   ]) {
@@ -1447,13 +1616,20 @@ test("receiver telemetry never proves receiver firmware evidence", () => {
   ]);
 
   assert.deepEqual(
-    features.get("internet_receiver_firmware").entityGroups,
+    features.get("internet_receiver_firmware_update").entityGroups,
     ["mobile_receiver_firmware"],
   );
-  assert.deepEqual(features.get("internet_receiver_firmware").readSections, []);
+  assert.deepEqual(
+    features.get("internet_receiver_firmware_update").readSections,
+    [],
+  );
+  assert.deepEqual(
+    features.get("internet_receiver_factory_esim_restore").entityGroups,
+    [],
+  );
   assert.equal(
     fixture.panel._adminFeaturePresentation(
-      features.get("internet_receiver_firmware"),
+      features.get("internet_receiver_firmware_update"),
       [receiverMode],
       receiverSections,
       new Set(["receiver"]),
@@ -1477,7 +1653,9 @@ test("exact receiver firmware entity proves receiver firmware evidence", () => {
   const fixture = panelFixture();
   const feature = ADMIN_IA.flatMap((area) => area.subsections)
     .flatMap((subsection) => subsection.features)
-    .find((candidate) => candidate.id === "internet_receiver_firmware");
+    .find(
+      (candidate) => candidate.id === "internet_receiver_firmware_update",
+    );
   const firmware = {
     access_source: "protected_json",
     capability_group: "mobile_receiver_firmware",
@@ -1562,7 +1740,7 @@ test("complete capability catalog remains visible and noninteractive without liv
     /<article class="admin-feature-card[^>]*data-admin-feature="home_assistant_capability_inventory"[\s\S]*?<\/article>/,
   )?.[0];
 
-  assert.equal(featureMarkers.length, 108);
+  assert.equal(featureMarkers.length, 118);
   assert.ok(inventoryCard);
   assert.match(inventoryCard, /Read-only by design/);
   assert.doesNotMatch(inventoryCard, /destructive-candidate/);
@@ -1582,6 +1760,14 @@ test("complete capability catalog remains visible and noninteractive without liv
     "Restore local configuration backup",
     "Email notifications and event selection",
     "Local router display settings",
+    "Rename a Mesh node",
+    "Identify a Mesh node",
+    "Delete a Mesh node",
+    "Rename a Powerline node",
+    "Safely remove or unmount a USB storage device",
+    "Delete a VoIP provider",
+    "Activate or deactivate a VoIP telephone number",
+    "Restore 5G receiver factory settings, optionally deleting its eSIM",
     "Read-only router capability inventory",
   ]) {
     assert.match(html, new RegExp(label));
@@ -1592,7 +1778,10 @@ test("complete capability catalog remains visible and noninteractive without liv
     html,
     /safe local write and readback flow has not yet been verified/,
   );
-  assert.match(html, /Recovery-critical candidate/);
+  assert.match(html, /aria-label="Risk: Destructive">Destructive/);
+  assert.match(html, /aria-label="Risk: Disruptive">Disruptive/);
+  assert.match(html, /aria-label="Risk: Lockout">Lockout/);
+  assert.match(html, /aria-label="Risk: Sensitive">Sensitive/);
   assert.doesNotMatch(html, /data-control=/);
 });
 
@@ -1950,7 +2139,7 @@ test("administrator payload validation keeps only fixed sections and fields", ()
     "name",
   ]);
   assert.equal(
-    normalizeAdminReadPayload({ ...payload, schema_version: 2 }, "entry-a"),
+    normalizeAdminReadPayload({ ...payload, schema_version: 1 }, "entry-a"),
     undefined,
   );
   assert.equal(normalizeAdminReadPayload(payload, "entry-b"), undefined);
@@ -2030,6 +2219,123 @@ test("LAN IPv6 technical flags stay exact read-only administrator data", () => {
   assert.match(html, /<dd>No<\/dd>/);
   assert.doesNotMatch(html, /semantic_guess|must not survive/);
   assert.doesNotMatch(html, /data-control=.*lan_ip_v6/);
+});
+
+test("public Status domain_name stays an exact administrator-only technical read", () => {
+  const normalized = normalizeAdminReadPayload(
+    adminPayload("entry-a", [
+      {
+        id: "status_technical",
+        source: "public_status",
+        rows: [
+          {
+            domain_name: "speedport.ip",
+            loginstate: "must not survive",
+          },
+        ],
+        truncated: false,
+      },
+    ]),
+    "entry-a",
+  );
+
+  assert.deepEqual(normalized.sections[0], {
+    id: "status_technical",
+    source: "public_status",
+    rows: [{ domain_name: "speedport.ip" }],
+    truncated: false,
+  });
+
+  const fixture = panelFixture();
+  fixture.panel._adminReadEntry = "entry-a";
+  fixture.panel._adminRead = normalized;
+  const html = fixture.panel._renderAdministration(
+    { ...router("entry-a"), capabilities: ["system"] },
+    [],
+    [],
+    {
+      protected_json: { available: false },
+      public_status: { available: true },
+    },
+  );
+  assert.match(html, /Firmware status fields/);
+  assert.match(html, /Firmware field: domain_name/);
+  assert.match(html, /speedport\.ip/);
+  assert.doesNotMatch(html, /must not survive/);
+  assert.doesNotMatch(html, /data-control=.*domain_name/);
+});
+
+test("public Status fail_reason stays an exact Internet technical read", () => {
+  const normalized = normalizeAdminReadPayload(
+    adminPayload("entry-a", [
+      {
+        id: "internet_status_technical",
+        source: "public_status",
+        rows: [
+          {
+            failure_reason: "net",
+            failure_detail: "must not survive",
+          },
+        ],
+        truncated: false,
+      },
+    ]),
+    "entry-a",
+  );
+
+  assert.deepEqual(normalized.sections[0], {
+    id: "internet_status_technical",
+    source: "public_status",
+    rows: [{ failure_reason: "net" }],
+    truncated: false,
+  });
+
+  const fixture = panelFixture();
+  fixture.panel._adminReadEntry = "entry-a";
+  fixture.panel._adminRead = normalized;
+  const html = fixture.panel._renderAdministration(
+    { ...router("entry-a"), capabilities: ["internet"] },
+    [],
+    [],
+    {
+      protected_json: { available: false },
+      public_status: { available: true },
+    },
+  );
+  assert.match(html, /Internet firmware status/);
+  assert.match(html, /Firmware field: fail_reason/);
+  assert.match(html, /<dd>net<\/dd>/);
+  assert.doesNotMatch(html, /failure_detail|must not survive/);
+  assert.doesNotMatch(html, /data-control=.*failure_reason/);
+  const featureWindow = (featureId) => {
+    const marker = `data-admin-feature="${featureId}"`;
+    const start = html.indexOf(marker);
+    assert.notEqual(start, -1, featureId);
+    const following = html.slice(start + marker.length);
+    const next = following.search(/data-admin-feature="[^"]+"/);
+    return next === -1
+      ? html.slice(start)
+      : html.slice(start, start + marker.length + next);
+  };
+  const diagnosticsWindow = featureWindow("internet_connection_diagnostics");
+  assert.match(diagnosticsWindow, /data-detail-id="admin-read:internet_status_technical"/);
+  assert.doesNotMatch(
+    featureWindow("internet_provider_configuration"),
+    /data-detail-id="admin-read:internet_status_technical"/,
+  );
+
+  const rejected = normalizeAdminReadPayload(
+    adminPayload("entry-a", [
+      {
+        id: "internet_status_technical",
+        source: "public_status",
+        rows: [{ failure_reason: "account@example.net" }],
+        truncated: false,
+      },
+    ]),
+    "entry-a",
+  );
+  assert.deepEqual(rejected.sections[0].rows, []);
 });
 
 test("only Home Assistant administrators call the cached-read endpoint", async () => {
@@ -2416,7 +2722,9 @@ test("administrator renderer nests all collections in fixed related areas", () =
           id === "clients"
             ? [{ connected: true, name: "<script>unsafe</script>" }]
             : [],
-        source: "protected_json",
+        source: ["internet_status_technical", "status_technical"].includes(id)
+          ? "public_status"
+          : "protected_json",
         truncated: id === "clients",
       })),
     ),
@@ -2619,7 +2927,7 @@ test("risk badges and summaries show exact backend-provided tiers", () => {
   assert.match(html, /class="admin-risk-badge risk-lockout"/);
   assert.match(html, /aria-label="Risk: Lockout">Lockout/);
   assert.match(html, /aria-label="Highest risk: Lockout">Lockout/);
-  assert.doesNotMatch(html, /Destructive/);
+  assert.match(html, /aria-label="Risk: Destructive">Destructive/);
 });
 
 test("successful existing action refreshes only the active administrator cache", async () => {
@@ -2675,7 +2983,7 @@ test("successful Dashboard action does not request administrator cache", async (
 });
 
 test("every administrator field, section, and feature has English and German labels", () => {
-  assert.equal(ADMIN_READ_SECTION_ORDER.length, 24);
+  assert.equal(ADMIN_READ_SECTION_ORDER.length, 26);
   for (const section of ADMIN_READ_SECTION_ORDER) {
     const key = `admin.section.${section}`;
     assert.ok(Object.hasOwn(PANEL_TRANSLATIONS.en, key), key);
@@ -2734,8 +3042,14 @@ spec.loader.exec_module(module)
 print(json.dumps({
     "schema_version": module.ADMIN_READ_SCHEMA_VERSION,
     "sections": {
-        item.section_id: list(item.fields)
+        item.section_id: {
+            "fields": list(item.fields),
+            "source": item.source,
+        }
         for item in (*module._COLLECTIONS, *module._RECORDS)
+    },
+    "closed_enums": {
+        "failure_reason": sorted(module._INTERNET_FAILURE_REASONS),
     },
 }))
 `;
@@ -2745,9 +3059,21 @@ print(json.dumps({
 
   assert.equal(result.status, 0, result.stderr);
   const backend = JSON.parse(result.stdout);
-  assert.equal(backend.schema_version, 1);
+  assert.equal(backend.schema_version, 2);
   assert.deepEqual(Object.keys(backend.sections), ADMIN_READ_SECTION_ORDER);
-  assert.deepEqual(backend.sections, ADMIN_READ_SECTION_FIELDS);
+  assert.deepEqual(
+    backend.sections,
+    Object.fromEntries(
+      ADMIN_READ_SECTION_ORDER.map((sectionId) => [
+        sectionId,
+        {
+          fields: ADMIN_READ_SECTION_FIELDS[sectionId],
+          source: ADMIN_READ_SECTION_SOURCES[sectionId],
+        },
+      ]),
+    ),
+  );
+  assert.deepEqual(backend.closed_enums, ADMIN_READ_CLOSED_ENUM_VALUES);
 });
 
 test("frontend reviewed router controls stay identical to backend write mappings", () => {

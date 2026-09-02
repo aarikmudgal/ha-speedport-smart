@@ -30,6 +30,7 @@ _DNS_LABEL = re.compile(r"(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _QOS_PC_SLOT = re.compile(r"^qos_pc\[(\d+)\]$")
 _MIN_PHONE_LABEL_DIGITS: Final = 5
 _MIN_BNG_CODE_LENGTH: Final = 2
+_INTERNET_FAILURE_REASONS: Final = frozenset({"user", "net", "dsl", "router"})
 _SECONDS_PER_MINUTE: Final = 60
 _NAS_VALUE_BYTES: Final = 1_024
 _TETHERING_CONNECTED_STATUS: Final = 2
@@ -118,6 +119,18 @@ _SECRET_TOKENS: Final = (
     "wpa_key",
 )
 
+# Exact firmware fields that must never enter normalized runtime data even when
+# their names do not contain a generic secret token. These are subscriber or
+# authenticated-session metadata, not router-management state.
+_FORBIDDEN_RAW_FIELDS: Final = frozenset(
+    {
+        "loginstate",
+        "t_callident",
+        "t_number",
+        "t_password",
+    }
+)
+
 _CLIENT_GROUPS: Final = {
     "addmdevice": None,
     "addmpriodevice": None,
@@ -175,6 +188,7 @@ def normalize_status_payload(
     payload. WAN counters are not inferred here because they come from ToTR64.
     """
     result = _normalize_known_flat(status.raw)
+    view = _view(status.raw)
 
     router = _without_missing(
         {
@@ -189,6 +203,11 @@ def normalize_status_payload(
             "state": _state(status.internet_state),
             "download_capacity_bps": status.wan_download_capacity_bps,
             "upload_capacity_bps": status.wan_upload_capacity_bps,
+            "failure_reason": _first(
+                view,
+                ("fail_reason",),
+                _internet_failure_reason,
+            ),
         }
     )
     dsl = _without_missing(
@@ -201,6 +220,9 @@ def normalize_status_payload(
     _merge_root(result, "router", router)
     _merge_root(result, "internet", internet)
     _merge_root(result, "dsl", dsl)
+    domain_name = _bounded_technical_text(view.get("domain_name"))
+    if domain_name is not None:
+        _merge_root(result, "system", {"domain_name": domain_name})
 
     capabilities = frozenset(
         root
@@ -3095,10 +3117,13 @@ def _scalar_values(value: Any) -> list[Any]:
 
 
 def _view(raw: Mapping[str, Any]) -> NormalizedData:
+    if _forbidden_varid_record(raw):
+        return {}
     return {
         str(key).strip().casefold(): value
         for key, value in raw.items()
-        if not _secret_key(str(key))
+        if str(key).strip().casefold() not in _FORBIDDEN_RAW_FIELDS
+        and not _secret_key(str(key))
     }
 
 
@@ -3155,10 +3180,15 @@ def _record_view(raw: Mapping[str, Any]) -> NormalizedData:
 
 
 def _safe_mapping(raw: Mapping[str, Any]) -> NormalizedData:
+    if _forbidden_varid_record(raw):
+        return {}
+
     safe: NormalizedData = {}
     for key, value in raw.items():
         normalized_key = str(key)
-        if _secret_key(normalized_key):
+        if normalized_key.strip().casefold() in _FORBIDDEN_RAW_FIELDS or _secret_key(
+            normalized_key
+        ):
             continue
         if isinstance(value, Mapping):
             safe[normalized_key] = _safe_mapping(value)
@@ -3170,6 +3200,16 @@ def _safe_mapping(raw: Mapping[str, Any]) -> NormalizedData:
         else:
             safe[normalized_key] = value
     return safe
+
+
+def _forbidden_varid_record(raw: Mapping[str, Any]) -> bool:
+    """Return whether one firmware varid row carries forbidden metadata."""
+    return any(
+        str(key).strip().casefold() == "varid"
+        and isinstance(value, str)
+        and value.strip().casefold() in _FORBIDDEN_RAW_FIELDS
+        for key, value in raw.items()
+    )
 
 
 def _secret_key(key: str) -> bool:
@@ -3343,6 +3383,16 @@ def _bounded_collection_text(value: Any) -> str | None:
     return text
 
 
+def _bounded_technical_text(value: Any) -> str | None:
+    """Return exact bounded firmware text without coercing an unknown type."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > _MAX_COLLECTION_TEXT_LENGTH or not text.isprintable():
+        return None
+    return text
+
+
 def _non_phone_identifier(value: Any) -> str | None:
     """Return a bounded row ID only when it cannot be a dialable number."""
     identifier = _bounded_collection_text(value)
@@ -3375,6 +3425,13 @@ def _state(value: Any) -> str | bool | None:
     if boolean is not None:
         return boolean
     return _text(value)
+
+
+def _internet_failure_reason(value: Any) -> str | None:
+    """Return only failure-reason codes proven by the firmware status UI."""
+    if not isinstance(value, str):
+        return None
+    return value if value in _INTERNET_FAILURE_REASONS else None
 
 
 def _boolean_or_state(value: Any) -> bool | str | None:

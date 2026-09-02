@@ -209,6 +209,31 @@ def test_client_has_no_public_arbitrary_json_write_boundary() -> None:
     assert not hasattr(client, "post_json")
 
 
+@pytest.mark.parametrize(
+    ("host", "use_https", "expected"),
+    [
+        ("speedport.ip", False, "http://speedport.ip"),
+        ("speedport.ip", True, "https://speedport.ip"),
+        ("https://192.0.2.1:444", False, "https://192.0.2.1:444"),
+        ("http://[2001:db8::1]:8080", False, "http://[2001:db8::1]:8080"),
+    ],
+)
+def test_configuration_url_matches_normalized_router_web_endpoint(
+    host: str,
+    use_https: object,
+    expected: str,
+) -> None:
+    """Device links retain the selected scheme, explicit port, and IPv6 syntax."""
+    assert isinstance(use_https, bool)
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        host,
+        use_https=use_https,
+    )
+
+    assert client.configuration_url == expected
+
+
 @pytest.mark.asyncio
 async def test_feature_read_records_value_free_schema_without_extra_request() -> None:
     """One successful feature GET records only its already-returned structure."""
@@ -2687,7 +2712,6 @@ def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
         "energy",
         "internet_configuration",
         "telephony_configuration",
-        "pbx_clients",
         "nas_folders",
         "lte_log",
         "backup_restore",
@@ -2712,8 +2736,116 @@ def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "supported"),
+    [
+        ({"addipclient": []}, True),
+        ({}, False),
+        ({"pbx": []}, False),
+        ({"not_addipclient": []}, False),
+    ],
+    ids=[
+        "empty-client-list",
+        "empty-response",
+        "ambiguous-pbx-marker",
+        "substring-collision",
+    ],
+)
+async def test_pbx_clients_automatic_probe_requires_exact_evidence(
+    payload: dict[str, object],
+    supported: bool,  # noqa: FBT001
+) -> None:
+    """The safe IPClients GET proves only its exact response family."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["pbx_clients"][0]
+    assert candidate.automatic_probe is True
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"pbx_clients": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(return_value=payload)),
+    ):
+        report = await client.probe_capabilities()
+
+    assert ("pbx_clients" in report.feature_endpoints) is supported
+
+
+@pytest.mark.asyncio
+async def test_phonebook_probe_accepts_empty_firmware_book_shape() -> None:
+    """An empty but structurally valid PhoneBook response proves support."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["phonebook"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"phonebook": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"addbookentry": [], "num_entries": 0}),
+        ),
+    ):
+        report = await client.probe_capabilities()
+
+    assert report.feature_endpoints["phonebook"] == candidate
+
+
+@pytest.mark.asyncio
+async def test_phonebook_probe_rejects_substring_only_evidence() -> None:
+    """A colliding key cannot prove the exact PhoneBook response family."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["phonebook"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"phonebook": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"not_num_entries": 0}),
+        ),
+    ):
+        report = await client.probe_capabilities()
+
+    assert "phonebook" not in report.feature_endpoints
+
+
 def test_target_firmware_inventory_gets_have_exact_safety_contracts() -> None:
-    """New firmware-proven GETs remain authenticated inventory reads only."""
+    """Firmware-proven GETs retain their exact authenticated safety policy."""
     expected = {
         (
             "internet_configuration",
@@ -2764,7 +2896,7 @@ def test_target_firmware_inventory_gets_have_exact_safety_contracts() -> None:
         candidate = candidates[key]
         assert candidate.referer == referer
         assert candidate.authenticated is True
-        assert candidate.automatic_probe is False
+        assert candidate.automatic_probe is (key[0] == "pbx_clients")
         assert candidate.inventory_safe is True
         assert candidate.evidence_keys
 

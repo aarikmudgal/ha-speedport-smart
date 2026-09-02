@@ -74,6 +74,7 @@ class SpeedportEntity(CoordinatorEntity[SpeedportDataUpdateCoordinator]):
         device = self.speedport_device
         if device is None:
             return DeviceInfo(
+                configuration_url=self.hub.client.configuration_url,
                 identifiers={(DOMAIN, router.identifier)},
                 manufacturer=MANUFACTURER,
                 model=router.model,

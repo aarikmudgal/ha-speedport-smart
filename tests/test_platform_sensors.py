@@ -412,6 +412,14 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
         assert entities["wan_last_sample"].native_value == datetime(
             2026, 9, 1, 10, tzinfo=UTC
         )
+        telemetry["last_sampled_at"] = "2026-09-01T10:00:59.999999+00:00"
+        assert entities["wan_last_sample"].native_value == datetime(
+            2026, 9, 1, 10, tzinfo=UTC
+        )
+        telemetry["last_sampled_at"] = "2026-09-01T10:01:00+00:00"
+        assert entities["wan_last_sample"].native_value == datetime(
+            2026, 9, 1, 10, 1, tzinfo=UTC
+        )
         assert entities["wan_polling_state"].extra_state_attributes == {
             "mode": "auto",
             "target_interval_seconds": 1.0,

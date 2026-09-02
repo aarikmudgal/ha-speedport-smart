@@ -39,6 +39,7 @@ def test_recursive_redaction() -> None:
             "number": "+49 30 123456",
             "wan_ip": "203.0.113.4",
             "domain": "private.customer.example",
+            "domain_name": "speedport.ip",
             "ssid": "Private Wi-Fi",
             "target": "Office workstation",
             "system_log": "phone and client history",
@@ -56,6 +57,7 @@ def test_recursive_redaction() -> None:
     assert result["number"] == REDACTED
     assert result["wan_ip"] == REDACTED
     assert result["domain"] == REDACTED
+    assert result["domain_name"] == REDACTED
     assert result["ssid"] == REDACTED
     assert result["target"] == REDACTED
     assert result["system_log"] == REDACTED

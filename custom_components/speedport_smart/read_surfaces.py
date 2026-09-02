@@ -172,8 +172,14 @@ _ADMIN_FEATURE_IDS_BY_SECTION: Final[Mapping[str, tuple[str, ...]]] = MappingPro
             "telephony_provider_registration",
             "telephony_number_assignment",
         ),
-        "dect_handsets": ("telephony_dect_handset_configuration",),
-        "dect_repeaters": ("telephony_dect_repeater_enrollment",),
+        "dect_handsets": (
+            "telephony_dect_handset_configuration",
+            "telephony_dect_handset_disconnect",
+        ),
+        "dect_repeaters": (
+            "telephony_dect_repeater_enrollment",
+            "telephony_dect_repeater_disconnect",
+        ),
         "ip_phones": ("telephony_ip_phone_enrollment",),
         "pbx_clients": ("telephony_ip_pbx",),
         "usb_devices": ("network_usb_printer_media",),
@@ -184,6 +190,8 @@ _ADMIN_FEATURE_IDS_BY_SECTION: Final[Mapping[str, tuple[str, ...]]] = MappingPro
         ),
         "nas_shares": ("network_nas_shares",),
         "powerline_nodes": ("network_powerline_management",),
+        "internet_status_technical": ("internet_connection_diagnostics",),
+        "status_technical": ("system_information_services",),
         "lan_ipv6_technical": ("network_lan_identity",),
         "ddns_identity": ("internet_ddns_management",),
         "wifi_2_4_identity": ("network_wifi_radio_settings",),
@@ -200,6 +208,8 @@ _ADMIN_CADENCE_BY_SECTION: Final[Mapping[str, ReadCadence]] = MappingProxyType(
         "receivers": ReadCadence.NORMAL,
         "telephone_lines": ReadCadence.NORMAL,
         "powerline_nodes": ReadCadence.NORMAL,
+        "internet_status_technical": ReadCadence.FAST,
+        "status_technical": ReadCadence.NORMAL,
         "wifi_2_4_identity": ReadCadence.NORMAL,
         "wifi_5_identity": ReadCadence.NORMAL,
         "wifi_guest_identity": ReadCadence.NORMAL,
@@ -232,6 +242,7 @@ _BOOLEAN_FIELDS: Final = frozenset(
     }
 )
 _TIMESTAMP_FIELDS: Final = frozenset({"last_handshake", "last_seen"})
+_ENUM_FIELDS: Final = frozenset({"failure_reason"})
 _NUMBER_FIELDS: Final = frozenset(
     {
         "channel",
@@ -248,6 +259,7 @@ _LOCAL_NETWORK_FIELDS: Final = frozenset(
         "cell_id",
         "configured_reserved_ipv4",
         "domain",
+        "domain_name",
         "hostname",
         "ipv4",
         "ipv6",
@@ -373,6 +385,8 @@ def _admin_value_kind(field: str) -> ReadValueKind:
         return ReadValueKind.BOOLEAN
     if field in _TIMESTAMP_FIELDS:
         return ReadValueKind.TIMESTAMP
+    if field in _ENUM_FIELDS:
+        return ReadValueKind.ENUM
     if field.endswith("_bytes"):
         return ReadValueKind.DATA_SIZE
     if field.endswith("_bps"):

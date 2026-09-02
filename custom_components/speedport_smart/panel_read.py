@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Final
 
-ADMIN_READ_SCHEMA_VERSION: Final = 1
+ADMIN_READ_SCHEMA_VERSION: Final = 2
 MAX_ADMIN_READ_ROWS: Final = 256
 MAX_ADMIN_READ_TEXT_LENGTH: Final = 256
 _MAX_ADMIN_READ_INTEGER: Final = (1 << 64) - 1
+_INTERNET_FAILURE_REASONS: Final = frozenset({"user", "net", "dsl", "router"})
 
 type JsonScalar = str | int | float | bool
 
@@ -267,6 +268,18 @@ _COLLECTIONS: Final = (
 
 _RECORDS: Final = (
     _RecordSpec(
+        section_id="internet_status_technical",
+        path=("internet",),
+        fields=("failure_reason",),
+        source="public_status",
+    ),
+    _RecordSpec(
+        section_id="status_technical",
+        path=("system",),
+        fields=("domain_name",),
+        source="public_status",
+    ),
+    _RecordSpec(
         section_id="lan_ipv6_technical",
         path=("lan",),
         fields=("ipv6_pext_flag", "ipv6_arec_flag"),
@@ -375,6 +388,8 @@ def _project_row(
             continue
         value = _project_scalar(item[field])
         if value is not None:
+            if field == "failure_reason" and value not in _INTERNET_FAILURE_REASONS:
+                continue
             projected[field] = value
     return projected
 

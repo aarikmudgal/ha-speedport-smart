@@ -9,6 +9,16 @@ that every model and firmware exposes the same endpoints.
 ## Runtime contract
 
 - UI setup requires a reachable router host and its device password.
+- DHCP and SSDP announcements are untrusted discovery hints. SSDP matching uses
+  the captured `Speedport Smart 4 R Typ A` `modelName` spelling plus the exact
+  Telekom manufacturer and WLAN access-point device type. An unauthenticated
+  public-status read over HTTP must then prove the Status API's exact
+  allowlisted `Speedport Smart 4R Typ A` model spelling and a stable serial.
+  User confirmation runs the normal read-only connection validation and must
+  return the same identity.
+  Discovery never changes an existing entry's host or reuses its stored
+  password against a newly announced address; address changes require explicit
+  reconfiguration.
 - One serialized protocol client owns encrypted JSON authentication, ToTR64
   SOAP requests, cookies, and the management lease.
 - Fast, normal, and slow coordinators isolate different polling cadences.

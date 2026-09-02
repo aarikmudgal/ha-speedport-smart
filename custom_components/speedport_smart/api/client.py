@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Protocol
 from urllib.parse import urlencode, urlsplit
 
 import aiohttp
@@ -118,8 +118,22 @@ _INTERNET_PRIVACY_ENDPOINT: Final = "data/IPPrivacy.json"
 _INTERNET_PRIVACY_REFERER: Final = "html/content/internet/con_privacy.html"
 _LTE_MODE_ENDPOINT: Final = "data/LTE.json"
 _LTE_MODE_REFERER: Final = "html/content/internet/lte_mode.html"
+_IP_PBX_CLIENTS_ENDPOINT: Final = "data/IPClients.json"
+_IP_PBX_CLIENTS_REFERER: Final = "html/content/phone/phone_ippbx.html"
+_PHONEBOOK_ENDPOINT: Final = "data/PhoneBook.json"
+_PHONEBOOK_ENTRY_ENDPOINT: Final = "data/PhoneBookEntry.json"
+_PHONEBOOK_REFERER: Final = "html/content/phone/phone_book.html"
 _THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
 _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
+_IP_PBX_STATUS_VALUES: Final = {0: "disconnected", 1: "registered", 2: "locked"}
+_PHONEBOOK_IDS: Final = frozenset(range(5))
+_PRIVATE_QUERY_MAX_ROWS: Final = 256
+_PRIVATE_QUERY_MAX_TEXT_LENGTH: Final = 256
+_PRIVATE_QUERY_MAX_PHONE_LENGTH: Final = 64
+_PRIVATE_QUERY_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_PHONEBOOK_SEARCH_PREFIX = re.compile(r"^[A-Za-z]?$")
+_PHONEBOOK_NUMBER = re.compile(r"^\+?[0-9/\-*# ]*$")
+_PHONEBOOK_BIRTHDAY = re.compile(r"^(?:|\d{2}\.\d{2}\.\d{4})$")
 _OBSERVED_SCHEMA_MAX_DEPTH: Final = 6
 _OBSERVED_SCHEMA_MAX_FIELDS: Final = 128
 _OBSERVED_SCHEMA_MAX_FAMILIES: Final = 64
@@ -184,6 +198,15 @@ _OBSERVED_SCHEMA_BLOCKED_TOKENS: Final = frozenset(
         "uuid",
     }
 )
+
+
+class _PrivateQueryParser(Protocol):
+    """One bounded scalar parser for private query projections."""
+
+    def __call__(self, value: Any, *, max_length: int) -> str | None:
+        """Return one safe scalar or reject it."""
+
+
 _OBSERVED_SCHEMA_SAFE_SINGLE_FIELDS: Final = frozenset(
     {
         "active",
@@ -1072,8 +1095,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/IPClients.json",
                     authenticated=True,
                     referer="html/content/phone/phone_ippbx.html",
-                    evidence_keys=("addipclient", "ipclient_status", "pbx"),
-                    automatic_probe=False,
+                    evidence_keys=("addipclient", "ipclient_status"),
                 ),
             ),
             "dect": (
@@ -1162,7 +1184,13 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/PhoneBook.json",
                     authenticated=True,
                     referer="html/content/phone/phone_book.html",
-                    evidence_keys=("phonebook", "contact", "directory"),
+                    evidence_keys=(
+                        "addbookentry",
+                        "num_entries",
+                        "phonebook",
+                        "contact",
+                        "directory",
+                    ),
                 ),
             ),
             "security": (
@@ -1436,6 +1464,11 @@ class SpeedportClient:
         self._tr064_url = _base_url(scheme, self._host, tr064_port) + "/"
 
     @property
+    def configuration_url(self) -> str:
+        """Return the normalized local router web-interface URL."""
+        return self._base_url
+
+    @property
     def capabilities(self) -> CapabilityReport:
         """Return latest immutable capability report."""
         return self._capabilities
@@ -1692,6 +1725,71 @@ class SpeedportClient:
             )
             _require_command_acknowledgement(result)
             return result
+
+    async def query_ip_pbx_client(self, *, client_id: str) -> dict[str, Any]:
+        """Refresh and return one IP-PBX registration row without changing it."""
+        safe_client_id = _require_private_query_identifier(
+            client_id,
+            description="IP-PBX client ID",
+        )
+        self._ensure_open()
+        async with self._lock:
+            response = await self._post_json_unlocked(
+                _IP_PBX_CLIENTS_ENDPOINT,
+                {"refresh": safe_client_id},
+                authenticated=True,
+                referer=_IP_PBX_CLIENTS_REFERER,
+            )
+        return _project_ip_pbx_client(response, client_id=safe_client_id)
+
+    async def query_phonebook_entries(
+        self,
+        *,
+        phonebook_id: int,
+        prefix: str,
+    ) -> dict[str, Any]:
+        """Return one bounded phonebook prefix search as ephemeral private data."""
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        safe_prefix = _require_phonebook_search_prefix(prefix)
+        self._ensure_open()
+        async with self._lock:
+            response = await self._post_json_unlocked(
+                _PHONEBOOK_ENDPOINT,
+                {"obnr": safe_phonebook_id, "search": safe_prefix},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        return _project_phonebook_entries(
+            response,
+            phonebook_id=safe_phonebook_id,
+            prefix=safe_prefix,
+        )
+
+    async def query_phonebook_contact(
+        self,
+        *,
+        phonebook_id: int,
+        contact_id: str,
+    ) -> dict[str, Any]:
+        """Return one bounded phonebook contact as ephemeral private data."""
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        safe_contact_id = _require_private_query_identifier(
+            contact_id,
+            description="Phonebook contact ID",
+        )
+        self._ensure_open()
+        async with self._lock:
+            response = await self._post_json_unlocked(
+                _PHONEBOOK_ENTRY_ENDPOINT,
+                {"obnr": safe_phonebook_id, "chgid": safe_contact_id},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        return _project_phonebook_contact(
+            response,
+            phonebook_id=safe_phonebook_id,
+            contact_id=safe_contact_id,
+        )
 
     async def reconnect(self) -> dict[str, Any]:
         """Request Internet reconnection through confirmed endpoint."""
@@ -3121,6 +3219,296 @@ def _require_command_acknowledgement(response: Mapping[str, Any]) -> None:
         )
 
 
+def _require_private_query_identifier(value: object, *, description: str) -> str:
+    """Accept one short opaque firmware row identifier without echoing it on error."""
+    if not isinstance(value, str) or _PRIVATE_QUERY_ID.fullmatch(value) is None:
+        raise SpeedportProtocolError(f"{description} is invalid")
+    return value
+
+
+def _require_phonebook_id(value: object) -> int:
+    """Accept only the five firmware-supported local phonebook indexes."""
+    if type(value) is not int or value not in _PHONEBOOK_IDS:
+        raise SpeedportProtocolError("Phonebook ID is invalid")
+    return value
+
+
+def _require_phonebook_search_prefix(value: object) -> str:
+    """Accept the exact all-contacts or single-letter firmware search form."""
+    if not isinstance(value, str) or _PHONEBOOK_SEARCH_PREFIX.fullmatch(value) is None:
+        raise SpeedportProtocolError("Phonebook search prefix is invalid")
+    return value
+
+
+def _project_ip_pbx_client(
+    response: Mapping[str, Any],
+    *,
+    client_id: str,
+) -> dict[str, Any]:
+    """Project one PBX status row while discarding credentials and unknown fields."""
+    rows = _private_query_rows(_mapping_value(response, "addipclient"))
+    matches = [
+        row for row in rows if _private_query_identifier(row.get("id")) == client_id
+    ]
+    if len(matches) != 1:
+        raise SpeedportProtocolError("IP-PBX refresh returned no unique client row")
+
+    row = matches[0]
+    status_code = _bounded_integer(row.get("ipclient_status"), minimum=0, maximum=2)
+    if status_code is None:
+        raise SpeedportProtocolError("IP-PBX refresh returned an invalid status")
+    result: dict[str, Any] = {
+        "client_id": client_id,
+        "status": _IP_PBX_STATUS_VALUES[status_code],
+        "status_code": status_code,
+    }
+    name = _private_query_text(row.get("ipclient_mdevice_name"))
+    if name is not None:
+        result["name"] = name
+    ipv4 = _private_query_ipv4(row.get("ipclient_mdevice_ipv4"))
+    if ipv4 is not None:
+        result["ipv4"] = ipv4
+    mac = _private_query_mac(row.get("ipclient_mdevice_mac"))
+    if mac is not None:
+        result["mac"] = mac
+    return result
+
+
+def _project_phonebook_entries(
+    response: Mapping[str, Any],
+    *,
+    phonebook_id: int,
+    prefix: str,
+) -> dict[str, Any]:
+    """Project an allowlisted, bounded contact search result."""
+    rows = _private_query_rows(_mapping_value(response, "addbookentry"))
+    entries: list[dict[str, str]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_ROWS]:
+        contact_id = _private_query_identifier(row.get("id"))
+        if contact_id is None:
+            continue
+        entry = {"contact_id": contact_id}
+        for output, candidates, parser in (
+            ("last_name", ("name",), _private_query_text),
+            ("first_name", ("vorname",), _private_query_text),
+            (
+                "number",
+                ("number:1", "number", "number_p"),
+                _private_query_phone_number,
+            ),
+        ):
+            value = _first_private_query_value(row, candidates, parser)
+            if value is not None:
+                entry[output] = value
+        entries.append(entry)
+
+    result: dict[str, Any] = {
+        "phonebook_id": phonebook_id,
+        "prefix": prefix,
+        "entries": entries,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_ROWS,
+    }
+    total = _bounded_integer(
+        _mapping_value(response, "num_entries"),
+        minimum=0,
+        maximum=1000,
+    )
+    if total is not None:
+        result["total"] = total
+    return result
+
+
+def _project_phonebook_contact(
+    response: Mapping[str, Any],
+    *,
+    phonebook_id: int,
+    contact_id: str,
+) -> dict[str, Any]:
+    """Project only reviewed contact fields and discard every unknown value."""
+    row = _casefold_private_query_mapping(response)
+    contact: dict[str, str] = {}
+    for output, candidates, parser, max_length in (
+        ("last_name", ("name",), _private_query_text, 256),
+        ("first_name", ("vorname",), _private_query_text, 256),
+        ("private_number", ("number_p",), _private_query_phone_number, 64),
+        ("work_number", ("number_a",), _private_query_phone_number, 64),
+        ("mobile_number", ("number_m",), _private_query_phone_number, 64),
+        (
+            "secondary_mobile_number",
+            ("number_n",),
+            _private_query_phone_number,
+            64,
+        ),
+        ("street", ("strasse",), _private_query_text, 256),
+        ("postal_code", ("plz",), _private_query_text, 32),
+        ("city", ("ort",), _private_query_text, 256),
+        ("birthday", ("geburtstag",), _private_query_birthday, 10),
+    ):
+        value = _first_private_query_value(
+            row,
+            candidates,
+            parser,
+            max_length=max_length,
+        )
+        if value is not None:
+            contact[output] = value
+    if not contact:
+        raise SpeedportProtocolError("Phonebook contact response had no safe fields")
+    return {
+        "phonebook_id": phonebook_id,
+        "contact_id": contact_id,
+        "contact": contact,
+    }
+
+
+def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
+    """Return one case-insensitive field only when its spelling is unambiguous."""
+    matches = [
+        value for raw_key, value in mapping.items() if str(raw_key).casefold() == key
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _private_query_rows(value: Any) -> tuple[dict[str, Any], ...]:
+    """Expand only bounded mapping rows from a decoded template collection."""
+    if isinstance(value, Mapping):
+        sequence_columns = {
+            str(key): tuple(items)
+            for key, items in value.items()
+            if isinstance(items, Sequence)
+            and not isinstance(items, (str, bytes, bytearray))
+        }
+        if not sequence_columns:
+            row = _casefold_private_query_mapping(value)
+            return (row,) if row else ()
+        lengths = {len(items) for items in sequence_columns.values()}
+        if len(lengths) != 1:
+            return ()
+        scalar_columns = {
+            str(key): item for key, item in value.items() if key not in sequence_columns
+        }
+        length = min(lengths.pop(), _PRIVATE_QUERY_MAX_ROWS + 1)
+        candidates: tuple[Mapping[Any, Any], ...] = tuple(
+            {
+                **scalar_columns,
+                **{key: items[index] for key, items in sequence_columns.items()},
+            }
+            for index in range(length)
+        )
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        candidates = tuple(
+            item
+            for item in value[: _PRIVATE_QUERY_MAX_ROWS + 1]
+            if isinstance(item, Mapping)
+        )
+    else:
+        return ()
+    rows = tuple(_casefold_private_query_mapping(candidate) for candidate in candidates)
+    return tuple(row for row in rows if row)
+
+
+def _casefold_private_query_mapping(value: Mapping[Any, Any]) -> dict[str, Any]:
+    """Normalize field names while rejecting ambiguous duplicate spellings."""
+    result: dict[str, Any] = {}
+    for raw_key, item in value.items():
+        key = str(raw_key).strip().casefold()
+        if not key or key in result:
+            return {}
+        result[key] = item
+    return result
+
+
+def _first_private_query_value(
+    row: Mapping[str, Any],
+    keys: Sequence[str],
+    parser: _PrivateQueryParser,
+    *,
+    max_length: int = _PRIVATE_QUERY_MAX_TEXT_LENGTH,
+) -> str | None:
+    """Parse the first reviewed private field without exposing rejected values."""
+    for key in keys:
+        if key not in row:
+            continue
+        value = parser(row[key], max_length=max_length)
+        if value is not None:
+            return value
+    return None
+
+
+def _private_query_identifier(value: Any, *, max_length: int = 32) -> str | None:
+    del max_length
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    return text if _PRIVATE_QUERY_ID.fullmatch(text) is not None else None
+
+
+def _private_query_text(
+    value: Any,
+    *,
+    max_length: int = _PRIVATE_QUERY_MAX_TEXT_LENGTH,
+) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > max_length or not text.isprintable():
+        return None
+    return text
+
+
+def _private_query_phone_number(value: Any, *, max_length: int = 64) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if (
+        not text
+        or len(text) > min(max_length, _PRIVATE_QUERY_MAX_PHONE_LENGTH)
+        or _PHONEBOOK_NUMBER.fullmatch(text) is None
+    ):
+        return None
+    return text
+
+
+def _private_query_birthday(value: Any, *, max_length: int = 10) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) > max_length or _PHONEBOOK_BIRTHDAY.fullmatch(text) is None:
+        return None
+    return text or None
+
+
+def _private_query_ipv4(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        address = ipaddress.IPv4Address(value.strip())
+    except ipaddress.AddressValueError:
+        return None
+    return str(address)
+
+
+def _private_query_mac(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or _OBSERVED_SCHEMA_MAC.fullmatch(value.strip()) is None
+    ):
+        return None
+    return value.strip().upper().replace("-", ":")
+
+
+def _bounded_integer(value: Any, *, minimum: int, maximum: int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    return parsed if minimum <= parsed <= maximum else None
+
+
 def _mac_token(*, value: str | int | bool) -> str:
     """Compare MAC spellings without changing the preserved row value."""
     return "".join(
@@ -3216,6 +3604,10 @@ def _has_capability_evidence(
     if not capability.evidence_keys:
         return True
     keys = tuple(_iter_mapping_keys(data))
+    if capability.family == "pbx_clients":
+        return bool({"addipclient", "ipclient_status"} & set(keys))
+    if capability.family == "phonebook":
+        return bool({"addbookentry", "num_entries"} & set(keys))
     return any(
         evidence.casefold() in key
         for evidence in capability.evidence_keys

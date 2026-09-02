@@ -4,10 +4,18 @@
   "codeowners": ["@aarikmudgal"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "panel_custom", "websocket_api"],
+  "dhcp": [{"hostname": "speedport*"}],
   "documentation": "https://github.com/aarikmudgal/ha-speedport-smart",
   "integration_type": "hub",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/aarikmudgal/ha-speedport-smart/issues",
   "requirements": [],
+  "ssdp": [
+    {
+      "deviceType": "urn:schemas-upnp-org:device:WLANAccessPointDevice:1",
+      "manufacturer": "Deutsche Telekom AG",
+      "modelName": "Speedport Smart 4 R Typ A"
+    }
+  ],
   "version": "0.3.0"
 }

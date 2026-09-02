@@ -246,6 +246,29 @@ test("native WAN diagnostics override stale metadata between refreshes", () => {
   assert.equal(live.last_sampled_at, "2026-09-01T10:00:00+00:00");
 });
 
+test("exact WAN source timestamp wins over the Recorder-safe native fallback", () => {
+  const source = {
+    id: "wan_counters",
+    last_sampled_at: "2026-09-01T10:00:05.875Z",
+  };
+  const entities = [
+    {
+      translation_key: "wan_last_sample",
+      entity_id: "sensor.router_wan_last_sample",
+    },
+  ];
+  const states = {
+    "sensor.router_wan_last_sample": {
+      state: "2026-09-01T10:00:00+00:00",
+      attributes: {},
+    },
+  };
+
+  const live = liveWanSourceFromEntityStates(source, entities, states);
+
+  assert.equal(live.last_sampled_at, "2026-09-01T10:00:05.875Z");
+});
+
 test("WAN metadata refresh and stale styling meet the freshness contract", () => {
   const refresh = panelSource.match(
     /const METADATA_REFRESH_INTERVAL_MS\s*=\s*([\d_]+)\s*;/,

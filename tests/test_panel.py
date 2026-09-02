@@ -251,7 +251,7 @@ _PROTECTED_BINARY_KEYS = {
 
 
 async def test_panel_registration_uses_current_schema_cache_key() -> None:
-    """The panel URL and config force stale frontend modules onto schema 17."""
+    """The panel URL and config force stale frontend modules onto schema 18."""
     hass = MagicMock()
     hass.data = {}
     hass.http.async_register_static_paths = AsyncMock()
@@ -266,12 +266,12 @@ async def test_panel_registration_uses_current_schema_cache_key() -> None:
     ):
         await panel_module.async_register_panel(hass)
 
-    assert panel_module.PANEL_SCHEMA_VERSION == 17
+    assert panel_module.PANEL_SCHEMA_VERSION == 18
     register_panel.assert_awaited_once()
     assert register_panel.await_args.kwargs["module_url"] == (
-        "/speedport_smart_frontend/speedport-smart-panel.js?schema=17"
+        "/speedport_smart_frontend/speedport-smart-panel.js?schema=18"
     )
-    assert register_panel.await_args.kwargs["config"] == {"schema_version": 17}
+    assert register_panel.await_args.kwargs["config"] == {"schema_version": 18}
 
 
 def test_powerline_child_entities_use_the_lan_section() -> None:
@@ -350,7 +350,7 @@ def test_admin_read_websocket_returns_cached_projection_without_router_io() -> N
     connection.send_result.assert_called_once_with(
         7,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "entry_id": "entry-1",
             "sections": [
                 {
@@ -990,6 +990,43 @@ def test_any_wan_endpoint_error_marks_source_unavailable() -> None:
     assert wan_source["available"] is False
     assert wan_source["retrying"] is False
     assert wan_source["state"] == "stable"
+
+
+def test_public_status_failure_does_not_hide_healthy_wan_source() -> None:
+    """The shared fast coordinator does not merge independent source health."""
+    hub = MagicMock()
+    hub.capability_report = SimpleNamespace(feature_endpoints={})
+    hub.has_capability.side_effect = lambda capability: (
+        capability
+        in {
+            "status",
+            "wan_counters",
+        }
+    )
+    hub.get.return_value = {"state": "available"}
+    hub.endpoint_errors = {"status": "SpeedportProtocolError"}
+    hub.wan_counter_telemetry = {
+        "state": "stable",
+        "retrying": False,
+        "effective_interval_seconds": 4.0,
+        "last_sampled_at": "2026-09-01T10:00:00+00:00",
+    }
+    hub.diagnostics.return_value = {
+        "polling": {
+            "fast": {"available": True},
+            "normal": {"available": True},
+            "slow": {"available": True},
+        }
+    }
+
+    sources, _families = _capability_panel_data(hub)
+
+    public_source = next(
+        source for source in sources if source["id"] == "public_status"
+    )
+    wan_source = next(source for source in sources if source["id"] == "wan_counters")
+    assert public_source["available"] is False
+    assert wan_source["available"] is True
 
 
 def test_protected_source_is_unavailable_when_normal_polling_fails() -> None:

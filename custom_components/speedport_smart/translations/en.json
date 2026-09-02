@@ -18,6 +18,20 @@
           "verify_ssl": "Enable only when the router certificate is trusted by Home Assistant."
         }
       },
+      "confirm": {
+        "title": "Confirm discovered Telekom Speedport Smart",
+        "description": "Home Assistant discovered a router at **{host}**. Enter its router password to verify the model and connection before setup. The discovery announcement alone is never trusted.",
+        "data": {
+          "password": "Router password",
+          "use_https": "Use HTTPS",
+          "verify_ssl": "Verify TLS certificate"
+        },
+        "data_description": {
+          "password": "Required for the same read-only connection checks used by manual setup. The password stays in Home Assistant.",
+          "use_https": "Use encrypted router and ToTR64 endpoints.",
+          "verify_ssl": "Enable only when the router certificate is trusted by Home Assistant."
+        }
+      },
       "reauth_confirm": {
         "title": "Reauthenticate Telekom Speedport Smart",
         "description": "Enter the current router password.",
@@ -50,8 +64,13 @@
     },
     "abort": {
       "already_configured": "This router is already configured.",
+      "already_in_progress": "Setup for this router is already in progress.",
+      "cannot_connect": "Unable to connect to the discovered router.",
+      "invalid_discovery_info": "The discovery announcement did not contain a valid local IPv4 address.",
+      "not_supported": "The discovered device did not prove the same supported Speedport Smart 4R Typ A model and serial identity.",
       "reauth_successful": "Reauthentication completed.",
       "reconfigure_successful": "Router configuration updated.",
+      "unknown": "Unexpected error while checking the discovered router. Check the Home Assistant log.",
       "wrong_account": "The detected router does not match this configuration entry."
     }
   },
@@ -126,7 +145,7 @@
         }
       },
       "wan_fastest_proven_interval": { "name": "WAN fastest proven interval" },
-      "wan_last_sample": { "name": "WAN last successful sample" },
+      "wan_last_sample": { "name": "WAN last successful sample (minute precision)" },
       "wan_mtu": { "name": "WAN MTU" },
       "public_ipv4": { "name": "Public IPv4 address" },
       "public_ipv6_prefix": { "name": "Public IPv6 prefix" },

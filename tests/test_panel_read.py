@@ -273,6 +273,63 @@ def test_admin_read_payload_exposes_only_reviewed_lan_ipv6_firmware_flags() -> N
     assert "must-not-leak-through-this-section" not in json.dumps(result)
 
 
+def test_admin_read_payload_exposes_bounded_public_status_field() -> None:
+    """One exact Status field is administrator-only and source-labelled."""
+    data = {
+        "system": {
+            "domain_name": "speedport.ip",
+            "device_password_changed": True,
+            "loginstate": "must-not-leak",
+        }
+    }
+
+    result = admin_read_payload(data, entry_id="entry-1")
+
+    assert result["sections"] == [
+        {
+            "id": "status_technical",
+            "source": "public_status",
+            "rows": [{"domain_name": "speedport.ip"}],
+            "truncated": False,
+        }
+    ]
+    assert "must-not-leak" not in json.dumps(result)
+    assert "device_password_changed" not in json.dumps(result)
+
+
+def test_admin_read_payload_exposes_only_closed_internet_status_code() -> None:
+    """The Internet technical section publishes only its reviewed cached field."""
+    data = {
+        "internet": {
+            "failure_reason": "net",
+            "ipv4_address": "must-not-leak-through-this-section",
+        }
+    }
+
+    result = admin_read_payload(data, entry_id="entry-1")
+
+    assert result["sections"] == [
+        {
+            "id": "internet_status_technical",
+            "source": "public_status",
+            "rows": [{"failure_reason": "net"}],
+            "truncated": False,
+        }
+    ]
+    assert "must-not-leak-through-this-section" not in json.dumps(result)
+
+
+def test_admin_read_payload_rejects_unknown_internet_failure_text() -> None:
+    """Projection remains closed even if an invalid value reaches hub data."""
+    result = admin_read_payload(
+        {"internet": {"failure_reason": "account@example.net"}},
+        entry_id="entry-1",
+    )
+
+    assert result["sections"] == []
+    assert "account@example.net" not in json.dumps(result)
+
+
 def test_admin_read_payload_projects_new_management_collections() -> None:
     """New collections remain fixed, admin-only, and secret-free."""
     data = {

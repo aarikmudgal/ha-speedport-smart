@@ -64,6 +64,25 @@ identifier may still have a separately declared derived `DeviceInfo` use.
 No credential value, raw authentication response, or unrestricted router
 payload belongs in this registry or in Home Assistant state.
 
+The administrator-only IP-PBX refresh and phonebook search/contact queries are
+intentionally outside `READ_SURFACES`: they are not normalized-snapshot
+publications. Their fixed WebSocket commands return short-lived, independently
+allowlisted projections only to the requesting administrator panel. Results
+never enter coordinator data, entities, Recorder, diagnostics, URLs, browser
+storage, or logs, and the panel clears them on context change or disconnect.
+Exact discovered query-family capability plus a healthy protected session is
+required before either the frontend or backend can issue a router request.
+
+The administrator-only `system.domain_name` publication is an explicit example
+of a raw technical mirror: it is bounded text from the already-polled public
+Status source, classified as local-network data, and deliberately has no
+semantic native entity or control.
+
+`internet.failure_reason` follows the same source boundary but is stricter: the
+firmware UI proves only the exact codes `user`, `net`, `dsl`, and `router`.
+Only those values enter the cached administrator view; arbitrary failure text
+is rejected rather than exposed or interpreted as a diagnosis.
+
 ## Conformance
 
 `tests/test_read_surfaces.py` derives expected fixed native, child-device, and

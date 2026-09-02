@@ -39,7 +39,7 @@ from .management import (
 from .normalizers import normalize_feature_payload, normalize_status_payload
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from homeassistant.core import HomeAssistant
 
@@ -91,6 +91,21 @@ _DSL_TRANSIENT_GRACE_FAILURES: Final = 1
 _PROTECTED_RETRY_SECONDS: Final = 60.0
 _PROTECTED_MAX_RETRY_SECONDS: Final = 900.0
 _MANAGEMENT_ISSUE_KEY: Final = "management_session_blocked"
+_ADMIN_QUERY_GLOBAL_INTERVAL_SECONDS: Final = 1.0
+_ADMIN_QUERY_INTERVAL_SECONDS: Final = MappingProxyType(
+    {
+        "ip_pbx_refresh": 5.0,
+        "phonebook_search": 1.0,
+        "phonebook_contact": 1.0,
+    }
+)
+_ADMIN_QUERY_CAPABILITY_PROOFS: Final = MappingProxyType(
+    {
+        "ip_pbx_refresh": ("pbx_clients", "data/IPClients.json"),
+        "phonebook_search": ("phonebook", "data/PhoneBook.json"),
+        "phonebook_contact": ("phonebook", "data/PhoneBook.json"),
+    }
+)
 # Only canonical roots emitted by reviewed normalizers may become read capabilities.
 # Endpoint-family names are deliberately not mapped ahead of a successful read.
 _NORMALIZED_READ_CAPABILITY_ROOTS: Final[frozenset[str]] = frozenset(
@@ -150,6 +165,15 @@ class _ContractVerificationSentinel:
 
 
 _CONTRACT_VERIFICATION = _ContractVerificationSentinel()
+
+
+class AdminQueryRateLimitError(HomeAssistantError):
+    """Raised when an administrator private query exceeds its bounded cadence."""
+
+    def __init__(self, retry_after: float) -> None:
+        """Retain only a bounded retry delay, never query values."""
+        super().__init__("Administrator router query rate limit exceeded")
+        self.retry_after = max(retry_after, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +270,8 @@ class SpeedportHub:
         )
         self._generation = 0
         self._operation_lock = asyncio.Lock()
+        self._admin_query_global_next_at = 0.0
+        self._admin_query_next_at: dict[str, float] = {}
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
         self._wan_counter_probe_pending = False
         self._wan_counter_failures = 0
@@ -531,6 +557,121 @@ class SpeedportHub:
                 "excluded": result.excluded,
             }
             self._candidate_inventory_last_completed = datetime.now(UTC)
+
+    async def async_query_ip_pbx_client(self, *, client_id: str) -> dict[str, Any]:
+        """Return one ephemeral IP-PBX status refresh through the session owner."""
+        return await self._async_admin_query(
+            "ip_pbx_refresh",
+            lambda: self.client.query_ip_pbx_client(client_id=client_id),
+        )
+
+    async def async_query_phonebook_entries(
+        self,
+        *,
+        phonebook_id: int,
+        prefix: str,
+    ) -> dict[str, Any]:
+        """Return one ephemeral, bounded phonebook search through the owner."""
+        return await self._async_admin_query(
+            "phonebook_search",
+            lambda: self.client.query_phonebook_entries(
+                phonebook_id=phonebook_id,
+                prefix=prefix,
+            ),
+        )
+
+    async def async_query_phonebook_contact(
+        self,
+        *,
+        phonebook_id: int,
+        contact_id: str,
+    ) -> dict[str, Any]:
+        """Return one ephemeral, bounded contact detail through the owner."""
+        return await self._async_admin_query(
+            "phonebook_contact",
+            lambda: self.client.query_phonebook_contact(
+                phonebook_id=phonebook_id,
+                contact_id=contact_id,
+            ),
+        )
+
+    async def _async_admin_query(
+        self,
+        query_kind: str,
+        query: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """Serialize one rate-limited private query without publishing its result."""
+        interval = _ADMIN_QUERY_INTERVAL_SECONDS.get(query_kind)
+        capability_proof = _ADMIN_QUERY_CAPABILITY_PROOFS.get(query_kind)
+        if interval is None or capability_proof is None:
+            raise HomeAssistantError("Administrator router query is unsupported")
+
+        async with self._operation_lock:
+            family, endpoint = capability_proof
+            report = self._capability_report
+            capability = (
+                report.feature_endpoints.get(family) if report is not None else None
+            )
+            if (
+                capability is None
+                or capability.endpoint != endpoint
+                or not capability.authenticated
+            ):
+                raise HomeAssistantError(
+                    "Administrator router query is unsupported by this router"
+                )
+            now = self._monotonic_time()
+            next_allowed = max(
+                self._admin_query_global_next_at,
+                self._admin_query_next_at.get(query_kind, 0.0),
+            )
+            if now < next_allowed:
+                raise AdminQueryRateLimitError(next_allowed - now)
+            if (
+                self._closed
+                or not self.has_capability("authenticated_json")
+                or self._management_state != "available"
+                or now < self._protected_retry_at
+            ):
+                raise HomeAssistantError(
+                    "The router management session is not currently available"
+                )
+
+            self._admin_query_global_next_at = (
+                now + _ADMIN_QUERY_GLOBAL_INTERVAL_SECONDS
+            )
+            self._admin_query_next_at[query_kind] = now + interval
+            result: dict[str, Any] | None = None
+            query_error: SpeedportError | None = None
+            unexpected_error: Exception | None = None
+            try:
+                try:
+                    result = await query()
+                except SpeedportError as err:
+                    query_error = err
+                except Exception as err:  # noqa: BLE001 - private error boundary
+                    unexpected_error = err
+            finally:
+                try:
+                    await self.client.logout()
+                except SpeedportError as err:
+                    if query_error is None and unexpected_error is None:
+                        query_error = err
+                except Exception as err:  # noqa: BLE001 - private error boundary
+                    if query_error is None and unexpected_error is None:
+                        unexpected_error = err
+            if query_error is not None:
+                self._publish_authenticated_failure(query_error)
+                raise HomeAssistantError(
+                    "The private router query could not be completed"
+                ) from query_error
+            if unexpected_error is not None:
+                raise HomeAssistantError(
+                    "The private router query could not be completed"
+                ) from unexpected_error
+            if result is None:
+                raise HomeAssistantError("The private router query returned no result")
+            return result
 
     def _record_candidate_inventory_failure(self, error: SpeedportError) -> None:
         """Retain prior capture counts while recording a safe failed attempt."""

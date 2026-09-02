@@ -10,9 +10,23 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Added
 
+- DHCP and SSDP discovery hints with private-unicast IPv4 filtering, an exact
+  captured SSDP fingerprint, a public HTTP status preflight, user confirmation,
+  exact host/serial deduplication, and a second read-only identity check. Only
+  the Status API's exact validated Speedport Smart 4R Typ A model is accepted;
+  discovery never relocates an entry or sends stored credentials to a newly
+  announced host.
+- A standard Home Assistant device-configuration link to the normalized local
+  Speedport web-interface URL.
+- The exact public-Status `domain_name` value as bounded administrator-only
+  technical text, without treating it as a router model, DNS setting, or
+  control.
 - Two exact `LAN.json` IPv6 firmware flags in the administrator-only technical
   view. Their undocumented semantics are not guessed, and they do not create
   native entities or controls.
+- Explicit Administration candidates for DECT handset paging and handset or
+  repeater disconnect, each naming the remaining acknowledgement, roundtrip,
+  and recovery proof while exposing no runnable unverified action.
 - A distinct diagnostic timestamp for the firmware-reported Internet
   connection start, while preserving the independent online-duration sensor.
   Ambiguous timestamps without an explicit UTC offset remain unavailable.
@@ -35,11 +49,19 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Separate Dashboard and Administration views in the native Home Assistant
   panel, with administrator-only, on-demand structured details projected from
   the existing normalized cache without additional router traffic.
-- A responsive Administration catalog covering 108 router-management features
+- Administrator-only, rate-limited, ephemeral read forms for one IP-PBX client
+  status refresh and bounded phonebook search/contact details. Private results
+  never enter entities, Recorder, coordinator data, diagnostics, URLs, or
+  browser storage.
+- A responsive Administration catalog covering 118 router-management features
   across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
   mobile receivers, and system services. Every entry distinguishes reviewed
   controls, related read-only evidence, blocked contracts, and unsupported
   local management.
+- Separate blocked cards for 5G receiver update versus factory/eSIM restore,
+  VoIP provider/number deletion and number activation, Mesh identify/delete,
+  and USB safe removal. Candidate impact uses the same five risk tiers as
+  reviewed backend controls without enabling any unverified write.
 - Expanded privacy-bounded read models for LAN/DHCP, Wi-Fi identities and radio
   configuration, managed clients, Mesh and Powerline nodes, port forwarding
   and blocking, DNS exceptions, traffic-priority slots, DDNS, telephony, DECT,
@@ -47,6 +69,11 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Public Status failures no longer make healthy WAN counters appear available
+  merely because both sources share the fast coordinator.
+- The Recorder-backed WAN sample timestamp now advances at minute precision to
+  avoid high-frequency Activity and history churn; the native dashboard keeps
+  the exact live sample time from runtime telemetry.
 - Immediate management commands now verify the exact scalar or collection
   identity/value readback before reporting success; transient and disruptive
   commands are explicitly refresh-only or deferred.
@@ -86,6 +113,9 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Security
 
+- Subscriber telephone identifiers, telephone credentials, call identifiers,
+  and authenticated login-state metadata are now explicitly rejected at the
+  normalization boundary.
 - Dashboard controls now derive their warning and confirmation policy from the
   same exact-firmware write registry used by backend command gating. Unknown
   switch-, button-, select-, text-, or update-shaped entities remain read only.

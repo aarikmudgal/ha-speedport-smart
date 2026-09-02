@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from custom_components.speedport_smart import normalizers as normalizer_module
 from custom_components.speedport_smart.models import normalize_status
 from custom_components.speedport_smart.normalizers import (
     normalize_feature_payload,
@@ -69,6 +70,88 @@ def test_internet_uptime_duration_does_not_fabricate_connection_timestamp() -> N
     )["internet"]
 
     assert internet == {"uptime_seconds": 86_490}
+
+
+def test_public_status_domain_name_is_bounded_raw_technical_text() -> None:
+    """The firmware field is preserved exactly without assigning semantics."""
+    normalized, capabilities = normalize_status_payload(
+        normalize_status({"domain_name": "speedport.ip"})
+    )
+
+    assert normalized["system"]["domain_name"] == "speedport.ip"
+    assert "system" in capabilities
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "x" * 257,
+        "router\x00name",
+        {"nested": "router"},
+        ["router"],
+        123,
+        True,
+        "",
+    ],
+)
+def test_public_status_domain_name_rejects_unbounded_or_untyped_values(
+    value: object,
+) -> None:
+    """Unknown types and unbounded text never enter the technical read model."""
+    normalized, _ = normalize_status_payload(normalize_status({"domain_name": value}))
+
+    assert normalized.get("system", {}).get("domain_name") is None
+
+
+def test_domain_name_is_owned_only_by_public_status() -> None:
+    """Protected and feature payloads cannot populate a public-status field."""
+    assert normalize_feature_payload("system", {"domain_name": "speedport.ip"}) == {}
+    assert normalize_feature_payload("internet", {"domain_name": "speedport.ip"}) == {}
+
+
+@pytest.mark.parametrize("value", ["user", "net", "dsl", "router"])
+def test_public_status_failure_reason_preserves_only_firmware_codes(
+    value: str,
+) -> None:
+    """The public status read keeps the exact closed firmware reason code."""
+    normalized, capabilities = normalize_status_payload(
+        normalize_status({"fail_reason": value})
+    )
+
+    assert normalized["internet"]["failure_reason"] == value
+    assert "internet" in capabilities
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["USER", " net", "timeout", "account@example.net", 1, True, None],
+)
+def test_public_status_failure_reason_rejects_unproven_values(value: object) -> None:
+    """Unknown, coerced, or potentially sensitive failure text stays absent."""
+    normalized, _ = normalize_status_payload(normalize_status({"fail_reason": value}))
+
+    assert normalized.get("internet", {}).get("failure_reason") is None
+
+
+def test_subscriber_and_session_metadata_never_enters_feature_data() -> None:
+    """Exact sensitive fields are removed in object and firmware-varid forms."""
+    raw = {
+        "loginstate": "private-session-state",
+        "t_callident": "private-call-id",
+        "t_number": "+49 30 123456",
+        "t_password": "private-password",
+        "rows": [
+            {"varid": "t_number", "varvalue": "+49 30 123456"},
+            {"varid": "t_callident", "varvalue": "private-call-id"},
+        ],
+    }
+
+    safe = normalizer_module._safe_mapping(raw)  # noqa: SLF001
+    rendered = repr(safe)
+    assert "private-call-id" not in rendered
+    assert "+49 30 123456" not in rendered
+    assert "private-password" not in rendered
+    assert "private-session-state" not in rendered
 
 
 def test_router_diagnostics_cannot_inject_integration_owned_failure_metadata() -> None:

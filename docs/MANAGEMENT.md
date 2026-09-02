@@ -71,7 +71,7 @@ read-only until its write contract is reviewed.
 | Router reboot button | `data/Reboot.json`, `reboot_device=true` | Polling resumes after the router returns | Interrupts the router and local network |
 | Wi-Fi switch | `data/Modules.json`, `use_wlan=0` or `1` | Fresh `wifi.enabled` state | Can disconnect Home Assistant when it uses Wi-Fi |
 | Guest Wi-Fi switch | `data/Modules.json`, `wlan_guest_active=0` or `1` | Fresh `wifi.guest.enabled` state | Changes only the guest radio state |
-| Office Wi-Fi switch | `data/Modules.json`, `wlan_office_active=0` or `1` | Fresh `wifi.office.enabled` state | Available only on firmware that exposes office Wi-Fi |
+| Prioritized Wi-Fi switch | `data/Modules.json`, `wlan_office_active=0` or `1` | Fresh `wifi.office.enabled` state | Available only on firmware that exposes prioritized Wi-Fi; the internal `office` key is retained for compatibility |
 | WPS button | `data/WLANAccess.json`, `wlan_add=on` and `wps_key=connect` | Refreshes `data/WPSStatus.json` | Opens the router's normal WPS window |
 | Existing port-forward switch | Fresh `data/PortuwMain.json` rule with the same ID, name, and non-state rule fingerprint, then `portuw_active=0` or `1` | Fresh state for the same unchanged rule semantics | Does not create, edit, delete, or mutate a reused or retargeted rule ID |
 | Client name text entity | Fresh complete managed-device row with only `mdevice_name` changed | Same row kind, row ID, required MAC address, and new name | Accepts 1 to 28 letters, numbers, or hyphens |
@@ -117,7 +117,7 @@ Read-only fields do not imply a matching write. In particular:
 | Area | Current read-only coverage |
 | --- | --- |
 | Internet, WAN, DSL, and Hybrid | Connection state, addressing, firmware-reported connection-start timestamp, independent uptime duration, DSL metrics, WAN totals, packets, errors, live rate, and utilization |
-| Wi-Fi | Correct global and per-band state, channels, client counts, guest and office state, and Mesh topology; bounded 2.4 GHz, 5 GHz, guest, and office SSIDs in the administrator-only cached view, with keys excluded |
+| Wi-Fi | Correct global and per-band state, channels, client counts, guest and prioritized-network state, and Mesh topology; bounded 2.4 GHz, 5 GHz, guest, and prioritized-network SSIDs in the administrator-only cached view, with keys excluded |
 | LAN and DHCP | Clients, presence, signal, links, DHCP state, leases, pool/lease summaries, IPv4/IPv6 state, aggregate linked ports, per-port LAN 1-4 link and negotiated speed, and client access allowance when returned |
 | NAT, DNS, traffic prioritization, and security | Port-forward counts plus bounded rule name, state, target, and TCP/UDP mapping summaries; port-block state/counts plus bounded rule-group, ID, state, and validated port-list rows, aggregating distinct extended and extra groups without merging colliding IDs; DNS-rebind state/count plus bounded exception-domain rows; traffic-priority count plus exact slot flags without inferred client identity; firewall, remote-management, and router-side HTTPS state when returned |
 | Mesh and Powerline | Mesh topology and node metrics; bounded Powerline ID, name, parent, manufacturer, MAC, firmware, mode, and upload/download link-rate rows in the administrator-only cached view |
@@ -144,7 +144,20 @@ never used to generate runtime schemas or a generic router editor.
 | DDNS changes | `DDNS.json` and `DynDNS.json` plus `use_dyndns` provide endpoint and state candidates. | Exact save `ENDPOINT`, complete provider `FORM`, `ACK`, independent `READBACK`, and `SECRET` handling for credentials. |
 | VPN and WireGuard changes | `VPN.json`, `WireGuard.json`, `vpn_status`, and peer rows provide endpoint and state candidates. | Exact save `ENDPOINT`, complete `FORM`, `ACK`, separate enabled/connected `READBACK`, stable peer `IDENTITY`, and private-key or pre-shared-key `SECRET` handling. |
 | UPnP, parental controls, and media server | Read-only fields and source descriptors exist. | Exact write `ENDPOINT`, complete `FORM`, `ACK`, and independent `READBACK`. |
-| Mesh and Powerline rename or identify | Static resources suggest row forms and identify start/stop shapes. | Complete hidden `FORM`, stable node `IDENTITY`, `ACK`, and bounded lifetime plus independent `READBACK`. |
+| Mesh node rename | The page reads rows from authenticated `GET data/DeviceList.json`. Its static form names candidate action `data/MeshDevice.json` and the apparent row fields `id`, `mesh_connected`, `mesh_device_type`, `mesh_downspeed`, `mesh_ipv4`, `mesh_mac`, `mesh_mac_wlan`, `mesh_mac_wlan5`, `mesh_name`, `mesh_rssi`, `mesh_type`, and `mesh_upspeed`; the name is constrained to 1-28 ASCII letters, digits, or hyphens. | The captured form has only a reset button and no bound save/submit action. Therefore an accepted POST/positive `ACK` and the exact `id`/MAC-to-child identity retained by a fresh collection `READBACK` are unproven. The endpoint string and field list alone are not executable evidence. |
+| Powerline node rename | The page reads rows from authenticated `GET data/DeviceList.json`. Its static form names candidate action `data/PWLineDevice.json` and the apparent row fields `id`, `pwline_downspeed`, `pwline_name`, and `pwline_upspeed`; the name uses the same 1-28 character constraint. | The captured form has only a reset button and no bound save/submit action. Therefore an accepted POST/positive `ACK` and the exact `id`-to-child identity retained by a fresh collection `READBACK` are unproven. The endpoint string and field list alone are not executable evidence. |
+| Mesh identify | Static firmware proves `POST data/ActiveNode.json` with `mesh_paging=0/1` and `mesh_mac`. | Stable node `IDENTITY`, positive `ACK`, bounded lifetime, stop recovery, independent `READBACK`, and a user-operated disruptive-action roundtrip. |
+| Powerline identify | Static resources suggest identify behavior but do not resolve a complete request. | Exact `ENDPOINT` and `FORM`, stable node `IDENTITY`, positive `ACK`, bounded lifetime, and independent `READBACK`. |
+| Mesh node delete | Static firmware proves `deleteEntry=delete` and `mesh_serial_number`; the endpoint is read from the row's dynamic form action. | Exact `ENDPOINT`, stable serial `IDENTITY`, positive `ACK`, independent collection `READBACK`, typed confirmation, recovery, and a user-operated roundtrip. |
+| USB storage safe remove | Static firmware proves `deleteEntry=delete`, storage `serial`, row `id`, and a returned `status` check; the endpoint is read from the row's dynamic form action. | Exact `ENDPOINT`, stable target `IDENTITY`, positive `ACK`, independent unmounted-state `READBACK`, failure recovery, and a user-operated disruptive-action roundtrip. |
+| VoIP provider delete | Static firmware proves `POST data/IPPhone.json` with `id` and `deleteEntry=delete`. | Stable private provider `IDENTITY`, positive `ACK`, independent collection `READBACK`, typed confirmation, calling recovery, and a user-operated roundtrip. |
+| VoIP number delete | Static firmware proves `POST data/IPPhoneNumbers.json` with `id` and `deleteEntry=delete`. | Stable private line `IDENTITY`, positive `ACK`, independent collection `READBACK`, typed confirmation, calling recovery, and a user-operated roundtrip. |
+| VoIP number activation | Static firmware proves `POST data/IPPhoneNumbers.json` with `id`, `no_delete=keep`, and closed `number_status=ok/inactive`. | Stable private line `IDENTITY`, positive `ACK`, independent enabled/registration `READBACK`, calling recovery, and a user-operated disruptive-action roundtrip. |
+| 5G receiver firmware update | Static firmware proves `auto_update=true` on the page's dynamic `JSONSource`. | Exact `ENDPOINT`/Referer, positive `ACK`, progress and reconnect `READBACK`, maintenance recovery, and a user-operated disruptive-action roundtrip. |
+| 5G receiver factory/eSIM restore | Static firmware proves the separate `restore=0/1` request; `1` is selected only when the eSIM-reset checkbox is checked. | Exact `ENDPOINT`/Referer, explicit eSIM scope, positive `ACK`, progress/reconnect `READBACK`, typed confirmation, physical recovery, and a user-operated destructive-action roundtrip. |
+| DECT handset paging | Static firmware proves `POST data/DECT.json` with only `ring=start paging` and the stable handset row `id`. `DECTInfo.json` independently refreshes `PagingStat<id>`. | The action callback does not inspect or prove a positive `ACK`. Keep the candidate unavailable until a user-authorized roundtrip confirms the response and paging lifecycle. |
+| DECT handset disconnect | Static firmware proves `POST data/DECT.json` with only `disconnect=disconnect` and the stable handset row `id`, then refreshes the `DECTStation.json` collection. | The callback does not inspect or prove a positive `ACK`. Destructive execution also requires a typed administrator action, target confirmation, a user-authorized roundtrip, and re-enrollment recovery proof. |
+| DECT repeater disconnect | Static firmware proves `POST data/DECTRepeater.json` with only `disconnect=disconnect` and the stable repeater row `id`, then refreshes the `DECTStation.json` collection after the firmware's delay. | The callback does not inspect or prove a positive `ACK`. Destructive execution also requires a typed administrator action, target confirmation, a user-authorized roundtrip, and re-enrollment recovery proof. |
 | Creation, editing, or deletion of structured records | Firmware pages expose clients, port rules, schedules, peers, shares, and telephony records. | Stable target `IDENTITY`, complete collection `FORM`, conflict behavior, `ACK`, and full-list `READBACK`; deletion also needs recovery and confirmation. |
 
 `ENDPOINT` includes method, path, authentication, token, and Referer. `FORM`
@@ -154,10 +167,26 @@ state source. `IDENTITY` means one stable, unambiguous target. `SECRET` means
 credentials or key material must never become entity state, attributes,
 diagnostics, logs, or dashboard data.
 
-Mesh and Powerline rename need proof of every hidden field in their
-authenticated save forms. Mesh identify has a start and stop request shape, but
-it remains deferred until the firmware provides a dependable lifetime and
-readback contract. It will be a bounded action, not a persistent switch.
+The Mesh and Powerline rename cards are explicit blocked candidates. No Home
+Assistant text entity or router command is created from these static forms.
+Model or firmware gating cannot replace the missing submit, acknowledgement,
+and independently verified collection-readback identity contracts.
+Mesh identify has a start and stop request shape, but it remains deferred until
+the firmware provides a dependable lifetime and readback contract. It will be
+a bounded action, not a persistent switch.
+
+The Administration catalog shows these candidates separately so their impact
+is not hidden inside broad setup cards. Candidate badges use the same five risk
+tiers as backend write contracts: `normal`, `sensitive`, `disruptive`,
+`lockout`, and `destructive`. A badge is informational only; blocked candidates
+still contain no executable control.
+
+The DECT paging and disconnect cards are likewise evidence-only candidates.
+Read-only inventory capture can confirm endpoint presence and value-free shapes,
+but it cannot prove an action response. Promotion requires an explicitly
+authorized handset or repeater roundtrip that records only the bounded positive
+acknowledgement shape and independent follow-up state. Until then, the panel
+shows the precise blocker and exposes no runnable DECT action.
 
 ## Destructive, private, or deferred operations in the stable baseline
 
@@ -203,6 +232,20 @@ frontend requests the data only when an administrator opens the Administration
 view, keeps it only in memory, and clears it when access or the selected router
 changes. This read surface is deliberately separate from the future mutation
 contract below.
+
+Two firmware reads cannot be represented safely as Recorder-backed entities:
+an IP-PBX client refresh and phonebook contact data. The Administration view
+therefore provides administrator-only, on-demand read forms under the existing
+IP-PBX and phonebook capability cards. Inputs are restricted to the firmware's
+five phonebook indexes, an optional single-letter prefix, and bounded opaque
+row identifiers. Results pass through fixed field allowlists and are escaped
+again before rendering. They never enter coordinator data, entities,
+diagnostics, logs, URLs, or browser storage. A result remains only in the
+current panel and is cleared when the user leaves Administration, changes
+router, loses administrator context, disconnects the panel, starts a
+replacement query, or explicitly clears it. Per-query and global rate limits
+protect the router session. These reads never call a Home Assistant service or
+change a router setting.
 
 The Administration view also exposes an explicit **Read-only capability
 inventory** diagnostic action. It performs a fresh, bounded pass over every

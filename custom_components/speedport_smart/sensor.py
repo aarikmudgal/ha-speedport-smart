@@ -2373,7 +2373,12 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
         value_key = _WAN_TELEMETRY_KEY_BY_ENTITY[key]
         raw = self._telemetry.get(value_key)
         if key == "wan_last_sample":
-            return as_datetime(raw) if raw is not None else None
+            sampled_at = as_datetime(raw) if raw is not None else None
+            return (
+                sampled_at.replace(second=0, microsecond=0)
+                if sampled_at is not None
+                else None
+            )
         if key in {"wan_polling_interval", "wan_fastest_proven_interval"}:
             return as_float(raw) if raw is not None else None
         return str(raw) if raw is not None else None

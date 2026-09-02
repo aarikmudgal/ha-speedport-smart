@@ -96,6 +96,7 @@ _ADDRESS_KEYS = frozenset(
         "ddns_domain",
         "ddns_update_server",
         "domain",
+        "domain_name",
         "external_ip",
         "gateway",
         "host",
