@@ -39,8 +39,10 @@ const {
   ADMIN_READ_FIELD_KEYS,
   ADMIN_READ_SECTION_FIELDS,
   ADMIN_READ_SECTION_ORDER,
+  ADMIN_SHARED_ENTITY_GROUP_OWNERS,
   SpeedportSmartPanel,
   adminPlacementFor,
+  buildAdminEntityGroupPlacements,
   formatAdminReadValue,
   highestAdminRisk,
   iconFor,
@@ -580,6 +582,50 @@ test("fixed Administration manifest places reviewed controls and collections", (
   );
 });
 
+test("shared Administration entity groups require explicit deterministic owners", () => {
+  assert.deepEqual(ADMIN_SHARED_ENTITY_GROUP_OWNERS, {
+    system_health: {
+      areaId: "system",
+      subsectionId: "system_information",
+    },
+    system_security: {
+      areaId: "system",
+      subsectionId: "system_security",
+    },
+  });
+  assert.deepEqual(adminPlacementFor(REPORTING_META), {
+    areaId: "system",
+    subsectionId: "system_information",
+  });
+
+  const duplicated = [
+    {
+      id: "system",
+      subsections: [
+        { id: "first", entityGroups: ["shared"] },
+        { id: "second", entityGroups: ["shared"] },
+      ],
+    },
+  ];
+  assert.throws(
+    () => buildAdminEntityGroupPlacements(duplicated, {}),
+    /has no explicit shared owner: shared/,
+  );
+  assert.throws(
+    () =>
+      buildAdminEntityGroupPlacements(duplicated, {
+        shared: { areaId: "system", subsectionId: "missing" },
+      }),
+    /is not a declared placement: shared/,
+  );
+  assert.deepEqual(
+    buildAdminEntityGroupPlacements(duplicated, {
+      shared: { areaId: "system", subsectionId: "first" },
+    }).get("shared"),
+    { areaId: "system", subsectionId: "first" },
+  );
+});
+
 test("Administration catalog covers every reviewed management family without generic controls", () => {
   const subsections = ADMIN_IA.flatMap((area) => area.subsections);
   const features = subsections.flatMap((subsection) => subsection.features);
@@ -621,6 +667,44 @@ test("Administration catalog covers every reviewed management family without gen
   assert.equal(inventory.contract, "read_only");
   assert.equal(inventory.destructive, false);
   assert.deepEqual(inventory.controls, ["button:capture_read_only_inventory"]);
+  const webUiVersion = features.find(
+    (feature) => feature.id === "system_web_ui_version",
+  );
+  assert.equal(webUiVersion.contract, "blocked");
+  assert.deepEqual(webUiVersion.controls, []);
+  assert.deepEqual(webUiVersion.entityGroups, []);
+  assert.deepEqual(webUiVersion.readSections, []);
+});
+
+test("hero renders only safe runtime router identity with neutral decorative LEDs", () => {
+  const fixture = panelFixture();
+  assert.equal(fixture.panel._renderRouterIdentity(router("entry-a", [])), "");
+  fixture.panel._metadata = {
+    routers: [
+      {
+        ...router("entry-a", []),
+        firmware: "FW <1.2>",
+        hardware_version: "Rev & A",
+        identifier: "private-router-identifier",
+        serial_number: "private-router-serial",
+      },
+    ],
+  };
+
+  SpeedportSmartPanel.prototype._render.call(fixture.panel);
+
+  const html = fixture.panel.shadowRoot.innerHTML;
+  assert.match(html, /<dt>Firmware<\/dt>\s*<dd>FW &lt;1\.2&gt;<\/dd>/);
+  assert.match(
+    html,
+    /<dt>Hardware version<\/dt>\s*<dd>Rev &amp; A<\/dd>/,
+  );
+  assert.doesNotMatch(html, /private-router-identifier|private-router-serial/);
+  assert.match(
+    html,
+    /\.router-leds i \{[\s\S]*?background: rgba\(255,255,255,\.46\);[\s\S]*?box-shadow: none;/,
+  );
+  assert.doesNotMatch(html, /#7df4b3/);
 });
 
 test("manual capability gaps are explicit safe cards without invented controls", () => {

@@ -15,7 +15,6 @@ from .coordinator import PollGroup
 from .entity import SpeedportEntity
 from .platform_helpers import (
     coordinator,
-    supported,
     wps_in_progress,
     wps_started_or_completed,
 )
@@ -132,9 +131,7 @@ async def async_setup_entry(
         for description in BUTTON_DESCRIPTIONS:
             if description.key in known:
                 continue
-            if not hub.supports_command(description.command) or not supported(
-                hub, description.capability, description.data_path
-            ):
+            if not hub.supports_command(description.command):
                 continue
             known.add(description.key)
             entities.append(SpeedportCommandButton(hub, description))
@@ -173,8 +170,11 @@ class SpeedportCommandButton(SpeedportEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Remain unavailable while protected management access is backed off."""
-        return super().available and self.hub.management_controls_available
+        """Require the exact current firmware, capability, and session contract."""
+        return (
+            super().available
+            and self.hub.command_decision(self.entity_description.command).executable
+        )
 
     async def async_press(self) -> None:
         """Execute action through its declared hub verification policy."""

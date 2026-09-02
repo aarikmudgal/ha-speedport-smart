@@ -123,8 +123,8 @@ class EndpointCapability:
     authenticated: bool = False
     referer: str | None = None
     evidence_keys: tuple[str, ...] = ()
-    automatic_probe: bool = True
-    inventory_safe: bool = True
+    automatic_probe: bool = False
+    inventory_safe: bool = False
 
 
 @dataclass(frozen=True, slots=True)

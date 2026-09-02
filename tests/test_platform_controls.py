@@ -238,6 +238,7 @@ async def test_select_rejects_mismatched_post_command_readback_and_backoff(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    hub._capabilities = frozenset((*hub.capabilities, "receiver"))  # noqa: SLF001
     description = _description(SELECT_DESCRIPTIONS, "receiver_led_mode_control")
     hub._merge_data({"receiver": {"led_mode": 0}})  # noqa: SLF001
     entity = SpeedportCommandSelect(hub, description)
@@ -330,6 +331,9 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    hub._capabilities = frozenset(  # noqa: SLF001
+        (*hub.capabilities, "clients", "wps")
+    )
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -916,6 +920,7 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
     await hub.async_setup()
     _attach_coordinators(hass, hub)
     hub._capabilities = frozenset({"status", "system"})  # noqa: SLF001
+    hub._mark_management_unavailable()  # noqa: SLF001 - simulate GUI-owned session
     entry = MagicMock(runtime_data=hub)
     switches: list[Any] = []
     buttons: list[Any] = []
@@ -927,13 +932,44 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
     await async_setup_selects(hass, entry, selects.extend)
     await async_setup_texts(hass, entry, texts.extend)
 
-    assert switches == []
-    assert selects == []
+    assert {
+        entity.entity_description.key
+        for entity in switches
+        if isinstance(entity, SpeedportCommandSwitch)
+    } == {
+        "guest_wifi",
+        "hybrid_bonding",
+        "office_wifi",
+        "wifi",
+    }
+    assert {entity.entity_description.key for entity in selects} == {
+        "internet_privacy_level_control",
+        "receiver_led_mode_control",
+    }
     assert texts == []
-    assert [type(entity) for entity in buttons] == [
-        SpeedportRetryProtectedDataButton,
-        SpeedportCaptureReadOnlyInventoryButton,
-    ]
+    assert {
+        entity.entity_description.key
+        for entity in buttons
+        if isinstance(entity, SpeedportCommandButton)
+    } == {"reboot_router", "reconnect_internet", "wps"}
+    assert (
+        sum(isinstance(entity, SpeedportRetryProtectedDataButton) for entity in buttons)
+        == 1
+    )
+    assert (
+        sum(
+            isinstance(entity, SpeedportCaptureReadOnlyInventoryButton)
+            for entity in buttons
+        )
+        == 1
+    )
+    assert all(not entity.available for entity in switches)
+    assert all(not entity.available for entity in selects)
+    assert all(
+        not entity.available
+        for entity in buttons
+        if isinstance(entity, SpeedportCommandButton)
+    )
 
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
@@ -984,6 +1020,7 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
             },
         }
     )
+    hub._set_management_access("available")  # noqa: SLF001 - recovered session
     snapshot = GroupSnapshot(
         group=PollGroup.NORMAL,
         data=hub.data,
@@ -1030,6 +1067,154 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
     counts = (len(switches), len(buttons), len(selects), len(texts))
     hub.coordinator(PollGroup.NORMAL).async_set_updated_data(snapshot)
     assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
+
+
+async def test_registered_controls_follow_firmware_drift_without_duplicates(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    router_info: RouterInfo,
+) -> None:
+    """Registered fixed and collection controls fail closed, then recover in place."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    hub._capabilities = hub.capabilities | {  # noqa: SLF001
+        "authenticated_json",
+        "clients",
+        "connection_privacy",
+        "hybrid",
+        "internet",
+        "nat",
+        "port_forwarding",
+        "receiver",
+        "wifi",
+        "wps",
+    }
+    client = {
+        "id": "aa:bb:cc:dd:ee:ff",
+        "source_kind": "addmdevice",
+        "source_row_id": "row-1",
+        "managed_form_supported": True,
+        "mac": "AA:BB:CC:DD:EE:FF",
+        "name": "Phone",
+        "ipv4": "192.0.2.10",
+        "connected": True,
+        "fixed_dhcp": False,
+        "uses_dhcp": True,
+        "uses_rule": 0,
+    }
+    hub._merge_data(  # noqa: SLF001 - complete writable readback fixture
+        {
+            "hybrid": {"enabled": True},
+            "internet": {"privacy_level": 1, "state": "online"},
+            "receiver": {"led_mode": 0},
+            "wifi": {
+                "enabled": True,
+                "guest": {"enabled": False},
+                "office": {"enabled": True},
+                "wps_status": "idle",
+            },
+            "clients": {"items": [client]},
+            "nat": {
+                "port_forward_rules": [
+                    {
+                        "id": "rule-1",
+                        "name": "HTTPS",
+                        "active": True,
+                        "_identity_fingerprint": _PORT_FORWARD_FINGERPRINT,
+                    }
+                ]
+            },
+        }
+    )
+    entry = MagicMock(runtime_data=hub)
+    switches: list[Any] = []
+    buttons: list[Any] = []
+    selects: list[Any] = []
+    texts: list[Any] = []
+
+    await async_setup_switches(hass, entry, switches.extend)
+    await async_setup_buttons(hass, entry, buttons.extend)
+    await async_setup_selects(hass, entry, selects.extend)
+    await async_setup_texts(hass, entry, texts.extend)
+
+    writable = [
+        *switches,
+        *(entity for entity in buttons if isinstance(entity, SpeedportCommandButton)),
+        *selects,
+        *texts,
+    ]
+    safe_read_only = [
+        entity
+        for entity in buttons
+        if isinstance(
+            entity,
+            SpeedportRetryProtectedDataButton | SpeedportCaptureReadOnlyInventoryButton,
+        )
+    ]
+    assert any(isinstance(entity, SpeedportPortForwardSwitch) for entity in writable)
+    assert any(
+        isinstance(entity, SpeedportClientFixedDhcpSwitch) for entity in writable
+    )
+    assert len(safe_read_only) == 2
+    assert writable
+    assert all(entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+    counts = (len(switches), len(buttons), len(selects), len(texts))
+
+    def publish(group: PollGroup, generation: int) -> None:
+        hub.coordinator(group).async_set_updated_data(
+            GroupSnapshot(
+                group=group,
+                data=hub.data,
+                generation=generation,
+                updated_at=datetime.now(UTC),
+            )
+        )
+
+    hub._router_info = RouterInfo(  # noqa: SLF001 - simulate reported drift
+        model=router_info.model,
+        firmware="unreviewed",
+        serial_number=router_info.serial_number,
+        hardware_version=router_info.hardware_version,
+    )
+    publish(PollGroup.NORMAL, 1)
+    publish(PollGroup.SLOW, 1)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(not entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    hub._router_info = router_info  # noqa: SLF001 - exact reviewed identity restored
+    publish(PollGroup.NORMAL, 2)
+    publish(PollGroup.SLOW, 2)
+    publish(PollGroup.NORMAL, 3)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    hub._mark_management_unavailable()  # noqa: SLF001 - transient session loss
+    publish(PollGroup.NORMAL, 4)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(not entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    hub._set_management_access("available")  # noqa: SLF001 - session recovered
+    publish(PollGroup.NORMAL, 5)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
 
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()

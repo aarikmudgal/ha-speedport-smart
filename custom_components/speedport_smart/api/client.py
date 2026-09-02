@@ -422,6 +422,7 @@ def _endpoint(
     automatic_probe: bool = True,
     inventory_safe: bool = True,
 ) -> EndpointCapability:
+    """Build one statically reviewed built-in read endpoint contract."""
     return EndpointCapability(
         family=family,
         endpoint=path,
@@ -1571,23 +1572,11 @@ class SpeedportClient:
         """Fetch one JSON endpoint through serialized session owner."""
         self._ensure_open()
         async with self._lock:
-            had_authenticated_session = authenticated and self._authenticated
-            try:
-                return await self._get_json_unlocked(
-                    endpoint,
-                    authenticated=authenticated,
-                    referer=referer,
-                )
-            except SpeedportAuthenticationError:
-                if not had_authenticated_session:
-                    raise
-                self._invalidate_authentication()
-                await self._login_unlocked()
-                return await self._get_json_unlocked(
-                    endpoint,
-                    authenticated=True,
-                    referer=referer,
-                )
+            return await self._get_json_with_recovery_unlocked(
+                endpoint,
+                authenticated=authenticated,
+                referer=referer,
+            )
 
     async def _post_reviewed_command(
         self,
@@ -1648,19 +1637,23 @@ class SpeedportClient:
     async def execute_wifi_set_enabled(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed global Wi-Fi state field."""
         _require_boolean(enabled, description="Global Wi-Fi state")
-        return await self._post_reviewed_command(
-            "data/Modules.json",
-            {"use_wlan": "1" if enabled else "0"},
+        return await self._set_guarded_scalar(
+            endpoint="data/Modules.json",
             referer="html/content/overview/index.html",
+            field="use_wlan",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
         )
 
     async def set_guest_wifi(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed guest Wi-Fi state field."""
         _require_boolean(enabled, description="Guest Wi-Fi state")
-        return await self._post_reviewed_command(
-            "data/Modules.json",
-            {"wlan_guest_active": "1" if enabled else "0"},
+        return await self._set_guarded_scalar(
+            endpoint="data/Modules.json",
             referer="html/content/overview/index.html",
+            field="wlan_guest_active",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
         )
 
     async def execute_guest_wifi_set_enabled(self, *, enabled: bool) -> dict[str, Any]:
@@ -1670,10 +1663,12 @@ class SpeedportClient:
     async def set_office_wifi(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed office Wi-Fi state field."""
         _require_boolean(enabled, description="Office Wi-Fi state")
-        return await self._post_reviewed_command(
-            "data/Modules.json",
-            {"wlan_office_active": "1" if enabled else "0"},
+        return await self._set_guarded_scalar(
+            endpoint="data/Modules.json",
             referer="html/content/overview/index.html",
+            field="wlan_office_active",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
         )
 
     async def set_internet_privacy_level(self, level: int) -> dict[str, Any]:
@@ -1725,7 +1720,7 @@ class SpeedportClient:
             raise SpeedportProtocolError("Requested scalar state is not allowlisted")
         self._ensure_open()
         async with self._lock:
-            readback = await self._get_json_unlocked(
+            readback = await self._get_json_with_recovery_unlocked(
                 endpoint,
                 authenticated=True,
                 referer=referer,
@@ -1745,6 +1740,52 @@ class SpeedportClient:
             )
             _require_command_acknowledgement(result)
             return result
+
+    async def _get_json_with_recovery_unlocked(
+        self,
+        endpoint: str,
+        *,
+        authenticated: bool,
+        referer: str | None,
+    ) -> dict[str, Any]:
+        """Retry one protected GET after bounded, ownership-safe recovery."""
+        try:
+            return await self._get_json_unlocked(
+                endpoint,
+                authenticated=authenticated,
+                referer=referer,
+            )
+        except (SpeedportAuthenticationError, SpeedportDecodeError) as err:
+            if (
+                not authenticated
+                or self._password is None
+                or isinstance(
+                    err,
+                    (
+                        SpeedportInvalidCredentialsError,
+                        SpeedportLoginLockedError,
+                    ),
+                )
+            ):
+                raise
+
+            if self._session_cleanup_key is not None:
+                await self._logout_unlocked()
+            else:
+                # Status/challenge failures happen before the router supplies a
+                # proof-bound key. Forget only local preflight state: a logout
+                # without that key could terminate somebody else's session.
+                self._clear_session_state()
+                self._encrypted_mode = None
+
+            # Deliberately issue one direct retry instead of recursing through
+            # this helper. This bounds a pre-proof failure to one additional
+            # challenge and never wraps or replays a state-changing request.
+            return await self._get_json_unlocked(
+                endpoint,
+                authenticated=True,
+                referer=referer,
+            )
 
     async def rename_client(
         self,

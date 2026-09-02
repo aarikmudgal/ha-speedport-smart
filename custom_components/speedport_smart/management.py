@@ -56,11 +56,9 @@ class ManagementCommandDecision:
         return all(
             (
                 self.configured,
-                self.authenticated_capability,
                 self.contract_known,
                 self.surface_allowed,
                 self.firmware_supported,
-                self.capability_supported,
                 self.handler_available,
             )
         )
@@ -68,7 +66,12 @@ class ManagementCommandDecision:
     @property
     def executable(self) -> bool:
         """Return whether current router session state also permits execution."""
-        return self.exposed and self.session_available
+        return (
+            self.exposed
+            and self.authenticated_capability
+            and self.capability_supported
+            and self.session_available
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +122,16 @@ class ManagementCommandContract:
             raise ValueError(msg)
         if self.handler is not None and not self.handler.isidentifier():
             msg = "Management handlers must be Python identifiers"
+            raise ValueError(msg)
+        if self.execution_surface is ManagementExecutionSurface.NATIVE_ENTITY and (
+            self.feature_id is None
+            or self.handler is None
+            or self.parameter_names is None
+        ):
+            msg = (
+                "Native management contracts require a feature, handler, and exact "
+                "parameter set"
+            )
             raise ValueError(msg)
 
     def supports(self, model: str | None, firmware: str | None) -> bool:

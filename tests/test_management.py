@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -10,6 +11,7 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.speedport_smart import hub as hub_module
+from custom_components.speedport_smart.api import SpeedportClient
 from custom_components.speedport_smart.hub import SpeedportHub
 from custom_components.speedport_smart.management import (
     COMMAND_WRITE_CONTRACTS,
@@ -222,7 +224,7 @@ def test_command_decision_keeps_exposure_and_session_availability_separate() -> 
     """A temporary browser session conflict cannot erase supported controls."""
     supported_but_busy = ManagementCommandDecision(
         configured=True,
-        authenticated_capability=True,
+        authenticated_capability=False,
         contract_known=True,
         surface_allowed=True,
         firmware_supported=True,
@@ -248,6 +250,31 @@ def test_command_decision_keeps_exposure_and_session_availability_separate() -> 
     )
 
 
+def test_reviewed_firmware_keeps_native_controls_visible_without_session(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    router_info: RouterInfo,
+) -> None:
+    """A temporary protected-session loss changes availability, not discovery."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    hub._router_info = router_info  # noqa: SLF001 - exact reviewed identity
+    hub._capabilities = frozenset({"status", "system"})  # noqa: SLF001
+    hub._mark_management_unavailable()  # noqa: SLF001 - simulate GUI ownership
+
+    decision = hub.command_decision("wifi_set_enabled")
+
+    assert decision.authenticated_capability is False
+    assert decision.firmware_supported is True
+    assert decision.capability_supported is False
+    assert decision.exposed is True
+    assert decision.executable is False
+
+
 def test_entity_controls_resolve_only_to_reviewed_write_contracts() -> None:
     """Panel safety metadata cannot invent a command from an entity domain."""
     assert set(_EXPECTED_ENTITY_COMMANDS.values()) == set(_EXPECTED_CANONICAL_COMMANDS)
@@ -263,6 +290,30 @@ def test_entity_controls_resolve_only_to_reviewed_write_contracts() -> None:
         ("update", "firmware"),
     ):
         assert get_entity_write_contract(*entity_key) is None
+
+
+def test_every_native_contract_is_complete_and_matches_client_signature() -> None:
+    """A native control owns one exact semantic handler and parameter set."""
+    canonical_contracts = {
+        contract.command: contract for contract in COMMAND_WRITE_CONTRACTS.values()
+    }
+    for contract in canonical_contracts.values():
+        assert contract.feature_id is not None
+        assert contract.handler is not None
+        assert contract.parameter_names is not None
+        handler = getattr(SpeedportClient, contract.handler)
+        signature = inspect.signature(handler)
+        actual_parameters = frozenset(
+            name
+            for name, parameter in signature.parameters.items()
+            if name != "self"
+            and parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        )
+        assert actual_parameters == contract.parameter_names
 
 
 def test_read_only_management_telemetry_has_no_write_contracts() -> None:
@@ -319,6 +370,26 @@ def test_destructive_commands_cannot_use_native_entity_surface() -> None:
         execution_surface=ManagementExecutionSurface.ADMIN_ACTION,
     )
     assert contract.execution_surface is ManagementExecutionSurface.ADMIN_ACTION
+
+
+def test_native_contracts_require_complete_execution_metadata() -> None:
+    """A native entity cannot rely on inferred placement or handler arguments."""
+    target = RouterWriteContract(
+        model="Speedport Smart 4R Typ A",
+        firmware="010152.5.0.001.0",
+    )
+    with pytest.raises(
+        ValueError,
+        match="require a feature, handler, and exact parameter set",
+    ):
+        ManagementCommandContract(
+            command="example",
+            capability="system",
+            supported_routers=frozenset({target}),
+            risk=ManagementRisk.NORMAL,
+            confirmation=ManagementConfirmation.NONE,
+            execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+        )
 
 
 @pytest.mark.parametrize(
@@ -457,7 +528,9 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             risk=ManagementRisk.LOCKOUT,
             confirmation=ManagementConfirmation.TYPED,
             execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+            feature_id="network_wifi_main",
             handler="execute_wifi_set_enabled",
+            parameter_names=frozenset({"enabled"}),
         ),
         "reboot": ManagementCommandContract(
             command="reboot",
@@ -466,7 +539,9 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             risk=ManagementRisk.DISRUPTIVE,
             confirmation=ManagementConfirmation.CONFIRM,
             execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
+            feature_id="system_reboot",
             handler="reboot",
+            parameter_names=frozenset(),
         ),
     }
     monkeypatch.setattr(

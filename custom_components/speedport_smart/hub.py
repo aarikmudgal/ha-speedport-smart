@@ -550,6 +550,10 @@ class SpeedportHub:
             else None
         )
         identity = self.router_identity
+        firmware_supported = contract is not None and contract.supports(
+            identity.model,
+            identity.firmware,
+        )
         return ManagementCommandDecision(
             configured=self.controls_enabled,
             authenticated_capability=self.has_capability("authenticated_json"),
@@ -559,10 +563,7 @@ class SpeedportHub:
                 and contract.execution_surface
                 is ManagementExecutionSurface.NATIVE_ENTITY
             ),
-            firmware_supported=(
-                contract is not None
-                and contract.supports(identity.model, identity.firmware)
-            ),
+            firmware_supported=firmware_supported,
             capability_supported=(
                 contract is not None and self.has_capability(contract.capability)
             ),

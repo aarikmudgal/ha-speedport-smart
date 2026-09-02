@@ -53,6 +53,37 @@ static reviewed implementation, complete authentication and request contract,
 positive acknowledgement semantics, independent readback, stable identity,
 and an explicit user-authorized validation roundtrip.
 
+## Offline custom-form contract extraction
+
+`scripts/sanitize_form_contract.py` extracts structural evidence from the
+Speedport web interface's custom `.form-internal` containers. It is stdin-only
+and makes no network requests. It records only:
+
+- a local `data/*.json` action path from `.form-action`
+- named `input`, `select`, and `textarea` control types
+- fixed secret, authentication, identifier, and private classifications
+- fixed blocker codes for missing, conflicting, or unsafe actions
+
+It never records current field values, option values, option labels, page text,
+raw HTML, destinations, origins, or credentials. The compatibility `options`
+array is always empty; value-bearing controls set `options_incomplete` because
+HTML control type alone cannot prove a safe submission contract. In particular,
+secret-shaped names such as `nas_user_pwd` remain visible only as a field name
+classified `secret`; their values and options are always absent.
+Rejected content is represented by a fixed blocker code and is never echoed.
+
+Pipe one already-downloaded page directly into the sanitizer:
+
+```console
+pbpaste | .venv/bin/python -m scripts.sanitize_form_contract \
+  --out /private/tmp/speedport-form-contracts-sanitized.json
+printf '' | pbcopy
+```
+
+The output is created with mode `0600`, refuses symlinks and overwrites, and is
+evidence only. A form action or field list does not prove router
+acceptance, acknowledgement semantics, safe identity, readback, or restoration.
+
 ## User-operated reversible control capture
 
 `scripts/sanitize_control_capture.py` converts one browser Network-panel HAR

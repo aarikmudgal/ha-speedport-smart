@@ -15,7 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 from .coordinator import PollGroup
 from .entity import SpeedportEntity
-from .platform_helpers import coordinator, supported
+from .platform_helpers import coordinator
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -86,9 +86,7 @@ async def async_setup_entry(
         for description in SELECT_DESCRIPTIONS:
             if description.key in known:
                 continue
-            if not hub.supports_command(description.command) or not supported(
-                hub, description.capability, description.data_path
-            ):
+            if not hub.supports_command(description.command):
                 continue
             known.add(description.key)
             entities.append(SpeedportCommandSelect(hub, description))
@@ -145,7 +143,7 @@ class SpeedportCommandSelect(SpeedportEntity, SelectEntity):
         """Remain available only with explicit current-state readback."""
         return (
             super().available
-            and self.hub.management_controls_available
+            and self.hub.command_decision(self.entity_description.command).executable
             and self.current_option is not None
         )
 

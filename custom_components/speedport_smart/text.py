@@ -114,7 +114,7 @@ class SpeedportClientNameText(SpeedportEntity, TextEntity):
         item = self._item
         return (
             super().available
-            and self.hub.management_controls_available
+            and self.hub.command_decision("rename_client").executable
             and item is not None
             and manageable_client_row(item, require_fixed_dhcp=False)
             and valid_device_name(item.get("name"))

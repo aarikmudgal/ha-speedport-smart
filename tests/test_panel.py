@@ -11,6 +11,7 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import Unauthorized
 
+from custom_components.speedport_smart import panel as panel_module
 from custom_components.speedport_smart.panel import (
     _PANEL_ADMIN_READ_WS_TYPE,
     _PROTECTED_READ_ONLY_GROUP_BY_KEY,
@@ -18,6 +19,7 @@ from custom_components.speedport_smart.panel import (
     _access_source_for_entity,
     _capability_panel_data,
     _entity_panel_data,
+    _entry_panel_data,
     _permission_scoped_access_sources,
     _section_for_entity,
     websocket_panel_admin_read,
@@ -425,6 +427,58 @@ def test_panel_metadata_prefers_only_explicit_user_entity_name() -> None:
     metadata = _entity_panel_data(entry, None, connection)
 
     assert "custom_name" not in metadata
+
+
+def test_panel_router_identity_exposes_safe_runtime_fields_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Panel identity includes versions but never stable or serial identifiers."""
+    hub = SimpleNamespace(
+        capabilities=set(),
+        capability_report=object(),
+        router_identity=SimpleNamespace(
+            firmware="010152.5.0.001.0",
+            hardware_version="R01",
+            identifier="private-router-identifier",
+            model="Speedport Smart 4R Typ A",
+            serial_number="private-router-serial",
+        ),
+    )
+    entry = SimpleNamespace(
+        entry_id="entry-1",
+        runtime_data=hub,
+        state=ConfigEntryState.LOADED,
+        title="My Speedport",
+    )
+    connection = MagicMock()
+    connection.user.is_admin = True
+    monkeypatch.setattr(
+        panel_module.er,
+        "async_entries_for_config_entry",
+        lambda *_args: [],
+    )
+    monkeypatch.setattr(
+        panel_module,
+        "_capability_panel_data",
+        lambda _hub: ([], []),
+    )
+    monkeypatch.setattr(
+        panel_module,
+        "_management_panel_data",
+        lambda _hub: {"state": "available"},
+    )
+
+    metadata = _entry_panel_data(entry, connection, MagicMock(), MagicMock())
+
+    assert metadata is not None
+    assert metadata["model"] == "Speedport Smart 4R Typ A"
+    assert metadata["firmware"] == "010152.5.0.001.0"
+    assert metadata["hardware_version"] == "R01"
+    serialized = json.dumps(metadata)
+    assert "private-router-identifier" not in serialized
+    assert "private-router-serial" not in serialized
+    assert "identifier" not in metadata
+    assert "serial_number" not in metadata
 
 
 def test_panel_metadata_allowlists_only_proven_text_control() -> None:

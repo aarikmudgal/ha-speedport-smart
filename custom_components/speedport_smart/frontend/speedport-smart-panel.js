@@ -1,4 +1,4 @@
-import { keepDialogFocus } from "./accessibility.js?schema=14";
+import { keepDialogFocus } from "./accessibility.js?schema=15";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -12,27 +12,27 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=14";
+} from "./controls.js?schema=15";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=14";
+} from "./entity-state.js?schema=15";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=14";
+} from "./render-state.js?schema=15";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=14";
+} from "./translations.js?schema=15";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 1;
-const PANEL_SCHEMA_VERSION = 14;
+const PANEL_SCHEMA_VERSION = 15;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -1085,7 +1085,7 @@ export const ADMIN_IA = Object.freeze([
           destructive: true,
         }),
         fixedAdminFeature("system_web_ui_version", {
-          contract: "read_only",
+          contract: "blocked",
           capabilities: ["system"],
         }),
       ],
@@ -1697,8 +1697,83 @@ export function capabilityGroupFor(meta) {
   return `${section}_other`;
 }
 
+/**
+ * Canonical render owners for entity groups intentionally shared by subsections.
+ * Any new duplicate group must be reviewed and added here before module startup.
+ */
+export const ADMIN_SHARED_ENTITY_GROUP_OWNERS = Object.freeze({
+  system_health: Object.freeze({
+    areaId: "system",
+    subsectionId: "system_information",
+  }),
+  system_security: Object.freeze({
+    areaId: "system",
+    subsectionId: "system_security",
+  }),
+});
+
+/** Build deterministic subsection owners and reject unreviewed duplicates. */
+export function buildAdminEntityGroupPlacements(
+  areas,
+  sharedOwners = ADMIN_SHARED_ENTITY_GROUP_OWNERS,
+) {
+  const claims = new Map();
+  for (const area of areas) {
+    for (const subsection of area.subsections) {
+      const placement = Object.freeze({
+        areaId: area.id,
+        subsectionId: subsection.id,
+      });
+      for (const group of subsection.entityGroups) {
+        if (!claims.has(group)) claims.set(group, []);
+        claims.get(group).push(placement);
+      }
+    }
+  }
+
+  for (const group of Object.keys(sharedOwners)) {
+    const candidates = claims.get(group);
+    if (!candidates) {
+      throw new Error(
+        `Administration entity-group owner references unknown group: ${group}`,
+      );
+    }
+    if (candidates.length < 2) {
+      throw new Error(
+        `Administration entity-group owner is redundant for unshared group: ${group}`,
+      );
+    }
+  }
+
+  const placements = new Map();
+  for (const [group, candidates] of claims) {
+    if (candidates.length === 1) {
+      placements.set(group, candidates[0]);
+      continue;
+    }
+    if (!Object.hasOwn(sharedOwners, group)) {
+      throw new Error(
+        `Administration entity group has no explicit shared owner: ${group}`,
+      );
+    }
+    const expected = sharedOwners[group];
+    const owner = candidates.find(
+      (candidate) =>
+        candidate.areaId === expected.areaId &&
+        candidate.subsectionId === expected.subsectionId,
+    );
+    if (!owner) {
+      throw new Error(
+        `Administration entity-group owner is not a declared placement: ${group}`,
+      );
+    }
+    placements.set(group, owner);
+  }
+  return placements;
+}
+
 const ADMIN_CONTROL_FEATURE = new Map();
-const ADMIN_ENTITY_GROUP_PLACEMENT = new Map();
+const ADMIN_ENTITY_GROUP_PLACEMENT = buildAdminEntityGroupPlacements(ADMIN_IA);
 const ADMIN_FEATURE_PLACEMENT = new Map();
 const ADMIN_FEATURE_ENTITY_GROUPS = new Set();
 const ADMIN_READ_SECTION_OWNER = new Map();
@@ -1708,9 +1783,6 @@ for (const area of ADMIN_IA) {
       areaId: area.id,
       subsectionId: subsection.id,
     });
-    for (const group of subsection.entityGroups) {
-      ADMIN_ENTITY_GROUP_PLACEMENT.set(group, placement);
-    }
     for (const feature of subsection.features) {
       ADMIN_FEATURE_PLACEMENT.set(feature.id, placement);
       for (const control of feature.controls) {
@@ -4128,6 +4200,30 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
+  _renderRouterIdentity(router) {
+    const fields = [
+      ["hero.firmware", router.firmware],
+      ["hero.hardware_version", router.hardware_version],
+    ]
+      .filter(([, value]) => typeof value === "string" && value.trim())
+      .map(([labelKey, value]) => [labelKey, value.trim()]);
+    if (fields.length === 0) return "";
+    return `
+      <dl class="router-identity">
+        ${fields
+          .map(
+            ([labelKey, value]) => `
+              <div>
+                <dt>${escapeHtml(this._t(labelKey))}</dt>
+                <dd>${escapeHtml(value)}</dd>
+              </div>
+            `,
+          )
+          .join("")}
+      </dl>
+    `;
+  }
+
   _render() {
     if (!this.shadowRoot) return;
     const renderState = captureRenderState(this.shadowRoot);
@@ -4227,6 +4323,7 @@ export class SpeedportSmartPanel extends HTMLElement {
             </div>
             <h1>${escapeHtml(router.title)}</h1>
             ${router.model ? `<p>${escapeHtml(router.model)}</p>` : ""}
+            ${this._renderRouterIdentity(router)}
             <div class="hero-status">
               <span class="online-dot ${connectionPresentation.className}" aria-hidden="true"></span>
               ${escapeHtml(connectionLabel)}
@@ -4370,6 +4467,24 @@ export class SpeedportSmartPanel extends HTMLElement {
           font-size: clamp(16px, 2vw, 22px);
           opacity: .84;
         }
+        .router-identity {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px 18px;
+          margin: -12px 0 24px;
+        }
+        .router-identity div {
+          display: flex;
+          min-width: 0;
+          gap: 6px;
+          font-size: 12px;
+        }
+        .router-identity dt { opacity: .72; }
+        .router-identity dd {
+          margin: 0;
+          overflow-wrap: anywhere;
+          font-weight: 700;
+        }
         .hero-status {
           display: flex;
           align-items: center;
@@ -4443,8 +4558,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #7df4b3;
-          box-shadow: 0 0 12px #7df4b3;
+          background: rgba(255,255,255,.46);
+          box-shadow: none;
         }
         .signal-wave {
           position: absolute;

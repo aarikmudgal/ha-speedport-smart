@@ -37,7 +37,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 14
+PANEL_SCHEMA_VERSION: Final = 15
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -473,12 +473,17 @@ def _entry_panel_data(
 
     hub = _loaded_hub(entry)
     model: str | None = None
+    firmware: str | None = None
+    hardware_version: str | None = None
     capabilities: list[str] = []
     management: dict[str, Any] | None = None
     access_sources: list[dict[str, Any]] = []
     capability_families: list[dict[str, str]] = []
     if hub is not None:
-        model = hub.router_identity.model
+        identity = hub.router_identity
+        model = identity.model
+        firmware = identity.firmware
+        hardware_version = identity.hardware_version
         source_data, family_data = _capability_panel_data(hub)
         if connection.user.is_admin:
             capabilities = sorted(hub.capabilities)
@@ -496,6 +501,8 @@ def _entry_panel_data(
         "entry_id": entry.entry_id,
         "title": entry.title,
         "model": model,
+        "firmware": firmware,
+        "hardware_version": hardware_version,
         "entry_state": entry.state.value,
         "management": management,
         "access_sources": access_sources,
