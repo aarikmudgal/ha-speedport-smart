@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
 
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import CONF_PASSWORD
 from homeassistant.core import HassJob
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
@@ -38,18 +40,34 @@ from .api import (
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
 )
+from .configuration import ConfigurationError, SettingsContract, settings_contracts
+from .configuration_session import ConfigurationSession
+from .configuration_targets import (
+    resolve_settings_contract,
+    target_settings_ids,
+    target_settings_metadata,
+)
 from .const import DOMAIN, RATE_WINDOW_SECONDS
 from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinator
 from .diagnostics import safe_error_class_name
+from .file_transfer import FILE_TRANSFER_CONTRACTS
+from .file_transfer_session import FileTransferSession
+from .maintenance import (
+    MaintenanceError,
+    execute_maintenance_action,
+    maintenance_metadata,
+)
 from .management import (
     ManagementCommandDecision,
     ManagementConfirmation,
     ManagementExecutionSurface,
     ManagementVerificationPolicy,
     ManagementVerificationStrategy,
+    RouterWriteContract,
     get_command_write_contract,
 )
 from .normalizers import normalize_feature_payload, normalize_status_payload
+from .phonebook_link_session import OnlinePhonebookSession
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -122,6 +140,7 @@ _ADMIN_QUERY_INTERVAL_SECONDS: Final = MappingProxyType(
         "ip_pbx_refresh": 5.0,
         "phonebook_search": 1.0,
         "phonebook_contact": 1.0,
+        "call_history": 1.0,
         "voip_line_targets": 1.0,
     }
 )
@@ -130,6 +149,7 @@ _ADMIN_QUERY_CAPABILITY_PROOFS: Final = MappingProxyType(
         "ip_pbx_refresh": ("pbx_clients", "data/IPClients.json"),
         "phonebook_search": ("phonebook", "data/PhoneBook.json"),
         "phonebook_contact": ("phonebook", "data/PhoneBook.json"),
+        "call_history": ("calls", "data/PhoneCalls.json"),
     }
 )
 _ADMIN_ACTION_GLOBAL_INTERVAL_SECONDS: Final = 1.0
@@ -137,6 +157,7 @@ _ADMIN_ACTION_TARGET_FINGERPRINT_LENGTH: Final = 64
 _ADMIN_ACTION_TARGET_LABEL_MAX_LENGTH: Final = 64
 _ADMIN_ACTION_NUMBER_SUFFIX_LENGTH: Final = 4
 _ADMIN_ACTION_TARGET_MAX_ROWS: Final = 32
+_ADMIN_PHONEBOOK_TARGET_MAX_ROWS: Final = 1000
 _ADMIN_ACTION_TOKEN_GENERATION_ATTEMPTS: Final = 4
 _ADMIN_ACTION_INTERVAL_SECONDS: Final = MappingProxyType(
     {
@@ -151,6 +172,10 @@ _ADMIN_ACTION_INTERVAL_SECONDS: Final = MappingProxyType(
         "ip_pbx_client_delete": 30.0,
         "phonebook_entry_delete": 30.0,
         "nas_share_delete": 30.0,
+        "system_factory_reset": 300.0,
+        "system_dect_reset": 120.0,
+        "system_dsl_modem_mode": 300.0,
+        "system_log_clear": 30.0,
     }
 )
 _ADMIN_ACTION_REFRESH_FAMILIES: Final = MappingProxyType(
@@ -414,6 +439,12 @@ class SpeedportHub:
         )
         self._generation = 0
         self._operation_lock = asyncio.Lock()
+        self._configuration_session = ConfigurationSession(clock=self._monotonic_time)
+        self.file_transfer_session = FileTransferSession(clock=self._monotonic_time)
+        self.online_phonebook_session = OnlinePhonebookSession(
+            clock=self._monotonic_time
+        )
+        self._settings_targets_next_at = 0.0
         self._admin_query_global_next_at = 0.0
         self._admin_query_next_at: dict[str, float] = {}
         self._admin_action_global_next_at = 0.0
@@ -444,6 +475,7 @@ class SpeedportHub:
         self._management_last_success: datetime | None = None
         self._protected_retry_at = 0.0
         self._protected_retry_failures = 0
+        self._password_reauth_required = False
         self._protected_invalidation_pending = False
         self._candidate_inventory_status = "not_run"
         self._candidate_inventory_counts = {
@@ -569,6 +601,7 @@ class SpeedportHub:
             self._management_state == "available"
             and self._monotonic_time() >= self._protected_retry_at
             and self._settings_write_blocked_latch is not True
+            and not self._password_reauth_required
         )
 
     async def async_setup(self) -> None:
@@ -576,6 +609,10 @@ class SpeedportHub:
         if self._closed:
             message = "Cannot set up a closed Speedport hub"
             raise SpeedportError(message)
+        if self._password_reauth_required:
+            raise SpeedportAuthenticationError(
+                "Router password recovery requires Home Assistant reauthentication"
+            )
         report = await self.client.setup(allow_protected_degraded=True)
         self._apply_capability_report(report)
         self._router_info = self.client.router_info
@@ -602,6 +639,9 @@ class SpeedportHub:
         self._closed = True
         self._cancel_admin_action_grant_expiry()
         self._admin_action_target_grants.clear()
+        self._configuration_session.clear()
+        self.online_phonebook_session.clear()
+        self.file_transfer_session.clear()
         await self.client.close()
 
     def attach_coordinator(
@@ -624,6 +664,11 @@ class SpeedportHub:
     async def async_retry_protected_data(self) -> None:
         """Retry read-only protected discovery after the browser session logs out."""
         async with self._operation_lock:
+            if self._password_reauth_required:
+                raise HomeAssistantError(
+                    "Complete Home Assistant reauthentication before retrying "
+                    "router access"
+                )
             self._set_management_access("recovering", owner=self._management_owner)
             try:
                 report = await self.client.probe_capabilities()
@@ -663,6 +708,11 @@ class SpeedportHub:
     async def async_capture_candidate_inventory(self) -> None:
         """Capture every readable candidate schema through one explicit session."""
         async with self._operation_lock:
+            if self._password_reauth_required:
+                raise HomeAssistantError(
+                    "Complete Home Assistant reauthentication before capturing "
+                    "router data"
+                )
             self._candidate_inventory_status = "running"
             self._candidate_inventory_last_attempt = datetime.now(UTC)
             self._candidate_inventory_last_error = None
@@ -746,6 +796,362 @@ class SpeedportHub:
             ),
         )
 
+    async def async_query_call_history(
+        self, *, category: str, export: bool = False
+    ) -> dict[str, Any]:
+        """Return one private call list or CSV through the serialized query owner."""
+        from .call_history import call_history_spec  # noqa: PLC0415
+
+        if type(export) is not bool:
+            raise HomeAssistantError("Administrator call-history query is invalid")
+        try:
+            call_history_spec(category)
+        except ConfigurationError:
+            raise HomeAssistantError(
+                "Administrator call-history query is invalid"
+            ) from None
+        return await self._async_admin_query(
+            "call_history",
+            lambda: self.client.query_call_history(category=category, export=export),
+        )
+
+    def settings_metadata(self) -> list[dict[str, Any]]:
+        """Describe manual configuration editors without loading private values."""
+        identity = self.router_identity
+        supported = RouterWriteContract(
+            "Speedport Smart 4R Typ A", "010152.5.0.001.0"
+        ).matches(identity.model, identity.firmware)
+        return [
+            {
+                **metadata,
+                "supported": supported,
+                "available": supported and self.management_controls_available,
+                "controls_enabled": self.controls_enabled,
+            }
+            for metadata in [
+                *(contract.metadata() for contract in settings_contracts().values()),
+                *target_settings_metadata(),
+            ]
+        ]
+
+    def file_transfers_metadata(self) -> list[dict[str, Any]]:
+        """Expose only static administrator file-transfer controls."""
+        identity = self.router_identity
+        supported = RouterWriteContract(
+            "Speedport Smart 4R Typ A", "010152.5.0.001.0"
+        ).matches(identity.model, identity.firmware)
+        return [
+            {
+                **contract.metadata(),
+                "supported": supported,
+                "available": supported
+                and self.management_controls_available
+                and (not contract.file_field or self.controls_enabled),
+            }
+            for contract in FILE_TRANSFER_CONTRACTS.values()
+        ]
+
+    def invalidate_file_transfer_state(self) -> None:
+        """Revoke stale controls after a possibly disruptive upload attempt."""
+        self._cancel_admin_action_grant_expiry()
+        self._admin_action_target_grants.clear()
+        self._configuration_session.clear()
+        self.online_phonebook_session.clear()
+        self.file_transfer_session.clear()
+        self._publish_authenticated_failure(
+            SpeedportProtocolError(
+                "Router file transfer requires recovery verification"
+            ),
+            force_unavailable=True,
+        )
+
+    def _require_settings_contract(
+        self, setting_id: str, *, write: bool, target_id: str | None = None
+    ) -> SettingsContract:
+        contract = resolve_settings_contract(setting_id, target_id)
+        self._check_settings_access(write=write)
+        return contract
+
+    def _check_settings_access(self, *, write: bool) -> None:
+        """Recheck lifecycle, exact firmware and session before every request."""
+        identity = self.router_identity
+        if self._closed or not RouterWriteContract(
+            "Speedport Smart 4R Typ A", "010152.5.0.001.0"
+        ).matches(identity.model, identity.firmware):
+            raise ConfigurationError("setting_unavailable")
+        if not self.management_controls_available or (
+            write and not self.controls_enabled
+        ):
+            raise ConfigurationError("management_unavailable")
+
+    async def async_query_configuration_targets(
+        self, setting_id: str, *, requester: tuple[str, str]
+    ) -> dict[str, Any]:
+        """Return a private, bounded existing-row chooser without issuing a write."""
+        _require_admin_action_requester(requester)
+        if setting_id not in target_settings_ids():
+            raise ConfigurationError("setting_unavailable")
+        async with self._operation_lock:
+            self._check_settings_access(write=False)
+            now = self._monotonic_time()
+            if now < self._settings_targets_next_at:
+                raise ConfigurationError("rate_limited")
+            self._settings_targets_next_at = now + 1.0
+            try:
+                return await self.client.query_configuration_targets(setting_id)
+            finally:
+                await self._async_cleanup_admin_session()
+
+    async def async_read_configuration(
+        self,
+        setting_id: str,
+        *,
+        requester: tuple[str, str],
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Load an administrator-only editor under the shared router lock."""
+        async with self._operation_lock:
+            contract = self._require_settings_contract(
+                setting_id, write=False, target_id=target_id
+            )
+            try:
+                return await self._configuration_session.read(
+                    contract,
+                    requester,
+                    lambda: self.client.read_configuration(setting_id, target_id),
+                )
+            finally:
+                await self._async_cleanup_admin_session()
+
+    async def async_save_configuration(
+        self,
+        setting_id: str,
+        *,
+        requester: tuple[str, str],
+        revision: str,
+        changes: Mapping[str, Any],
+        confirmed: bool,
+        confirmation_text: str,
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a confirmed, one-shot, stale-state-checked settings transaction."""
+        async with self._operation_lock:
+            contract = self._require_settings_contract(
+                setting_id, write=True, target_id=target_id
+            )
+            pending_result: dict[str, Any] | None = None
+            try:
+                if setting_id == "telephony_phonebook_link" and target_id is not None:
+                    from .phonebook_link_flow import (  # noqa: PLC0415
+                        begin_online_phonebook_link,
+                    )
+
+                    pending_result = await begin_online_phonebook_link(
+                        self,
+                        contract,
+                        target_id,
+                        requester,
+                        revision,
+                        changes,
+                        confirmed=confirmed,
+                        confirmation_text=confirmation_text,
+                    )
+                    return pending_result
+                if setting_id == "system_router_password_change":
+                    return await self._async_change_router_password(
+                        contract,
+                        requester,
+                        revision,
+                        changes,
+                        confirmed=confirmed,
+                        confirmation_text=confirmation_text,
+                    )
+                return await self._configuration_session.save(
+                    contract,
+                    requester,
+                    revision,
+                    changes,
+                    confirmed=confirmed,
+                    confirmation_text=confirmation_text,
+                    read=lambda: self.client.read_configuration(setting_id, target_id),
+                    write=lambda current, values: self.client.save_configuration(
+                        setting_id, current, values, target_id
+                    ),
+                    readback=(
+                        lambda before, response: (
+                            self.client.read_created_phonebook_configuration(
+                                target_id, before, response
+                            )
+                        )
+                    )
+                    if setting_id == "telephony_phonebook_create"
+                    and target_id is not None
+                    else self.client.read_created_ip_phone_configuration
+                    if setting_id == "telephony_ip_phone_create"
+                    else None,
+                    **(
+                        {
+                            "on_verified": _vpn_creation_result
+                            if setting_id == "vpn_peer_create"
+                            else _vpn_rotation_result
+                        }
+                        if setting_id in {"vpn_peer_create", "vpn_ipsec_key_rotate"}
+                        else {}
+                    ),
+                )
+            finally:
+                cleaned = await self._async_cleanup_admin_session()
+                if not cleaned and pending_result is not None:
+                    pending_result.clear()
+                    pending_result.update(
+                        status="outcome_unknown", verification="manual_required"
+                    )
+
+    async def async_finish_phonebook_link(
+        self,
+        *,
+        requester: tuple[str, str],
+        pending_link: str,
+        target_id: str,
+        phonebook_id: int,
+        confirmed: bool,
+        confirmation_text: str,
+        merge_existing: bool,
+    ) -> dict[str, Any]:
+        """Require an explicit second approval after online account authentication."""
+        from .phonebook_link_flow import finish_online_phonebook_link  # noqa: PLC0415
+
+        _require_admin_action_requester(requester)
+        async with self._operation_lock:
+            self._check_settings_access(write=True)
+            try:
+                return await finish_online_phonebook_link(
+                    self,
+                    requester=requester,
+                    pending_link=pending_link,
+                    target_id=target_id,
+                    phonebook_id=phonebook_id,
+                    confirmed=confirmed,
+                    confirmation_text=confirmation_text,
+                    merge_existing=merge_existing,
+                )
+            finally:
+                await self._async_cleanup_admin_session()
+
+    async def _async_change_router_password(
+        self,
+        contract: SettingsContract,
+        requester: tuple[str, str],
+        revision: str,
+        changes: Mapping[str, Any],
+        *,
+        confirmed: bool,
+        confirmation_text: str,
+    ) -> dict[str, Any]:
+        """Change and independently prove one credential before storing it in HA."""
+        from .configuration_password import (  # noqa: PLC0415
+            password_configuration_request,
+        )
+        from .password_change import PasswordChangeError  # noqa: PLC0415
+        from .password_change_io import async_execute_password_change  # noqa: PLC0415
+        from .private_authorization import autonomous_ha_context  # noqa: PLC0415
+
+        def check_requester() -> None:
+            if self._entry_id is None:
+                raise PasswordChangeError("stale_password_change")
+            token = self.hass.auth.async_get_refresh_token(requester[1])
+            entry = self.hass.config_entries.async_get_entry(self._entry_id)
+            if (
+                self._closed
+                or entry is None
+                or entry.domain != DOMAIN
+                or entry.state is not ConfigEntryState.LOADED
+                or entry.runtime_data is not self
+                or token is None
+                or token.user.id != requester[0]
+                or not token.user.is_active
+                or not token.user.is_admin
+            ):
+                raise PasswordChangeError("stale_password_change")
+
+        raw, _, owned = await self._configuration_session.consume(
+            contract,
+            requester,
+            revision,
+            changes,
+            confirmed=confirmed,
+            confirmation_text=confirmation_text,
+            read=lambda: self.client.read_configuration(contract.id),
+        )
+        try:
+            draft = password_configuration_request(raw, owned)
+        except PasswordChangeError as error:
+            raise ConfigurationError(error.code) from None
+        finally:
+            owned.clear()
+        try:
+            result = await async_execute_password_change(
+                draft,
+                owner_client=self.client,
+                check_requester=check_requester,
+            )
+        except BaseException:
+            # Cancellation must never resume polling with an uncertain password.
+            self._suspend_password_management()
+            raise
+        finally:
+            owned.clear()
+            draft.clear()
+        if result.proof is None:
+            if result.result.get("status") == "outcome_unknown":
+                self._suspend_password_management()
+            return result.result
+        credential: str | None = None
+        persisted = False
+        try:
+            check_requester()
+            credential = result.proof.take_credential()
+            if self._entry_id is None:
+                raise PasswordChangeError("stale_password_change")
+            entry = self.hass.config_entries.async_get_entry(self._entry_id)
+            if entry is None or entry.domain != DOMAIN:
+                raise PasswordChangeError("stale_password_change")
+            # The proof and requester were checked above. HA's update listener
+            # schedules an autonomous reload, not a continuation of this write.
+            with autonomous_ha_context():
+                self.hass.config_entries.async_update_entry(
+                    entry, data={**entry.data, CONF_PASSWORD: credential}
+                )
+            # Bridge the short window before the update listener reloads. This
+            # verified credential never enters entity state or diagnostics.
+            self.client._password = credential  # noqa: SLF001
+            persisted = True
+            outcome = result.proof.finish(credential_persisted=True)
+            if outcome.get("status") != "verified":
+                self._suspend_password_management()
+            return outcome
+        finally:
+            if not persisted:
+                self._suspend_password_management()
+            result.proof.clear()
+            credential = None
+
+    def _suspend_password_management(self) -> None:
+        """Latch protected access off until reauthentication creates a new hub."""
+        already_required = self._password_reauth_required
+        self._password_reauth_required = True
+        self._cancel_admin_action_grant_expiry()
+        self._admin_action_target_grants.clear()
+        self._configuration_session.clear()
+        self.online_phonebook_session.clear()
+        self.file_transfer_session.clear()
+        self._publish_authenticated_failure(
+            SpeedportAuthenticationError("Router password recovery is required"),
+            force_unavailable=True,
+        )
+        if not already_required:
+            self._start_reauth()
+
     def admin_action_decision(self, action: str) -> AdminActionDecision:
         """Explain one ephemeral action without broad capability inference."""
         contract = get_admin_action_contract(action)
@@ -759,6 +1165,7 @@ class SpeedportHub:
                     contract.preflight_handler,
                     contract.verification_handler,
                 )
+                if name is not None
             )
         )
         return AdminActionDecision(
@@ -770,7 +1177,10 @@ class SpeedportHub:
             capability_supported=bool(
                 contract is not None
                 and self.has_capability("authenticated_json")
-                and contract.proofs_satisfied(self._capability_report)
+                and (
+                    contract.execution_policy == "maintenance"
+                    or contract.proofs_satisfied(self._capability_report)
+                )
             ),
             handlers_available=handlers_available,
             session_available=self.management_controls_available,
@@ -797,6 +1207,7 @@ class SpeedportHub:
                     "prerequisite_confirmation_required": (
                         contract.prerequisite is not None
                     ),
+                    **maintenance_metadata(contract),
                 }
             )
         return metadata
@@ -1061,6 +1472,23 @@ class SpeedportHub:
                 now + _ADMIN_ACTION_GLOBAL_INTERVAL_SECONDS
             )
             self._admin_action_next_at[action] = now + interval
+            if contract.execution_policy == "maintenance":
+                try:
+                    result = await self._async_execute_maintenance_locked(
+                        contract,
+                        resolved_parameters,
+                        confirmed=confirmed,
+                        confirmation_text=confirmation_text,
+                    )
+                finally:
+                    cleaned = await self._async_cleanup_admin_session()
+                if not cleaned:
+                    return {
+                        "status": "outcome_unknown",
+                        "retry_safe": False,
+                        "verification": "session_cleanup_failed",
+                    }
+                return result
             try:
                 try:
                     result = await self._async_execute_admin_action_locked(
@@ -1073,12 +1501,58 @@ class SpeedportHub:
             finally:
                 await self._async_cleanup_admin_session()
 
+    async def _async_execute_maintenance_locked(
+        self,
+        contract: AdminActionContract,
+        parameters: Mapping[str, Any],
+        *,
+        confirmed: bool,
+        confirmation_text: str | None,
+    ) -> dict[str, Any]:
+        """Use exact fresh preflight proofs instead of cached candidate families."""
+        identity = self.router_identity
+        try:
+            result = await execute_maintenance_action(
+                self.client,
+                contract.action,
+                parameters=parameters,
+                confirmed=confirmed,
+                confirmation_text=confirmation_text,
+                model=identity.model,
+                firmware=identity.firmware,
+                capability_report=self._capability_report,
+            )
+        except MaintenanceError as err:
+            error_type = {
+                "confirmation_required": AdminActionConfirmationError,
+                "action_rejected": AdminActionRejectedError,
+                "action_busy": AdminActionBusyError,
+                "action_verification_failed": AdminActionVerificationError,
+            }.get(err.code, AdminActionUnavailableError)
+            raise error_type(
+                "Administrator maintenance could not be completed"
+            ) from None
+        if contract.readback_policy == "reconnect_required":
+            self._cancel_admin_action_grant_expiry()
+            self._admin_action_target_grants.clear()
+            self._configuration_session.clear()
+            self.online_phonebook_session.clear()
+            self._publish_authenticated_failure(
+                SpeedportProtocolError("Router maintenance requires manual recovery"),
+                force_unavailable=True,
+            )
+        return result
+
     async def _async_execute_admin_action_locked(
         self,
         contract: AdminActionContract,
         parameters: Mapping[str, Any],
     ) -> dict[str, Any]:
         """Perform one preflight, at most one mutation, and bounded readbacks."""
+        if contract.verification_handler is None:
+            raise AdminActionUnavailableError(
+                "Administrator action verification is unavailable"
+            )
         preflight = getattr(self.client, contract.preflight_handler)
         mutation = getattr(self.client, contract.handler)
         verification = getattr(self.client, contract.verification_handler)
@@ -1297,10 +1771,17 @@ class SpeedportHub:
         """Replace one action's grants and return only safe ephemeral targets."""
         raw_targets = result.get("targets")
         truncated = result.get("truncated")
+        is_phonebook = contract.action == "phonebook_entry_delete"
+        max_targets = (
+            _ADMIN_PHONEBOOK_TARGET_MAX_ROWS
+            if is_phonebook
+            else _ADMIN_ACTION_TARGET_MAX_ROWS
+        )
         if (
             not isinstance(raw_targets, list)
-            or len(raw_targets) > _ADMIN_ACTION_TARGET_MAX_ROWS
+            or len(raw_targets) > max_targets
             or type(truncated) is not bool
+            or (is_phonebook and truncated)
         ):
             raise AdminActionUnavailableError(
                 "Administrator action targets are unavailable"
@@ -1539,6 +2020,7 @@ class SpeedportHub:
             if (
                 self._closed
                 or not self.has_capability("authenticated_json")
+                or self._password_reauth_required
                 or self._management_state != "available"
                 or now < self._protected_retry_at
             ):
@@ -1830,6 +2312,11 @@ class SpeedportHub:
         retry_after: int | None = None,
     ) -> None:
         """Update management state and its actionable repair issue."""
+        if self._password_reauth_required:
+            # Cleanup failures cannot replace this latch with finite backoff or
+            # revive access after a successful independent read.
+            state, owner, retry_after = "unavailable", None, None
+            self._protected_retry_at = float("inf")
         now = datetime.now(UTC)
         changed = (
             state != self._management_state
@@ -1914,6 +2401,9 @@ class SpeedportHub:
             if not force_unavailable:
                 return
             self._mark_management_unavailable()
+        self._configuration_session.clear()
+        self.online_phonebook_session.clear()
+        self.file_transfer_session.clear()
         if isinstance(error, SpeedportInvalidCredentialsError):
             self._start_reauth()
         invalidated = self._invalidate_authenticated_families(
@@ -1962,6 +2452,8 @@ class SpeedportHub:
 
     async def _async_retry_degraded_access(self) -> None:
         """Periodically retry read-only discovery after a blocked startup."""
+        if self._password_reauth_required:
+            return
         if self._management_state not in {
             "blocked",
             "locked",
@@ -2418,10 +2910,13 @@ class SpeedportHub:
                 item[0][2] or "",
             ),
         )
-        protected_retry_deferred = not propagate_errors and (
-            self._management_state
-            in {"blocked", "locked", "other_session", "unavailable"}
-            and self._monotonic_time() < self._protected_retry_at
+        protected_retry_deferred = self._password_reauth_required or (
+            not propagate_errors
+            and (
+                self._management_state
+                in {"blocked", "locked", "other_session", "unavailable"}
+                and self._monotonic_time() < self._protected_retry_at
+            )
         )
         if protected_retry_deferred:
             partial = self._invalidate_authenticated_families(partial)
@@ -3217,6 +3712,50 @@ def _restore_values_at_paths(
         else:
             restored[str(key)] = _thaw(fallback_value)
     return restored
+
+
+def _vpn_creation_result(
+    before: Mapping[str, Any],
+    changes: Mapping[str, Any],
+    response: Any,
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deliver one verified credential download to its requesting administrator."""
+    from .configuration_vpn import extract_vpn_credentials  # noqa: PLC0415
+
+    if not isinstance(response, Mapping):
+        raise ConfigurationError("action_outcome_unknown")
+    credentials = extract_vpn_credentials(before, changes, response, after)
+    return {
+        "status": "verified",
+        "private_download": {
+            "filename": credentials.filename,
+            "media_type": credentials.media_type,
+            "content": credentials.content,
+        },
+    }
+
+
+def _vpn_rotation_result(
+    before: Mapping[str, Any],
+    changes: Mapping[str, Any],
+    response: Any,
+    after: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deliver the verified rotated key only in the private action response."""
+    from .configuration_vpn import extract_vpn_rotated_credentials  # noqa: PLC0415
+
+    if not isinstance(response, Mapping):
+        raise ConfigurationError("action_outcome_unknown")
+    credentials = extract_vpn_rotated_credentials(before, changes, response, after)
+    return {
+        "status": "verified",
+        "private_download": {
+            "filename": credentials.filename,
+            "media_type": credentials.media_type,
+            "content": credentials.content,
+        },
+    }
 
 
 def _freeze(value: Any) -> Any:

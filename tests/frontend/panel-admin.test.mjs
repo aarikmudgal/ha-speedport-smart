@@ -196,6 +196,13 @@ function panelFixture({ admin = true, entries = ["entry-a"] } = {}) {
     states: {},
     user: { is_admin: admin },
   };
+  panel._requestPrivate = async (message) => {
+    calls.push(message);
+    return adminPayload(message.entry_id, [{
+      id: "clients", rows: [{ connected: true, name: "Laptop" }],
+      source: "protected_json", truncated: false,
+    }]);
+  };
   return { calls, panel };
 }
 
@@ -2449,7 +2456,7 @@ test("cached Administration re-entry renders immediately and refreshes without o
   const fixture = panelFixture({ admin: true });
   const requests = [];
   const resolveReads = [];
-  fixture.panel._hass.connection.sendMessagePromise = (message) => {
+  fixture.panel._requestPrivate = (message) => {
     requests.push(message);
     return new Promise((resolve) => {
       resolveReads.push(resolve);
@@ -2773,7 +2780,7 @@ test("entry unload and metadata failure clear private cached data", async () => 
 test("stale administrator response cannot cross a router change", async () => {
   let resolveRequest;
   const fixture = panelFixture({ entries: ["entry-a", "entry-b"] });
-  fixture.panel._hass.connection.sendMessagePromise = () =>
+  fixture.panel._requestPrivate = () =>
     new Promise((resolve) => {
       resolveRequest = resolve;
     });
@@ -2790,7 +2797,7 @@ test("stale administrator response cannot cross a router change", async () => {
 test("administrator read failure is isolated from normal metadata", async () => {
   const fixture = panelFixture();
   const metadata = fixture.panel._metadata;
-  fixture.panel._hass.connection.sendMessagePromise = async () => {
+  fixture.panel._requestPrivate = async () => {
     throw new Error("backend unavailable");
   };
 

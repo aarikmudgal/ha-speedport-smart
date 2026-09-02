@@ -66,11 +66,25 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   mobile receivers, and system services. Every entry distinguishes reviewed
   controls, related read-only evidence, blocked contracts, and unsupported
   local management.
-- Separate blocked cards remain for 5G receiver update versus factory/eSIM
-  restore, Mesh identify/delete, and USB safe removal. VoIP activation and the
-  seven fixed destructive operations instead use the beta administrator-action
-  executor described above. Dynamic DNS deletion remains blocked because its
-  static request uses an unresolved page-local endpoint alias.
+- Structured, revision-bound editors for Internet providers, DNS, LAN/DHCP,
+  Wi-Fi identities/radios/security/schedules, forwarding ranges, blocking rules,
+  parental rules, DNS exceptions, prioritization and Dynamic DNS configuration.
+- Telephony provider/number/client creation and editing, DECT and analog-line
+  settings, number assignments, local phonebook lifecycle and contacts, and a
+  two-step online-phonebook link with a separate merge/replace confirmation.
+- Private call-history viewing and CSV export, separate category clearing,
+  local phonebook import/export, system-log download and Router-Pass download.
+- VPN peer creation/deletion and credential rotation with explicit, temporary
+  private configuration downloads after supported readback verification.
+- Storage share and media-folder editors, USB safe removal, Mesh maintenance,
+  Powerline rename, mobile receiver actions and system settings where the
+  complete fixed firmware request is evidenced.
+- Guarded router password changes, backup/restore, firmware file transfers,
+  factory reset and reviewed network-mode maintenance. Lockout and destructive
+  operations require explicit readiness checks and typed confirmation.
+- A firmware-specific coverage matrix that separates implemented operations,
+  read-only reporting, incomplete contracts and live write testing still owed
+  by the router owner. No router settings were changed during development.
 - Expanded privacy-bounded read models for LAN/DHCP, Wi-Fi identities and radio
   configuration, managed clients, Mesh and Powerline nodes, port forwarding
   and blocking, DNS exceptions, traffic-priority slots, DDNS, telephony, DECT,
@@ -84,6 +98,13 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Structured private drafts and call-history results survive ordinary WAN
+  telemetry rendering, but are cleared on navigation, router/user changes and
+  disconnect. Exact schedule end time `24:00` is supported without accepting
+  invalid times such as `24:01`.
+- Phonebook target selection uses actual book membership rather than invented
+  slots, and configuration approvals bind stable target identity as well as
+  current values. Creation verification follows the router-assigned row ID.
 - Page-scoped Internet privacy, WPS configuration, Wi-Fi access, and 5G
   receiver reads now include the firmware's current HTTP page token. A
   decoded-empty startup response receives one bounded retry per reviewed
@@ -155,6 +176,19 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Security
 
+- Private administrator reads, settings, targets and results use bounded,
+  authenticated, non-cached HTTP to avoid Home Assistant WebSocket debug and
+  queue-error payload logging. The legacy private WebSocket commands no longer
+  execute router operations. Reload the panel after upgrading.
+- Configuration approvals bind the administrator, active login session, entry,
+  target and private revision, expire in memory and are consumed before any
+  mutation. Stale configuration and ambiguous writes are never replayed.
+- Password changes use isolated sessions and update Home Assistant's stored
+  credential only after a fresh login verifies the same router. An uncertain
+  change suspends protected credential retries until reauthentication.
+- Private transfers are bounded, single-use and administrator-session-bound;
+  uploads bind the confirmed file digest. Restore, firmware and external-sync
+  results do not claim independently verified completion when it is unknown.
 - Subscriber telephone identifiers, telephone credentials, call identifiers,
   and authenticated login-state metadata are now explicitly rejected at the
   normalization boundary.
@@ -187,7 +221,7 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   unload, or shutdown, and never published when final session cleanup fails.
   Exact-ACK actions treat missing or malformed acknowledgement as an unknown
   outcome even when a later read happens to match.
-- The eleven new administrator actions are beta implementations based on exact
+- The new administrator actions are beta implementations based on exact
   downloaded firmware contracts and automated tests. No live router mutation or
   change/readback/rollback roundtrip was performed during development, so they
   are not promoted as stable proof.

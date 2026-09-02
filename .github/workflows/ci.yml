@@ -58,6 +58,12 @@ jobs:
         run: |
           node --check custom_components/speedport_smart/frontend/accessibility.js
           node --check custom_components/speedport_smart/frontend/controls.js
+          node --check custom_components/speedport_smart/frontend/configuration-editor.js
+          node --check custom_components/speedport_smart/frontend/maintenance-editor.js
+          node --check custom_components/speedport_smart/frontend/file-transfer-editor.js
+          node --check custom_components/speedport_smart/frontend/file-digest.js
+          node --check custom_components/speedport_smart/frontend/call-history-view.js
+          node --check custom_components/speedport_smart/frontend/private-api.js
           node --check custom_components/speedport_smart/frontend/entity-state.js
           node --check custom_components/speedport_smart/frontend/render-state.js
           node --check custom_components/speedport_smart/frontend/speedport-smart-panel.js

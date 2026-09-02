@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { PRIVATE_COMMAND_TYPES } from "../../custom_components/speedport_smart/frontend/private-api.js";
 
 class TestElement {
   attachShadow() {
@@ -111,6 +112,10 @@ function fixture(adminActions = []) {
     states: {},
     user: { id: "admin", is_admin: true },
   };
+  panel._requestPrivate = async (message) => {
+    calls.push(message);
+    throw new Error("No response configured");
+  };
   return { calls, panel };
 }
 
@@ -178,10 +183,14 @@ test("frontend administrator action contracts stay identical to backend contract
 import json
 from custom_components.speedport_smart import panel_queries
 from custom_components.speedport_smart.admin_actions import ADMIN_ACTION_CONTRACTS
+contracts = {
+    action: contract for action, contract in ADMIN_ACTION_CONTRACTS.items()
+    if contract.execution_policy != "maintenance"
+}
 
 types = {
     action: getattr(panel_queries, f"PANEL_{action.upper()}_WS_TYPE")
-    for action in ADMIN_ACTION_CONTRACTS
+    for action in contracts
 }
 print(json.dumps({
     "actions": {
@@ -195,16 +204,20 @@ print(json.dumps({
             "targetTokenTtlSeconds": contract.target_token_ttl_seconds,
             "risk": contract.risk.value,
         }
-        for action, contract in ADMIN_ACTION_CONTRACTS.items()
+        for action, contract in contracts.items()
     },
     "targetTypes": {
         action: getattr(
             panel_queries,
             f"PANEL_{contract.target_query.upper()}_WS_TYPE",
         )
-        for action, contract in ADMIN_ACTION_CONTRACTS.items()
+        for action, contract in contracts.items()
         if contract.target_query is not None
     },
+    "privateTypes": sorted([
+        *panel_queries.private_panel_command_handlers(),
+        "speedport_smart/panel/admin_read",
+    ]),
 }))
 `;
   const result = spawnSync(python, ["-c", script], {
@@ -213,6 +226,7 @@ print(json.dumps({
   });
   assert.equal(result.status, 0, result.stderr);
   const backend = JSON.parse(result.stdout);
+  assert.deepEqual([...PRIVATE_COMMAND_TYPES].sort(), backend.privateTypes);
   assert.deepEqual(
     backend.actions,
     Object.fromEntries(
@@ -742,7 +756,7 @@ test("all destructive actions lazily query and dispatch exact typed token reques
     },
     nas_share_delete: { reference: "share1", name: "Photos" },
   };
-  panel._hass.connection.sendMessagePromise = async (message) => {
+  panel._requestPrivate = async (message) => {
     calls.push(message);
     const operation = message.type.split("/").at(-1);
     if (operation.endsWith("_targets")) {
@@ -947,7 +961,7 @@ test("target queries run lazily and never join broad cached line IDs", async () 
       },
     ],
   };
-  panel._hass.connection.sendMessagePromise = async (message) => {
+  panel._requestPrivate = async (message) => {
     calls.push(message);
     if (message.type.endsWith("/dect_handset_targets")) {
       return {
@@ -1054,7 +1068,7 @@ test("all four actions require confirmation and dispatch exact token-only messag
     "voip_line_set_active",
   ];
   const { calls, panel } = fixture(actionIds.map((id) => actionMetadata(id)));
-  panel._hass.connection.sendMessagePromise = async (message) => {
+  panel._requestPrivate = async (message) => {
     calls.push(message);
     if (Object.hasOwn(message, "target_token")) {
       assert.equal(panel._adminActionState.handsetTargets.result, undefined);
@@ -1158,7 +1172,7 @@ test("fixed action errors and context changes expose no server detail", async ()
     panel._adminActionErrorKey({ code: "action_busy" }),
     "admin.action.error.action_busy",
   );
-  panel._hass.connection.sendMessagePromise = async (message) => {
+  panel._requestPrivate = async (message) => {
     calls.push(message);
     const error = new Error("PRIVATE ROUTER DETAIL");
     error.code = "action_outcome_unknown";
@@ -1173,7 +1187,7 @@ test("fixed action errors and context changes expose no server detail", async ()
   assert.doesNotMatch(panel._notice, /PRIVATE ROUTER DETAIL/);
 
   let resolveAction;
-  panel._hass.connection.sendMessagePromise = (message) => {
+  panel._requestPrivate = (message) => {
     calls.push(message);
     return new Promise((resolve) => {
       resolveAction = resolve;
@@ -1207,7 +1221,7 @@ test("action dispatch invalidates private caches even when outcome is unknown", 
   panel._loadAdminRead = async (entryId, options) => {
     refreshes.push([entryId, options]);
   };
-  panel._hass.connection.sendMessagePromise = async () => {
+  panel._requestPrivate = async () => {
     const error = new Error("PRIVATE ROUTER DETAIL");
     error.code = "action_outcome_unknown";
     throw error;
@@ -1235,7 +1249,7 @@ test("management availability and generation changes invalidate target tokens", 
     truncated: false,
   };
   panel._hass.connection.sendMessagePromise = async () => ({
-    schema_version: 20,
+    schema_version: 22,
     routers: [
       {
         ...router([actionMetadata("voip_line_set_active")]),
@@ -1260,7 +1274,7 @@ test("management availability and generation changes invalidate target tokens", 
   panel._adminActionState.voipLineTargets.expiresAt = Date.now() + 60_000;
   panel._adminActionState.voipLineTargets.generation = 2;
   panel._hass.connection.sendMessagePromise = async () => ({
-    schema_version: 20,
+    schema_version: 22,
     routers: [
       {
         ...router([

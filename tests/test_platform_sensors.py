@@ -1089,7 +1089,7 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
             "system.automatic_updates_enabled",
             True,
         ),
-        "remote_support_active": ("system.remote_support_active", False),
+        "remote_support_active": ("system.cloud_backup_active", False),
         "easy_support_enabled": ("system.easy_support_enabled", False),
     }
 
@@ -1208,7 +1208,7 @@ async def test_management_telemetry_is_read_only_complete_and_fail_closed(
                 "update_planned": False,
                 "update_time": "2026-09-02T02:00:00+00:00",
                 "automatic_updates_enabled": True,
-                "remote_support_active": False,
+                "cloud_backup_active": False,
                 "easy_support_enabled": False,
             },
         }

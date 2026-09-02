@@ -55,7 +55,8 @@ The current integration code has been validated with read-only requests against:
 - **Router:** Speedport Smart 4R Typ A
 - **Firmware:** 010152.5.0.001.0
 - **Home Assistant:** 2025.12.0 or newer
-- **Languages:** English and German
+- **Languages:** English and German for the integration and main dashboard;
+  the new beta administration editors currently use English.
 
 That live validation covers read-only discovery and polling. The administrator
 actions described below are current beta functionality for this exact router
@@ -292,30 +293,29 @@ discovered capabilities remain read only unless they have their own reviewed
 write contract. Controls remain idle during setup, polling, discovery, retry,
 reload, and diagnostics.
 
-For the reviewed Speedport Smart 4R Typ A firmware, version 0.2.0 also
-stages guarded controls for Hybrid bonding, Telekom Internet privacy level,
-and 5G receiver LED behavior. Each reads the exact scalar first, submits only
-one allowlisted field, requires a positive acknowledgement, refreshes the
-independent Home Assistant state, and rejects a mismatch. These controls still
-require one user-driven change and rollback before being promoted as proven.
+The version 0.3 beta adds structured Administration editors for Internet and
+LAN configuration, Wi-Fi, schedules, forwarding and blocking rules, parental
+controls, telephony, phonebooks, VPN peers, storage shares, receivers and system
+settings. It also provides explicit maintenance actions and private file
+transfers. These complex operations live in the Administration panel, not in
+generic services or placeholder entities. The exact implemented and incomplete
+areas are listed in the [capability matrix](docs/MANAGEMENT_CAPABILITY_MATRIX.md).
 
-The current version 0.3 beta adds four guarded administrator actions: DECT
-handset enrollment, DECT repeater enrollment, per-handset paging, and VoIP line
-activation. It also adds seven destructive administrator actions: disconnect a
-DECT handset or repeater, and delete a VoIP provider, VoIP number, IP-PBX client,
-phonebook entry, or NAS share. These actions exist
-only in the Administration panel; they are not native entities or general Home
-Assistant services.
+An editor first reads the current configuration. Saving requires a fresh,
+short-lived approval bound to the administrator, login session, router entry,
+setting and target. The backend validates every submitted field, rechecks the
+current configuration and sends at most one mutation. Independent readback
+checks supported results; interrupted, secret-only or externally completed
+actions report their limited verification explicitly. Ambiguous writes are
+never retried automatically. Destructive actions require a typed phrase and
+show recovery guidance.
 
-Every targeted administrator action uses a short-lived, single-use token bound
-to the action and freshly read target. Execution rechecks capability and target
-identity, sends at most one mutation, performs bounded independent readback,
-never retries an ambiguous write, and releases its router session. Destructive
-actions additionally require their fixed typed phrase and show recovery
-guidance. This is beta protection, not live proof: the request shapes come from
-static firmware evidence and automated tests, and none of these eleven actions
-has completed a user-authorized live router roundtrip. Review the target and
-recovery instructions before testing one.
+Password changes, VPN credentials, phonebooks, call history, Router-Pass and
+configuration files use private administrator-only flows. Private JSON travels
+over authenticated, non-cached HTTP rather than Home Assistant's WebSocket
+logging path. Use HTTPS for Home Assistant when entering credentials or
+downloading private files. Never share a configuration backup, Router-Pass or
+VPN configuration publicly.
 
 The bundled dashboard asks for confirmation before an action. Native buttons,
 switches, updates, services, scripts, and automations elsewhere in Home
@@ -325,16 +325,17 @@ entities or general services. Controls can be hidden completely from the
 integration options.
 
 Router-changing commands were not executed during development validation.
-Review and test each beta action on your own router; destructive operations can
-remove working telephony, network, or storage configuration. The integration
-still does not expose factory reset, configuration restore, credential changes,
-SIM PIN/PUK operations, secret export, firewall disable, arbitrary JSON or SOAP
-execution, Dynamic DNS configuration deletion, or any destructive operation
-outside the seven fixed actions above.
-Firmware-discovered forms are never turned into a generic editor. All remaining
-structured or secret operations stay blocked until their full typed form,
-identity, acknowledgement, readback, confirmation, and redaction contracts are
-reviewed.
+These implementations have static firmware evidence and offline tests, not a
+live change/readback/rollback certification. The reviewed write boundary is
+Speedport Smart 4R Typ A firmware `010152.5.0.001.0`; other firmware remains
+read-only unless explicitly supported. Review each beta action before testing
+it. Factory resets, firmware updates, restores, credentials, network modes and
+deletions can interrupt access or remove working configuration.
+
+The integration does not invent undocumented settings or expose arbitrary
+JSON, SOAP or router endpoints. Firmware pages with incomplete request or
+identity evidence remain explicitly partial or read-only. A visible catalog
+entry does not guarantee that the connected router exposes that capability.
 
 See [Router management support](docs/MANAGEMENT.md) for exact implemented
 requests, readback behavior, deferred areas, and permanent exclusions.
@@ -355,6 +356,11 @@ material. See [Security](SECURITY.md) for private vulnerability reporting.
 For a HACS installation, install the desired update in HACS and restart Home
 Assistant when prompted. Read release notes before moving between stable and
 beta channels.
+
+After this administration update, reload the dashboard page as well. Older
+cached pages cannot use the retired private WebSocket commands; no operation is
+automatically replayed. Existing entities, options and recorded history are
+preserved.
 
 For a manual installation, replace the complete
 **/config/custom_components/speedport_smart** directory with the contents of

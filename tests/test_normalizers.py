@@ -2282,7 +2282,7 @@ def test_firmware_and_easy_support_states_are_nonsecret() -> None:
         "automatic_updates_enabled": True,
     }
     assert easy_support == {
-        "remote_support_active": False,
+        "cloud_backup_active": False,
         "easy_support_enabled": False,
     }
     rendered = repr({"firmware": firmware, "easy_support": easy_support})

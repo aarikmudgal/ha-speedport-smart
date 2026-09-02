@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final, TypeGuard
+from typing import TYPE_CHECKING, Final, Literal, TypeGuard
 
 from .management import (
     ManagementConfirmation,
@@ -62,7 +62,7 @@ class AdminActionContract:
     capability_proofs: tuple[AdminActionCapabilityProof, ...]
     handler: str
     preflight_handler: str
-    verification_handler: str
+    verification_handler: str | None
     input_specs: Mapping[str, ManagementInputSpec]
     preflight_parameters: tuple[str, ...]
     mutation_parameters: tuple[str, ...]
@@ -82,6 +82,9 @@ class AdminActionContract:
     already_expected_is_error: bool = False
     deletion_result: bool = False
     readback_delays: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0)
+    execution_policy: Literal["boolean", "maintenance"] = "boolean"
+    readback_policy: Literal["exact", "reconnect_required"] = "exact"
+    warning: str | None = None
 
     def __post_init__(self) -> None:
         """Reject ambiguous action contracts at import time."""
@@ -102,6 +105,26 @@ class AdminActionContract:
             raise ValueError(
                 "Destructive administrator actions require typed confirmation"
             )
+        if self.execution_policy not in {"boolean", "maintenance"} or (
+            self.readback_policy not in {"exact", "reconnect_required"}
+        ):
+            raise ValueError("Administrator action execution policy is invalid")
+        if self.execution_policy == "maintenance":
+            if (
+                self.risk is not ManagementRisk.DESTRUCTIVE
+                or self.expected_parameter is not None
+                or self.expected_value is not None
+                or self.target_query is not None
+                or self.deletion_result
+                or not self.warning
+            ):
+                raise ValueError("Maintenance actions cannot claim Boolean state")
+            if (self.verification_handler is None) != (
+                self.readback_policy == "reconnect_required"
+            ):
+                raise ValueError("Maintenance readback must match its recovery policy")
+        elif self.readback_policy != "exact" or self.verification_handler is None:
+            raise ValueError("Boolean actions require exact readback")
         if self.deletion_result and (
             self.risk is not ManagementRisk.DESTRUCTIVE
             or self.expected_parameter is not None
@@ -152,6 +175,7 @@ class AdminActionContract:
                 self.preflight_handler,
                 self.verification_handler,
             )
+            if name is not None
         ):
             raise ValueError("Administrator action handlers must be identifiers")
         inputs = MappingProxyType(dict(self.input_specs))
@@ -203,7 +227,9 @@ class AdminActionContract:
                 raise ValueError(
                     "Administrator actions cannot mix parameter and fixed expectations"
                 )
-        elif type(self.expected_value) is not bool:
+        elif (
+            self.execution_policy == "boolean" and type(self.expected_value) is not bool
+        ):
             raise ValueError(
                 "Administrator actions require one exact Boolean expectation"
             )
@@ -238,6 +264,8 @@ class AdminActionContract:
 
     def expected(self, parameters: Mapping[str, object]) -> bool:
         """Return the exact lifecycle value this action must independently prove."""
+        if self.execution_policy != "boolean":
+            raise ValueError("Maintenance actions have no Boolean expectation")
         if self.expected_parameter is None:
             return self.expected_value is True
         value = parameters[self.expected_parameter]
@@ -312,7 +340,7 @@ DECT_MOBILES_REFERER: Final = "html/content/phone/phone_dect_mobiles.html"
 DECT_REPEATER_REFERER: Final = "html/content/phone/phone_dect_repeater.html"
 VOIP_REFERER: Final = "html/content/phone/phone_internet.html"
 IP_PBX_REFERER: Final = "html/content/phone/phone_ippbx.html"
-PHONEBOOK_REFERER: Final = "html/content/phone/phone_book.html"
+PHONEBOOK_REFERER: Final = "html/content/phone/phone_book_entries.html"
 NAS_SHARE_REFERER: Final = "html/content/network/nas_share.html"
 
 DECT_STATION_PROOF: Final = AdminActionCapabilityProof(
@@ -383,7 +411,7 @@ def _action(
     capability_proofs: tuple[AdminActionCapabilityProof, ...],
     handler: str,
     preflight_handler: str,
-    verification_handler: str,
+    verification_handler: str | None,
     input_specs: Mapping[str, ManagementInputSpec],
     preflight_parameters: tuple[str, ...],
     mutation_parameters: tuple[str, ...],
@@ -403,6 +431,9 @@ def _action(
     readback_delays: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0),
     confirmation: ManagementConfirmation = ManagementConfirmation.CONFIRM,
     typed_confirmation: str | None = None,
+    execution_policy: Literal["boolean", "maintenance"] = "boolean",
+    readback_policy: Literal["exact", "reconnect_required"] = "exact",
+    warning: str | None = None,
 ) -> AdminActionContract:
     """Build one immutable contract for the reviewed firmware."""
     return AdminActionContract(
@@ -434,6 +465,9 @@ def _action(
         already_expected_is_error=already_expected_is_error,
         deletion_result=deletion_result,
         readback_delays=readback_delays,
+        execution_policy=execution_policy,
+        readback_policy=readback_policy,
+        warning=warning,
     )
 
 
@@ -747,7 +781,7 @@ ADMIN_ACTION_CONTRACTS: Final[Mapping[str, AdminActionContract]] = MappingProxyT
                     "phonebook_id": ManagementInputSpec(
                         ManagementInputKind.INTEGER,
                         minimum=0,
-                        maximum=4,
+                        maximum=5,
                     ),
                 },
                 target_projection_specs={
@@ -791,6 +825,148 @@ ADMIN_ACTION_CONTRACTS: Final[Mapping[str, AdminActionContract]] = MappingProxyT
                         maximum=64,
                     ),
                 },
+            ),
+            _action(
+                "system_factory_reset",
+                feature_id="system_factory_reset",
+                endpoint="data/Reboot.json",
+                referer="html/content/config/reset.html",
+                capability_proofs=(
+                    AdminActionCapabilityProof(
+                        "maintenance_reset",
+                        "data/Reboot.json",
+                        "html/content/config/reset.html",
+                    ),
+                ),
+                handler="post_maintenance_action",
+                preflight_handler="get_json",
+                verification_handler=None,
+                input_specs={
+                    "backup_saved": BOOLEAN_INPUT,
+                    "physical_access": BOOLEAN_INPUT,
+                },
+                preflight_parameters=(),
+                mutation_parameters=(),
+                verification_parameters=(),
+                risk=ManagementRisk.DESTRUCTIVE,
+                confirmation=ManagementConfirmation.TYPED,
+                typed_confirmation="FACTORY RESET ROUTER",
+                execution_policy="maintenance",
+                readback_policy="reconnect_required",
+                warning=(
+                    "This erases router settings and restarts the router. Confirm "
+                    "that you saved a usable backup and have physical access. "
+                    "These are your attestations, not an automated backup check. "
+                    "Reconfigure and reconnect Home Assistant manually; the current "
+                    "address and credentials may stop working. Never retry blindly."
+                ),
+            ),
+            _action(
+                "system_dect_reset",
+                feature_id="system_dect_reset",
+                endpoint="data/DECT_reset.json",
+                referer="html/content/config/problem_handling_dect.html",
+                capability_proofs=(
+                    AdminActionCapabilityProof(
+                        "dect_settings",
+                        "data/DECTSettings.json",
+                        "html/content/config/problem_handling_dect.html",
+                    ),
+                    DECT_STATUS_PROOF,
+                ),
+                handler="post_maintenance_action",
+                preflight_handler="get_json",
+                verification_handler=None,
+                input_specs={"retain_registrations": BOOLEAN_INPUT},
+                preflight_parameters=(),
+                mutation_parameters=(),
+                verification_parameters=(),
+                risk=ManagementRisk.DESTRUCTIVE,
+                confirmation=ManagementConfirmation.TYPED,
+                typed_confirmation="RESET DECT SETTINGS",
+                execution_policy="maintenance",
+                readback_policy="reconnect_required",
+                warning=(
+                    "This resets DECT settings and can restart the router. Choose "
+                    "explicitly whether both handsets and repeaters remain "
+                    "registered. Calls are interrupted. Reconnect and inspect the "
+                    "DECT settings and registrations before retrying."
+                ),
+            ),
+            _action(
+                "system_dsl_modem_mode",
+                feature_id="system_dsl_modem_mode",
+                endpoint="data/SecureRouter.json",
+                referer="html/content/config/internal_modem.html",
+                capability_proofs=(
+                    AdminActionCapabilityProof(
+                        "maintenance_modem",
+                        "data/SecureRouter.json",
+                        "html/content/config/internal_modem.html",
+                    ),
+                    AdminActionCapabilityProof(
+                        "maintenance_energy",
+                        "data/Energy.json",
+                        "html/content/config/energy.html",
+                    ),
+                ),
+                handler="post_maintenance_action",
+                preflight_handler="get_json",
+                verification_handler=None,
+                input_specs={
+                    "backup_saved": BOOLEAN_INPUT,
+                    "physical_access": BOOLEAN_INPUT,
+                    "link_lan1_ready": BOOLEAN_INPUT,
+                    "firewall_warning_accepted": BOOLEAN_INPUT,
+                },
+                preflight_parameters=(),
+                mutation_parameters=(),
+                verification_parameters=(),
+                risk=ManagementRisk.DESTRUCTIVE,
+                confirmation=ManagementConfirmation.TYPED,
+                typed_confirmation="ENABLE DSL MODEM MODE",
+                execution_policy="maintenance",
+                readback_policy="reconnect_required",
+                warning=(
+                    "This disables the firewall and other router functions, then "
+                    "restarts in DSL modem mode. Connect the downstream router to "
+                    "Link/LAN1. Status is then available through LAN2-4 at "
+                    "169.254.2.1. Returning to router mode requires a physical "
+                    "factory reset and restore or reconfiguration. Backup and "
+                    "cabling confirmations are your attestations, not automated "
+                    "checks. Home Assistant will not try alternate addresses."
+                ),
+            ),
+            _action(
+                "system_log_clear",
+                feature_id="system_log_clear",
+                endpoint="data/SystemMessages.json",
+                referer="html/content/config/system_log.html",
+                capability_proofs=(
+                    AdminActionCapabilityProof(
+                        "maintenance_log",
+                        "data/SystemMessages.json",
+                        "html/content/config/system_log.html",
+                    ),
+                ),
+                handler="post_maintenance_action",
+                preflight_handler="get_json",
+                verification_handler="get_json",
+                input_specs={},
+                preflight_parameters=(),
+                mutation_parameters=(),
+                verification_parameters=(),
+                risk=ManagementRisk.DESTRUCTIVE,
+                confirmation=ManagementConfirmation.TYPED,
+                typed_confirmation="CLEAR SYSTEM MESSAGES",
+                execution_policy="maintenance",
+                warning=(
+                    "This permanently clears router system messages. Export any "
+                    "records you need first. Only a complete unfiltered list is "
+                    "accepted, and success requires all previous records to be "
+                    "absent from a fresh complete read. New records may appear. "
+                    "Message contents are never returned by this action."
+                ),
             ),
         )
     }

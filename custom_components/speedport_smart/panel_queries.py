@@ -1,4 +1,4 @@
-"""Administrator-only ephemeral router query WebSocket API."""
+"""Private panel schemas and dispatch, with retired WebSocket transport stubs."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import HomeAssistantError
 
 from .admin_actions import get_admin_action_contract
+from .api import SpeedportError
+from .configuration import ConfigurationError
+from .configuration_targets import target_settings_ids
 from .const import DOMAIN
 from .hub import (
     AdminActionBusyError,
@@ -28,6 +31,7 @@ from .hub import (
     AdminActionVerificationError,
     AdminQueryRateLimitError,
 )
+from .maintenance import MAINTENANCE_ACTION_IDS
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -42,6 +46,7 @@ _PANEL_WS_TYPE: Final = f"{DOMAIN}/panel"
 PANEL_IP_PBX_REFRESH_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/ip_pbx_refresh"
 PANEL_PHONEBOOK_SEARCH_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/phonebook_search"
 PANEL_PHONEBOOK_CONTACT_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/phonebook_contact"
+PANEL_CALL_HISTORY_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/call_history"
 PANEL_DECT_HANDSET_TARGETS_WS_TYPE: Final = (
     f"{_PANEL_WS_TYPE}/action/dect_handset_targets"
 )
@@ -99,13 +104,13 @@ PANEL_NAS_SHARE_DELETE_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/action/nas_share_dele
 _QUERY_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _ACTION_TOKEN = re.compile(r"^[0-9a-f]{32}$")
 _PHONEBOOK_PREFIX = re.compile(r"^[A-Za-z]?$")
-_MAX_PHONEBOOK_ID: Final = 4
+_MAX_PHONEBOOK_ID: Final = 5
 
 
 def _phonebook_id(value: object) -> int:
-    """Validate the firmware's fixed set of five local phonebook indexes."""
+    """Validate native book numbers; the live inventory separately proves membership."""
     if type(value) is not int or not 0 <= value <= _MAX_PHONEBOOK_ID:
-        raise vol.Invalid("phonebook_id must be an integer from 0 through 4")
+        raise vol.Invalid("phonebook_id must be an integer from 0 through 5")
     return value
 
 
@@ -151,35 +156,287 @@ def _typed_confirmation(action: str) -> vol.All:
     return vol.All(str, vol.In({phrase}))
 
 
+def private_panel_command_handlers() -> dict[str, Any]:
+    """Share the exact reviewed schemas and dispatchers with private HTTP."""
+    handlers: tuple[Any, ...] = (
+        websocket_maintenance,
+        websocket_phonebook_link_finish,
+        websocket_ip_pbx_refresh,
+        websocket_phonebook_search,
+        websocket_phonebook_contact,
+        websocket_call_history,
+        websocket_dect_handset_targets,
+        websocket_voip_line_targets,
+        websocket_dect_handset_enroll,
+        websocket_dect_repeater_enroll,
+        websocket_dect_handset_set_paging,
+        websocket_voip_line_set_active,
+        websocket_dect_handset_disconnect_targets,
+        websocket_dect_repeater_disconnect_targets,
+        websocket_voip_provider_delete_targets,
+        websocket_voip_line_delete_targets,
+        websocket_ip_pbx_client_delete_targets,
+        websocket_phonebook_entry_delete_targets,
+        websocket_nas_share_delete_targets,
+        websocket_dect_handset_disconnect,
+        websocket_dect_repeater_disconnect,
+        websocket_voip_provider_delete,
+        websocket_voip_line_delete,
+        websocket_ip_pbx_client_delete,
+        websocket_phonebook_entry_delete,
+        websocket_nas_share_delete,
+        websocket_settings_read,
+        websocket_settings_targets,
+        websocket_settings_save,
+    )
+    return {handler._ws_command: handler for handler in handlers}  # noqa: SLF001
+
+
+def private_websocket_rejection(command: str) -> Any:
+    """Keep stale clients inert; never dispatch a private WebSocket operation."""
+
+    @websocket_command({vol.Required("type"): command})
+    @require_admin
+    def reject(
+        _hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+    ) -> None:
+        connection.send_error(
+            msg["id"],
+            "private_transport_required",
+            "Private router operations now require the updated HTTP panel. "
+            "Hard refresh Home Assistant before entering private values again.",
+        )
+
+    return reject
+
+
 def async_register_admin_query_commands(hass: HomeAssistant) -> None:
-    """Register process-scoped private query commands exactly once."""
-    websocket_api.async_register_command(hass, websocket_ip_pbx_refresh)
-    websocket_api.async_register_command(hass, websocket_phonebook_search)
-    websocket_api.async_register_command(hass, websocket_phonebook_contact)
-    websocket_api.async_register_command(hass, websocket_dect_handset_targets)
-    websocket_api.async_register_command(hass, websocket_voip_line_targets)
-    websocket_api.async_register_command(hass, websocket_dect_handset_enroll)
-    websocket_api.async_register_command(hass, websocket_dect_repeater_enroll)
-    websocket_api.async_register_command(hass, websocket_dect_handset_set_paging)
-    websocket_api.async_register_command(hass, websocket_voip_line_set_active)
-    websocket_api.async_register_command(
-        hass, websocket_dect_handset_disconnect_targets
+    """Register only value-free rejection stubs for the retired private transport."""
+    for command in private_panel_command_handlers():
+        websocket_api.async_register_command(hass, private_websocket_rejection(command))
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{_PANEL_WS_TYPE}/maintenance",
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+        vol.Required("action"): vol.In(MAINTENANCE_ACTION_IDS),
+        vol.Required("parameters"): vol.Schema(
+            {
+                vol.Optional("backup_saved"): _STRICT_BOOLEAN_SCHEMA,
+                vol.Optional("physical_access"): _STRICT_BOOLEAN_SCHEMA,
+                vol.Optional("link_lan1_ready"): _STRICT_BOOLEAN_SCHEMA,
+                vol.Optional("firewall_warning_accepted"): _STRICT_BOOLEAN_SCHEMA,
+                vol.Optional("retain_registrations"): _STRICT_BOOLEAN_SCHEMA,
+            }
+        ),
+        vol.Required("confirmed"): _AFFIRMED_SCHEMA,
+        vol.Required("confirmation_text"): vol.All(str, vol.Length(min=8, max=64)),
+    }
+)
+@require_admin
+@async_response
+async def websocket_maintenance(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Dispatch only the fixed destructive maintenance action vocabulary."""
+    await _dispatch_admin_action(
+        hass,
+        connection,
+        msg,
+        action=msg["action"],
+        **msg["parameters"],
     )
-    websocket_api.async_register_command(
-        hass, websocket_dect_repeater_disconnect_targets
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{_PANEL_WS_TYPE}/settings/targets",
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+        vol.Required("setting_id"): vol.In(target_settings_ids()),
+    }
+)
+@require_admin
+@async_response
+async def websocket_settings_targets(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """List existing rows only for the reviewed target-bound editor."""
+    hub = _loaded_hub(
+        hass, connection, msg, required_method="async_query_configuration_targets"
     )
-    websocket_api.async_register_command(hass, websocket_voip_provider_delete_targets)
-    websocket_api.async_register_command(hass, websocket_voip_line_delete_targets)
-    websocket_api.async_register_command(hass, websocket_ip_pbx_client_delete_targets)
-    websocket_api.async_register_command(hass, websocket_phonebook_entry_delete_targets)
-    websocket_api.async_register_command(hass, websocket_nas_share_delete_targets)
-    websocket_api.async_register_command(hass, websocket_dect_handset_disconnect)
-    websocket_api.async_register_command(hass, websocket_dect_repeater_disconnect)
-    websocket_api.async_register_command(hass, websocket_voip_provider_delete)
-    websocket_api.async_register_command(hass, websocket_voip_line_delete)
-    websocket_api.async_register_command(hass, websocket_ip_pbx_client_delete)
-    websocket_api.async_register_command(hass, websocket_phonebook_entry_delete)
-    websocket_api.async_register_command(hass, websocket_nas_share_delete)
+    if hub is not None:
+        await _settings_result(
+            connection,
+            msg,
+            hub.async_query_configuration_targets(
+                msg["setting_id"], requester=_admin_action_requester(connection)
+            ),
+        )
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{_PANEL_WS_TYPE}/settings/read",
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+        vol.Required("setting_id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Optional("target_id"): vol.All(
+            str, vol.Match(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
+        ),
+    }
+)
+@require_admin
+@async_response
+async def websocket_settings_read(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Load current settings privately, without executing any configuration write."""
+    hub = _loaded_hub(hass, connection, msg, required_method="async_read_configuration")
+    if hub is not None:
+        await _settings_result(
+            connection,
+            msg,
+            hub.async_read_configuration(
+                msg["setting_id"],
+                requester=_admin_action_requester(connection),
+                target_id=msg.get("target_id"),
+            ),
+        )
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{_PANEL_WS_TYPE}/settings/save",
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+        vol.Required("setting_id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Optional("target_id"): vol.All(
+            str, vol.Match(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
+        ),
+        vol.Required("revision"): vol.All(str, vol.Match(r"^[a-f0-9]{48}$")),
+        vol.Required("changes"): vol.All(dict, vol.Length(min=1, max=128)),
+        vol.Required("confirmed"): _AFFIRMED_SCHEMA,
+        vol.Required("confirmation_text"): vol.All(str, vol.Length(min=1, max=64)),
+    }
+)
+@require_admin
+@async_response
+async def websocket_settings_save(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Dispatch only closed, typed settings contracts after explicit confirmation."""
+    hub = _loaded_hub(hass, connection, msg, required_method="async_save_configuration")
+    if hub is not None:
+        await _settings_result(
+            connection,
+            msg,
+            hub.async_save_configuration(
+                msg["setting_id"],
+                requester=_admin_action_requester(connection),
+                revision=msg["revision"],
+                changes=msg["changes"],
+                confirmed=msg["confirmed"],
+                confirmation_text=msg["confirmation_text"],
+                target_id=msg.get("target_id"),
+            ),
+        )
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{_PANEL_WS_TYPE}/phonebook_link/finish",
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+        vol.Required("pending_link"): vol.All(str, vol.Match(r"^[0-9a-f]{48}$")),
+        vol.Required("target_id"): vol.All(
+            str, vol.Match(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
+        ),
+        vol.Required("phonebook_id"): _phonebook_id,
+        vol.Required("confirmed"): _AFFIRMED_SCHEMA,
+        vol.Required("confirmation_text"): vol.All(str, vol.Length(min=1, max=80)),
+        vol.Required("merge_existing"): _STRICT_BOOLEAN_SCHEMA,
+    }
+)
+@require_admin
+@async_response
+async def websocket_phonebook_link_finish(
+    hass: HomeAssistant,
+    connection: ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Complete only the separately approved pending account-link operation."""
+    hub = _loaded_hub(hass, connection, msg)
+    if hub is not None:
+        await _settings_result(
+            connection,
+            msg,
+            hub.async_finish_phonebook_link(
+                requester=_admin_action_requester(connection),
+                pending_link=msg["pending_link"],
+                target_id=msg["target_id"],
+                phonebook_id=msg["phonebook_id"],
+                confirmed=msg["confirmed"],
+                confirmation_text=msg["confirmation_text"],
+                merge_existing=msg["merge_existing"],
+            ),
+        )
+
+
+async def _settings_result(
+    connection: ActiveConnection,
+    msg: dict[str, Any],
+    response: Awaitable[dict[str, Any]],
+) -> None:
+    """Return fixed error codes only; never include submitted values in errors."""
+    try:
+        result = await response
+    except ConfigurationError as error:
+        connection.send_error(
+            msg["id"],
+            error.code,
+            "Settings operation could not be completed. "
+            "Reload current settings before retrying.",
+        )
+        return
+    except (HomeAssistantError, SpeedportError):
+        connection.send_error(
+            msg["id"],
+            "management_unavailable",
+            "Router management is currently unavailable.",
+        )
+        return
+    except Exception:  # noqa: BLE001 -- private boundary must not echo exception data.
+        # Do not let exception text echo private values into HA logs or replies.
+        connection.send_error(
+            msg["id"], "settings_failed", "Settings operation could not be completed."
+        )
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_command(
+    {
+        vol.Required("type"): PANEL_CALL_HISTORY_WS_TYPE,
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+        vol.Required("category"): vol.In({"dialed", "missed", "taken"}),
+        vol.Optional("export"): _STRICT_BOOLEAN_SCHEMA,
+    }
+)
+@require_admin
+@async_response
+async def websocket_call_history(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Read or locally export one private category only for this administrator."""
+    hub = _loaded_hub(hass, connection, msg, required_method="async_query_call_history")
+    if hub is None:
+        return
+    await _send_private_query_result(
+        connection,
+        msg,
+        "call_history",
+        hub.async_query_call_history(
+            category=msg["category"], export=msg.get("export", False)
+        ),
+    )
 
 
 @websocket_command(

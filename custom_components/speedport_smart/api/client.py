@@ -17,11 +17,18 @@ from urllib.parse import urlencode, urlsplit
 
 import aiohttp
 
+from ..admin_actions import get_admin_action_contract
+from ..configuration import ConfigurationError, settings_contracts
+from ..configuration_targets import (
+    resolve_settings_contract,
+    target_settings_read_pairs,
+)
 from ..const import (
     MANAGED_DEVICE_FORM_FIELDS,
     RECEIVER_LED_MODE_CODES,
 )
 from ..identity import port_forward_rule_fingerprint, valid_device_name
+from ..maintenance import MaintenanceError, maintenance_payload
 from ..models import (
     CandidateInventoryResult,
     CapabilityReport,
@@ -35,6 +42,7 @@ from ..models import (
     normalize_status,
     select_active_wan_interface,
 )
+from ..private_authorization import check_private_authorization
 from .codec import DEFAULT_KEY, decode_payload, encode_payload, is_encrypted_payload
 from .exceptions import (
     SpeedportAuthenticationError,
@@ -132,13 +140,21 @@ _QUERY_TOKEN_READS: Final = frozenset(
         (_LTE_MODE_ENDPOINT, _LTE_MODE_REFERER),
         (_WPS_ENDPOINT, _WPS_REFERER),
         (_WPS_ENDPOINT, _WIFI_ACCESS_REFERER),
+        ("data/NASFolder.json", "html/content/network/nas_share.html"),
+        ("data/NASFileCount.json", "html/content/network/nas_mediareplay.html"),
+        ("data/PhoneOnlbuch.json", "html/content/phone/phone_book_basic.html"),
+        ("data/FwCheckForUpdate.json", "html/content/config/check_for_updates.html"),
+        (
+            "data/FwCheckForUpdateMesh.json",
+            "html/content/config/check_for_updates_mesh.html",
+        ),
     }
 )
 _IP_PBX_CLIENTS_ENDPOINT: Final = "data/IPClients.json"
 _IP_PBX_CLIENTS_REFERER: Final = "html/content/phone/phone_ippbx.html"
 _PHONEBOOK_ENDPOINT: Final = "data/PhoneBook.json"
 _PHONEBOOK_ENTRY_ENDPOINT: Final = "data/PhoneBookEntry.json"
-_PHONEBOOK_REFERER: Final = "html/content/phone/phone_book.html"
+_PHONEBOOK_REFERER: Final = "html/content/phone/phone_book_entries.html"
 _DECT_ACTION_ENDPOINT: Final = "data/DECT.json"
 _DECT_STATION_ENDPOINT: Final = "data/DECTStation.json"
 _DECT_STATUS_ENDPOINT: Final = "data/DECTInfo.json"
@@ -154,8 +170,11 @@ _THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
 _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
 _WPS_STATE_VALUES: Final = frozenset({"-2", "-1", "0", "1"})
 _IP_PBX_STATUS_VALUES: Final = {0: "disconnected", 1: "registered", 2: "locked"}
-_PHONEBOOK_IDS: Final = frozenset(range(5))
+_PHONEBOOK_IDS: Final = frozenset(range(6))
 _PRIVATE_QUERY_MAX_ROWS: Final = 256
+_PRIVATE_PHONEBOOK_MAX_ROWS: Final = 1000
+_SETTINGS_TARGET_MAX_ROWS: Final = 64
+_PHONEBOOK_SETTINGS_MAX_TARGETS: Final = 5000
 _PRIVATE_QUERY_MAX_TEXT_LENGTH: Final = 256
 _PRIVATE_QUERY_MAX_PHONE_LENGTH: Final = 64
 _PRIVATE_QUERY_MAX_DECT_TARGETS: Final = 16
@@ -1771,6 +1790,7 @@ class SpeedportClient:
         *,
         authenticated: bool = False,
         referer: str | None = None,
+        preserve_compounds: bool = False,
     ) -> dict[str, Any]:
         """Fetch one JSON endpoint through serialized session owner."""
         self._ensure_open()
@@ -1779,7 +1799,451 @@ class SpeedportClient:
                 endpoint,
                 authenticated=authenticated,
                 referer=referer,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
             )
+
+    async def read_configuration(
+        self, setting_id: str, target_id: str | None = None
+    ) -> dict[str, Any]:
+        """Read one statically reviewed form, without probing action endpoints."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phone_numbers import NUMBER_TARGET_SPECS  # noqa: PLC0415
+        from ..configuration_phone_providers import (  # noqa: PLC0415
+            PROVIDER_TARGET_SPECS,
+        )
+        from ..configuration_provider_create import (  # noqa: PLC0415
+            PROVIDER_CREATE_SETTINGS,
+        )
+        from ..configuration_telephony import (  # noqa: PLC0415
+            normalize_dect_station_payload,
+        )
+        from ..system_actions import (  # noqa: PLC0415
+            merge_system_action_offer,
+            system_action_extra_read,
+        )
+
+        contract = resolve_settings_contract(setting_id, target_id)
+        if setting_id == "system_router_password_change":
+            from ..configuration_password import (  # noqa: PLC0415
+                password_configuration_context,
+            )
+
+            return password_configuration_context(
+                await self.get_json("data/Status.json", authenticated=False)
+            )
+        if setting_id in {"telephony_phonebook_contact", "telephony_phonebook_create"}:
+            return await self._read_phonebook_configuration(setting_id, target_id)
+        raw = await self.get_json(
+            contract.read_endpoint or contract.endpoint,
+            authenticated=True,
+            referer=contract.read_referer or contract.referer,
+            **(
+                {"preserve_compounds": True}
+                if contract.field_choices is not None
+                or contract.payload_validator is not None
+                else {}
+            ),
+        )
+        normalized = normalize_configuration_payload(raw)
+        if setting_id == "telephony_phonebook_link":
+            from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+                phonebook_account_rows,
+            )
+
+            selected_books = [
+                row
+                for row in phonebook_account_rows(normalized)
+                if row["id"] == target_id and row["onlbuch_sync"] == "0"
+            ]
+            if len(selected_books) != 1:
+                raise ConfigurationError("settings_target_unavailable")
+            normalized[
+                "local_inventory"
+            ] = await self._phonebook_configuration_inventory(
+                int(selected_books[0]["onlbuch_nr"])
+            )
+        extra_read = system_action_extra_read(setting_id, normalized)
+        if extra_read is not None:
+            offer = await self.get_json(
+                extra_read[0],
+                authenticated=True,
+                referer=extra_read[1],
+                preserve_compounds=True,
+            )
+            normalized = merge_system_action_offer(setting_id, normalized, offer)
+        if setting_id == "storage_media_reindex":
+            normalized["index"] = await self.get_json(
+                "data/NASFileCount.json",
+                authenticated=True,
+                referer="html/content/network/nas_mediareplay.html",
+                preserve_compounds=True,
+            )
+        if setting_id == "telephony_handset_phonebook":
+            normalized["phonebooks"] = await self.get_json(
+                "data/PhoneOnlbuch.json",
+                authenticated=True,
+                referer="html/content/phone/phone_book_assign.html",
+                preserve_compounds=True,
+            )
+        if (
+            setting_id == "receiver_bonding"
+            and "easy_support_deactive" not in normalized
+        ):
+            support = normalize_configuration_payload(
+                await self.get_json(
+                    "data/EasySupport.json",
+                    authenticated=True,
+                    referer="html/content/config/easy_support.html",
+                )
+            )
+            normalized["network_prerequisites"] = {
+                key: support[key]
+                for key in ("easy_support_deactive",)
+                if key in support
+            }
+        if (
+            setting_id in PROVIDER_TARGET_SPECS
+            or setting_id in NUMBER_TARGET_SPECS
+            or setting_id in {item.id for item in PROVIDER_CREATE_SETTINGS}
+            or setting_id == "vpn_peer_create"
+        ):
+            connection = normalize_configuration_payload(
+                await self.get_json(
+                    "data/InternetConnection.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                )
+            )
+            normalized[
+                "vpn_connectivity"
+                if setting_id == "vpn_peer_create"
+                else "internet_connection"
+            ] = {
+                key: connection[key]
+                for key in (
+                    "onlinestatus",
+                    "auto_external_modem",
+                    "extwan_typ",
+                    "extwan_status",
+                    "lte_status",
+                )
+                if key in connection
+            }
+        if setting_id == "telephony_dect_settings":
+            normalized = normalize_dect_station_payload(normalized, authenticated=True)
+        if setting_id == "storage_nas_share" and target_id is not None:
+            rows = _strict_nas_share_rows(normalized)
+            matches = [row for row in rows if row["id"] == target_id]
+            if len(matches) != 1:
+                raise ConfigurationError("stale_settings")
+            row = normalize_configuration_payload(matches[0])
+            row["sid"] = target_id
+            for name in ("use_usb", "printer_connected"):
+                if name in normalized:
+                    row[name] = normalized[name]
+            return row
+        return normalized
+
+    async def query_configuration_targets(self, setting_id: str) -> dict[str, Any]:
+        """List bounded existing targets on an explicit administrator read."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_targets import (  # noqa: PLC0415
+            target_settings_limit,
+            target_settings_rows,
+            target_settings_source,
+        )
+
+        if setting_id in {"telephony_phonebook_contact", "telephony_phonebook_create"}:
+            return await self._query_phonebook_configuration_targets(setting_id)
+        source = target_settings_source(setting_id)
+        if setting_id != "storage_nas_share" and source is None:
+            raise ConfigurationError("setting_unavailable")
+        raw = await self.get_json(
+            source[0] if source else _NAS_FOLDERS_ENDPOINT,
+            authenticated=True,
+            referer=source[1] if source else _NAS_FOLDERS_REFERER,
+            **({"preserve_compounds": True} if source else {}),
+        )
+        normalized = normalize_configuration_payload(raw)
+        if setting_id == "telephony_handset_phonebook":
+            normalized["phonebooks"] = await self.get_json(
+                "data/PhoneOnlbuch.json",
+                authenticated=True,
+                referer="html/content/phone/phone_book_assign.html",
+                preserve_compounds=True,
+            )
+        rows = (
+            target_settings_rows(setting_id, normalized)
+            if source
+            else _strict_nas_share_rows(normalized)
+        )
+        if len(rows) > target_settings_limit(setting_id):
+            raise ConfigurationError("too_many_settings_targets")
+        targets = []
+        for row in rows:
+            target_id = row["id"]
+            resolve_settings_contract(setting_id, target_id)
+            label = row.get(source[2] if source else "nas_folder_name")
+            if source and source[2] == "phone_number":
+                digits = "".join(
+                    char for char in str(label) if char.isascii() and char.isdigit()
+                )
+                label = (
+                    f"Telephone number ••••{digits[-4:]}"
+                    if digits
+                    else "Telephone number"
+                )
+            if (
+                not isinstance(label, str)
+                or not label
+                or len(label) > _PRIVATE_QUERY_MAX_TEXT_LENGTH
+            ):
+                label = f"{source[3] if source else 'Share'} {target_id}"
+            targets.append({"id": target_id, "label": label})
+        return {"setting_id": setting_id, "targets": targets}
+
+    async def _phonebook_configuration_inventory(self, book_id: int) -> dict[str, Any]:
+        """Bind the complete contact list to a freshly identified local book."""
+        from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+            phonebook_account_rows,
+        )
+
+        safe_book_id = _require_phonebook_id(book_id)
+        inventory = await self._phonebook_transfer_inventory(safe_book_id)
+        row = next(
+            row
+            for row in phonebook_account_rows(inventory["books"])
+            if row["onlbuch_nr"] == str(safe_book_id)
+        )
+        if row["onlbuch_sync"] != "0":
+            raise ConfigurationError("phonebook_linked")
+        result: dict[str, Any] = dict(inventory["content"])
+        result["book_identity"] = {
+            key: row[key] for key in ("id", "onlbuch_nr", "onlbuch_sync")
+        }
+        return result
+
+    async def _phonebook_transfer_inventory(self, book_id: int) -> dict[str, Any]:
+        """Prove book membership and content privately under one client lock."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+            phonebook_account_rows,
+        )
+        from ..configuration_phonebook_lifecycle import (  # noqa: PLC0415
+            phonebook_inventory,
+        )
+
+        self._ensure_open()
+        safe_book_id = _require_phonebook_id(book_id)
+        async with self._lock:
+            books = normalize_configuration_payload(
+                await self._get_json_unlocked(
+                    "data/PhoneOnlbuch.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_book_basic.html",
+                    preserve_compounds=True,
+                )
+            )
+            if not any(
+                row["onlbuch_nr"] == str(safe_book_id)
+                for row in phonebook_account_rows(books)
+            ):
+                raise ConfigurationError("settings_target_unavailable")
+            response = normalize_configuration_payload(
+                await self._post_json_unlocked(
+                    _PHONEBOOK_ENDPOINT,
+                    {"obnr": safe_book_id, "search": ""},
+                    authenticated=True,
+                    referer=_PHONEBOOK_REFERER,
+                )
+            )
+        if response.get("status") != "ok":
+            raise ConfigurationError("settings_inventory_unavailable")
+        content = _project_phonebook_entries(
+            response, phonebook_id=safe_book_id, prefix=""
+        )
+        phonebook_inventory(content, phonebook_id=safe_book_id)
+        return {"books": books, "content": content}
+
+    async def _phonebook_configuration_contact(
+        self, book_id: int, contact_id: str
+    ) -> dict[str, Any]:
+        """Keep current fields private; absent values are never blank defaults."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phonebook import normalize_contact_fields  # noqa: PLC0415
+
+        self._ensure_open()
+        safe_book_id = _require_phonebook_id(book_id)
+        safe_contact_id = _require_private_query_identifier(
+            contact_id, description="Phonebook contact ID"
+        )
+        async with self._lock:
+            response = normalize_configuration_payload(
+                await self._post_json_unlocked(
+                    _PHONEBOOK_ENTRY_ENDPOINT,
+                    {"obnr": safe_book_id, "chgid": safe_contact_id},
+                    authenticated=True,
+                    referer=_PHONEBOOK_REFERER,
+                )
+            )
+        return {
+            "phonebook_id": safe_book_id,
+            "contact_id": safe_contact_id,
+            "contact": normalize_contact_fields(response),
+        }
+
+    async def _read_phonebook_configuration(
+        self, setting_id: str, target_id: str | None
+    ) -> dict[str, Any]:
+        """Resolve an exact local book or existing contact before detail reads."""
+        from ..configuration_phonebook import parse_phonebook_target  # noqa: PLC0415
+        from ..configuration_phonebook_lifecycle import (  # noqa: PLC0415
+            phonebook_create_book_id,
+            phonebook_inventory,
+        )
+
+        if target_id is None:
+            raise ConfigurationError("settings_target_required")
+        if setting_id == "telephony_phonebook_create":
+            return await self._phonebook_configuration_inventory(
+                phonebook_create_book_id(target_id)
+            )
+        book_id, contact_id = parse_phonebook_target(target_id)
+        inventory = await self._phonebook_configuration_inventory(book_id)
+        if contact_id not in phonebook_inventory(inventory, phonebook_id=book_id):
+            raise ConfigurationError("settings_target_unavailable")
+        contact = await self._phonebook_configuration_contact(book_id, contact_id)
+        contact["book_identity"] = inventory["book_identity"]
+        return contact
+
+    async def _query_phonebook_configuration_targets(
+        self, setting_id: str
+    ) -> dict[str, Any]:
+        """List proven local books or contacts, never invent an absent row."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+            phonebook_account_rows,
+        )
+
+        books = phonebook_account_rows(
+            normalize_configuration_payload(
+                await self.get_json(
+                    "data/PhoneOnlbuch.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_book_basic.html",
+                    preserve_compounds=True,
+                )
+            )
+        )
+        targets = []
+        for book in books:
+            if book["onlbuch_sync"] != "0":
+                continue
+            book_id = _require_phonebook_id(int(book["onlbuch_nr"]))
+            raw = await self._phonebook_configuration_inventory(book_id)
+            if setting_id == "telephony_phonebook_create":
+                if raw["free_entries"] > 0:
+                    targets.append({"id": str(book_id), "label": book["onlbuch_name"]})
+                continue
+            for row in raw["entries"]:
+                label = " ".join(
+                    row.get(name, "") for name in ("first_name", "last_name")
+                ).strip()
+                targets.append(
+                    {
+                        "id": f"{book_id}:{row['contact_id']}",
+                        "label": f"{book['onlbuch_name']}: {label or 'Contact'}",
+                    }
+                )
+            if len(targets) > _PHONEBOOK_SETTINGS_MAX_TARGETS:
+                raise ConfigurationError("too_many_settings_targets")
+        return {"setting_id": setting_id, "targets": targets}
+
+    async def read_created_phonebook_configuration(
+        self, target_id: str, before: Mapping[str, Any], response: Any
+    ) -> dict[str, Any]:
+        """Verify a returned new ID through independent list and detail read queries."""
+        from ..configuration_phonebook_lifecycle import (  # noqa: PLC0415
+            phonebook_create_book_id,
+            phonebook_created_id,
+            phonebook_inventory,
+        )
+
+        book_id = phonebook_create_book_id(target_id)
+        if not isinstance(response, Mapping):
+            raise ConfigurationError("action_outcome_unknown")
+        assigned_id = phonebook_created_id(
+            response,
+            existing_ids=set(phonebook_inventory(before, phonebook_id=book_id)),
+        )
+        current = await self._phonebook_configuration_inventory(book_id)
+        if assigned_id not in phonebook_inventory(current, phonebook_id=book_id):
+            raise ConfigurationError("action_verification_failed")
+        current["assigned_id"] = assigned_id
+        current["created_contact"] = await self._phonebook_configuration_contact(
+            book_id, assigned_id
+        )
+        return current
+
+    async def query_call_history(
+        self, *, category: str, export: bool = False
+    ) -> dict[str, Any]:
+        """Read one closed private category or produce its local CSV, without writes."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_call_history import (  # noqa: PLC0415
+            call_history_private_export,
+            call_history_private_read,
+            call_history_read_source,
+        )
+
+        endpoint, referer = call_history_read_source(category)
+        if type(export) is not bool:
+            raise ConfigurationError("invalid_call_history_export")
+        raw = normalize_configuration_payload(
+            await self.get_json(endpoint, authenticated=True, referer=referer)
+        )
+        return (
+            call_history_private_export(raw, category)
+            if export
+            else call_history_private_read(raw, category)
+        )
+
+    async def read_created_ip_phone_configuration(
+        self, before: Mapping[str, Any], response: Any
+    ) -> dict[str, Any]:
+        """Bind independent row readback to the native allocation response ID."""
+        from ..configuration_ip_phone_create import ip_phone_created_id  # noqa: PLC0415
+
+        if not isinstance(response, Mapping):
+            raise ConfigurationError("action_outcome_unknown")
+        assigned_id = ip_phone_created_id(before, response)
+        current = await self.read_configuration("telephony_ip_phone_create")
+        current["_created_ip_phone_id"] = assigned_id
+        return current
+
+    async def save_configuration(
+        self,
+        setting_id: str,
+        current: Mapping[str, Any],
+        changes: Mapping[str, Any],
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build an exact reviewed form and send it once; never retry a write."""
+        if setting_id == "system_router_password_change":
+            raise ConfigurationError("password_change_isolated_flow_required")
+        contract = resolve_settings_contract(setting_id, target_id)
+        payload = contract.build(current, changes)
+        response = await self._post_ephemeral_action(
+            contract.endpoint,
+            payload,
+            referer=contract.referer,
+            require_status_ok=contract.acknowledgement == "status_ok",
+        )
+        if contract.acknowledgement == "result_ok":
+            _require_exact_result_ok(response)
+        if contract.response_validator is not None:
+            contract.response_validator(response)
+        return response
 
     async def _post_reviewed_command(
         self,
@@ -2399,6 +2863,20 @@ class SpeedportClient:
             referer=_NAS_FOLDERS_REFERER,
         )
 
+    async def post_maintenance_action(
+        self, action: str, parameters: Mapping[str, object]
+    ) -> dict[str, Any]:
+        """Send one fixed maintenance payload once, after the hub's preflight."""
+        contract = get_admin_action_contract(action)
+        if contract is None or contract.execution_policy != "maintenance":
+            raise MaintenanceError
+        payload = maintenance_payload(action, parameters)
+        return await self._post_ephemeral_action(
+            contract.endpoint,
+            payload,
+            referer=contract.referer,
+        )
+
     async def reconnect(self) -> dict[str, Any]:
         """Request Internet reconnection through confirmed endpoint."""
         return await self._post_reviewed_command(
@@ -2554,6 +3032,7 @@ class SpeedportClient:
         *,
         authenticated: bool,
         referer: str | None,
+        preserve_compounds: bool = False,
     ) -> dict[str, Any]:
         """Retry one protected GET after bounded, ownership-safe recovery."""
         try:
@@ -2561,6 +3040,7 @@ class SpeedportClient:
                 endpoint,
                 authenticated=authenticated,
                 referer=referer,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
             )
         except (SpeedportAuthenticationError, SpeedportDecodeError) as err:
             if (
@@ -2592,6 +3072,7 @@ class SpeedportClient:
                 endpoint,
                 authenticated=True,
                 referer=referer,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
             )
 
     async def rename_client(
@@ -3238,12 +3719,26 @@ class SpeedportClient:
         *,
         authenticated: bool,
         referer: str | None,
+        preserve_compounds: bool = False,
     ) -> dict[str, Any]:
         if authenticated:
             await self._ensure_authenticated_unlocked()
         path = _validate_endpoint(endpoint)
         query: dict[str, str | int] = {}
-        if authenticated and referer and (path, referer) in _QUERY_TOKEN_READS:
+        settings_token_read = any(
+            (path, referer)
+            == (item.read_endpoint or item.endpoint, item.read_referer or item.referer)
+            for item in settings_contracts().values()
+        )
+        if (
+            authenticated
+            and referer
+            and (
+                (path.partition("?")[0], referer) in _QUERY_TOKEN_READS
+                or settings_token_read
+                or (path, referer) in target_settings_read_pairs()
+            )
+        ):
             # Smart 4 page-scoped JSON endpoints return an empty document unless
             # the page's current HTTP token is supplied as the `_tn` query value.
             # Fetching the referer and then issuing this GET mirrors the router UI
@@ -3269,7 +3764,11 @@ class SpeedportClient:
         if authenticated and self._login_key is None:
             raise SpeedportAuthenticationError("Authenticated session has no key")
         try:
-            return _decode_response(text, self._login_key)
+            return _decode_response(
+                text,
+                self._login_key,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
         except SpeedportDecodeError as exc:
             if authenticated:
                 self._invalidate_authentication()
@@ -3315,6 +3814,19 @@ class SpeedportClient:
         )
         headers = self._json_headers(referer)
         headers["Content-Type"] = "application/x-www-form-urlencoded"
+        # The request may have waited on a client lock, authentication, or page
+        # token. Revalidate the live HA session only after those awaits. Exact
+        # ownership-key logout remains possible after revocation/cancellation.
+        owned_logout = (
+            path == "data/Login.json"
+            and dict(data) == {"logout": "byby"}
+            and not authenticated
+            and not ensure_auth
+            and self._session_cleanup_key is not None
+            and request_key is self._session_cleanup_key
+        )
+        if not owned_logout:
+            check_private_authorization()
         text = await self._request_text_unlocked(
             "POST", f"{self._base_url}/{path}", headers=headers, data=body
         )
@@ -3965,6 +4477,17 @@ def _require_exact_status_ok(response: Mapping[str, Any]) -> None:
     )
 
 
+def _require_exact_result_ok(response: Mapping[str, Any]) -> None:
+    """Require the firmware-update callback's explicit result, never infer success."""
+    _reject_explicit_action_failure(response)
+    keys = [key for key in response if str(key).casefold() == "result"]
+    if keys == ["result"] and response["result"] == "ok":
+        return
+    raise SpeedportMutationOutcomeUnknownError(
+        "Router mutation acknowledgement is indeterminate"
+    )
+
+
 def _require_private_query_identifier(value: object, *, description: str) -> str:
     """Accept one short opaque firmware row identifier without echoing it on error."""
     if not isinstance(value, str) or _PRIVATE_QUERY_ID.fullmatch(value) is None:
@@ -4415,7 +4938,9 @@ def _project_phonebook_entry_delete_targets(
     rows = _strict_phonebook_rows(payload)
     _require_complete_phonebook_result(payload, rows)
     targets: list[dict[str, Any]] = []
-    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+    # The strict phonebook reader already proves a bounded complete inventory.
+    # A VoIP-device display cap must not hide otherwise valid contact targets.
+    for row in rows:
         target_id = cast("str", row["id"])
         target: dict[str, Any] = {
             "target_id": target_id,
@@ -4451,7 +4976,7 @@ def _project_phonebook_entry_delete_targets(
         targets.append(target)
     return {
         "targets": targets,
-        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+        "truncated": False,
     }
 
 
@@ -4553,9 +5078,12 @@ def _project_phonebook_entries(
     prefix: str,
 ) -> dict[str, Any]:
     """Project an allowlisted, bounded contact search result."""
-    rows = _private_query_rows(_mapping_value(response, "addbookentry"))
+    rows = _private_query_rows(
+        _mapping_value(response, "addbookentry"),
+        maximum_rows=_PRIVATE_PHONEBOOK_MAX_ROWS,
+    )
     entries: list[dict[str, str]] = []
-    for row in rows[:_PRIVATE_QUERY_MAX_ROWS]:
+    for row in rows[:_PRIVATE_PHONEBOOK_MAX_ROWS]:
         contact_id = _private_query_identifier(row.get("id"))
         if contact_id is None:
             continue
@@ -4578,7 +5106,7 @@ def _project_phonebook_entries(
         "phonebook_id": phonebook_id,
         "prefix": prefix,
         "entries": entries,
-        "truncated": len(rows) > _PRIVATE_QUERY_MAX_ROWS,
+        "truncated": len(rows) > _PRIVATE_PHONEBOOK_MAX_ROWS,
     }
     total = _bounded_integer(
         _mapping_value(response, "num_entries"),
@@ -4648,7 +5176,9 @@ def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
     return matches[0] if len(matches) == 1 else None
 
 
-def _private_query_rows(value: Any) -> tuple[dict[str, Any], ...]:
+def _private_query_rows(
+    value: Any, *, maximum_rows: int = _PRIVATE_QUERY_MAX_ROWS
+) -> tuple[dict[str, Any], ...]:
     """Expand only bounded mapping rows from a decoded template collection."""
     if isinstance(value, Mapping):
         sequence_columns = {
@@ -4666,7 +5196,7 @@ def _private_query_rows(value: Any) -> tuple[dict[str, Any], ...]:
         scalar_columns = {
             str(key): item for key, item in value.items() if key not in sequence_columns
         }
-        length = min(lengths.pop(), _PRIVATE_QUERY_MAX_ROWS + 1)
+        length = min(lengths.pop(), maximum_rows + 1)
         candidates: tuple[Mapping[Any, Any], ...] = tuple(
             {
                 **scalar_columns,
@@ -4676,9 +5206,7 @@ def _private_query_rows(value: Any) -> tuple[dict[str, Any], ...]:
         )
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         candidates = tuple(
-            item
-            for item in value[: _PRIVATE_QUERY_MAX_ROWS + 1]
-            if isinstance(item, Mapping)
+            item for item in value[: maximum_rows + 1] if isinstance(item, Mapping)
         )
     else:
         return ()
@@ -4689,6 +5217,8 @@ def _private_query_rows(value: Any) -> tuple[dict[str, Any], ...]:
 def _strict_private_query_rows(
     payload: Mapping[str, Any],
     collection: str,
+    *,
+    maximum_rows: int = _PRIVATE_QUERY_MAX_ROWS,
 ) -> tuple[dict[str, Any], ...]:
     """Return one complete collection without dropping malformed rows."""
     value = _mapping_value(payload, collection)
@@ -4708,7 +5238,7 @@ def _strict_private_query_rows(
             if len(lengths) != 1:
                 raise SpeedportUnsupportedError("Router target inventory is malformed")
             length = lengths.pop()
-            if length > _PRIVATE_QUERY_MAX_ROWS:
+            if length > maximum_rows:
                 raise SpeedportUnsupportedError("Router target inventory is truncated")
             scalar_columns = {
                 str(key): item
@@ -4728,7 +5258,7 @@ def _strict_private_query_rows(
         value,
         (str, bytes, bytearray),
     ):
-        if len(value) > _PRIVATE_QUERY_MAX_ROWS or any(
+        if len(value) > maximum_rows or any(
             not isinstance(item, Mapping) for item in value
         ):
             raise SpeedportUnsupportedError("Router target inventory is truncated")
@@ -4747,9 +5277,10 @@ def _strict_identified_rows(
     collection: str,
     *,
     identifier_fields: tuple[str, ...] = ("id",),
+    maximum_rows: int = _PRIVATE_QUERY_MAX_ROWS,
 ) -> tuple[dict[str, Any], ...]:
     """Return complete rows with unique canonical opaque IDs."""
-    rows = _strict_private_query_rows(payload, collection)
+    rows = _strict_private_query_rows(payload, collection, maximum_rows=maximum_rows)
     identified: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
@@ -4814,7 +5345,27 @@ def _strict_ip_pbx_client_rows(
 def _strict_phonebook_rows(
     payload: Mapping[str, Any],
 ) -> tuple[dict[str, Any], ...]:
-    return _strict_identified_rows(payload, "addbookentry")
+    # The real firmware omits addbookentry for an empty local book. Only its
+    # complete successful zero-count response proves absence after deletion.
+    collection_keys = [
+        key for key in payload if str(key).strip().casefold() == "addbookentry"
+    ]
+    if (
+        not collection_keys
+        and _mapping_value(payload, "status") == "ok"
+        and _bounded_integer(
+            _mapping_value(payload, "num_entries"), minimum=0, maximum=0
+        )
+        == 0
+        and _bounded_integer(
+            _mapping_value(payload, "free_entry_num"), minimum=0, maximum=1000
+        )
+        is not None
+    ):
+        return ()
+    return _strict_identified_rows(
+        payload, "addbookentry", maximum_rows=_PRIVATE_PHONEBOOK_MAX_ROWS
+    )
 
 
 def _strict_nas_share_rows(
@@ -4866,7 +5417,7 @@ def _require_complete_phonebook_result(
     total = _bounded_integer(
         _mapping_value(payload, "num_entries"),
         minimum=0,
-        maximum=_PRIVATE_QUERY_MAX_ROWS,
+        maximum=_PRIVATE_PHONEBOOK_MAX_ROWS,
     )
     if total is None or total != len(rows):
         raise SpeedportUnsupportedError("Phonebook target inventory is incomplete")
@@ -5015,14 +5566,24 @@ def _looks_like_login_page(text: str) -> bool:
     return any(marker in folded for marker in _LOGIN_MARKERS)
 
 
-def _decode_response(payload: str, challenge_key: bytes | None) -> dict[str, Any]:
+def _decode_response(
+    payload: str, challenge_key: bytes | None, *, preserve_compounds: bool = False
+) -> dict[str, Any]:
     """Decode with the active challenge key, then the fixed public key."""
     if challenge_key is not None and is_encrypted_payload(payload):
         try:
-            return decode_payload(payload, challenge_key)
+            return decode_payload(
+                payload,
+                challenge_key,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
         except SpeedportDecodeError:
             pass
-    return decode_payload(payload, DEFAULT_KEY)
+    return decode_payload(
+        payload,
+        DEFAULT_KEY,
+        **({"preserve_compounds": True} if preserve_compounds else {}),
+    )
 
 
 def _logout_response_rejected(data: Mapping[str, Any]) -> bool:

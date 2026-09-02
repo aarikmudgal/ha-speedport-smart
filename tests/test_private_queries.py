@@ -119,7 +119,7 @@ async def test_phonebook_search_uses_exact_contract_and_bounded_projection() -> 
         "data/PhoneBook.json",
         {"obnr": 0, "search": "E"},
         authenticated=True,
-        referer="html/content/phone/phone_book.html",
+        referer="html/content/phone/phone_book_entries.html",
     )
     assert result == {
         "phonebook_id": 0,
@@ -145,18 +145,18 @@ async def test_phonebook_search_caps_router_controlled_rows() -> None:
     post = AsyncMock(
         return_value={
             "addbookentry": [
-                {"id": str(index), "name": f"Contact {index}"} for index in range(300)
+                {"id": str(index), "name": f"Contact {index}"} for index in range(1001)
             ],
-            "num_entries": "300",
+            "num_entries": "1001",
         }
     )
 
     with patch.object(client, "_post_json_unlocked", post):
         result = await client.query_phonebook_entries(phonebook_id=4, prefix="")
 
-    assert len(result["entries"]) == 256
+    assert len(result["entries"]) == 1000
     assert result["truncated"] is True
-    assert result["total"] == 300
+    assert "total" not in result  # The native firmware capacity is 1,000.
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_phonebook_contact_uses_exact_contract_and_allowlist() -> None:
         "data/PhoneBookEntry.json",
         {"obnr": 1, "chgid": "8"},
         authenticated=True,
-        referer="html/content/phone/phone_book.html",
+        referer="html/content/phone/phone_book_entries.html",
     )
     assert result == {
         "phonebook_id": 1,
@@ -219,7 +219,7 @@ async def test_phonebook_contact_uses_exact_contract_and_allowlist() -> None:
         ("query_phonebook_entries", {"phonebook_id": 0, "prefix": "AB"}),
         (
             "query_phonebook_contact",
-            {"phonebook_id": 5, "contact_id": "1"},
+            {"phonebook_id": 6, "contact_id": "1"},
         ),
     ],
 )

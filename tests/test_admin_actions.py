@@ -601,7 +601,16 @@ async def test_broad_capability_never_advertises_admin_actions(
     )
     hub = await _ready_hub(hass, mock_speedport_client, broad)
 
-    assert all(not item["supported"] for item in hub.admin_actions_metadata())
+    assert all(
+        not item["supported"]
+        for item in hub.admin_actions_metadata()
+        if item.get("execution_policy") != "maintenance"
+    )
+    assert all(
+        item["preflight_required"] is True
+        for item in hub.admin_actions_metadata()
+        if item.get("execution_policy") == "maintenance"
+    )
 
 
 async def test_enrollment_is_available_with_empty_inventory_proof(

@@ -510,7 +510,7 @@
       "receiver_firmware_automatic_updates": { "name": "Automatic receiver firmware updates" },
       "receiver_firmware_update_available": { "name": "Receiver firmware update available" },
       "receiver_firmware_update_planned": { "name": "Receiver firmware update planned" },
-      "remote_support_active": { "name": "Remote support active" },
+      "remote_support_active": { "name": "Automatic cloud backup" },
       "easy_support_enabled": { "name": "EasySupport" },
       "settings_write_blocked": { "name": "Router settings write blocked" },
       "device_password_changed": { "name": "Device password changed" },

@@ -552,7 +552,7 @@ _DECLARED_NATIVE_SCALAR_READ_CONTRACTS: Final = (
             "firmware_update_available": "system.update_available",
             "firmware_update_planned": "system.update_planned",
             "firmware_automatic_updates": "system.automatic_updates_enabled",
-            "remote_support_active": "system.remote_support_active",
+            "remote_support_active": "system.cloud_backup_active",
             "easy_support_enabled": "system.easy_support_enabled",
             "settings_write_blocked": "system.settings_write_blocked",
             "device_password_changed": "system.device_password_changed",

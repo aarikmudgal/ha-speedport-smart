@@ -2647,7 +2647,7 @@ def _system_fields(
         "update_time": (("fwupd_time",), _timestamp),
         "firmware_release_url": (("firmware_release_url",), _safe_url),
         "firmware_update_progress": (("firmware_update_progress",), _percentage),
-        "remote_support_active": (("br_active",), _boolean),
+        "cloud_backup_active": (("br_active",), _boolean),
         "operating_mode": (("router_state",), _router_operating_mode),
         "settings_write_blocked": (("save_fails",), _boolean),
         "device_password_changed": (("pwd_changed",), _nonzero_boolean),

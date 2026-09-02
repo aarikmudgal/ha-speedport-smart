@@ -76,6 +76,10 @@ function fixture(options = {}) {
     states: {},
     user: { id: "admin", is_admin: true },
   };
+  panel._requestPrivate = async (message) => {
+    calls.push(message);
+    throw new Error("No response configured");
+  };
   return { calls, panel };
 }
 
@@ -275,7 +279,7 @@ test("broad PBX evidence cannot unlock the targeted IPClients query", () => {
 
 test("successful queries send only the fixed messages and retain only normalized results", async () => {
   const { calls, panel } = fixture();
-  panel._hass.connection.sendMessagePromise = async (message) => {
+  panel._requestPrivate = async (message) => {
     calls.push(message);
     if (message.type.endsWith("/ip_pbx_refresh")) {
       return envelope("ip_pbx_refresh", {
@@ -344,7 +348,7 @@ test("successful queries send only the fixed messages and retain only normalized
 test("a replacement search and Clear invalidate an in-flight private contact", async () => {
   const { panel } = fixture();
   const pendingContacts = [];
-  panel._hass.connection.sendMessagePromise = (message) => {
+  panel._requestPrivate = (message) => {
     if (message.type.endsWith("/phonebook_contact")) {
       return new Promise((resolve) => pendingContacts.push(resolve));
     }
@@ -395,7 +399,7 @@ test("a replacement search and Clear invalidate an in-flight private contact", a
 test("rate-limit failures are typed and never echo server text", async () => {
   const { panel } = fixture();
   panel._adminPrivateQueries.pbx.clientId = "2";
-  panel._hass.connection.sendMessagePromise = async () => {
+  panel._requestPrivate = async () => {
     const error = new Error("PRIVATE SERVER DETAIL");
     error.code = "rate_limited";
     throw error;

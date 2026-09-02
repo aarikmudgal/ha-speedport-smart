@@ -1,4 +1,19 @@
-import { keepDialogFocus } from "./accessibility.js?schema=20";
+import { requestPrivateApi } from "./private-api.js?schema=22";
+import { keepDialogFocus } from "./accessibility.js?schema=22";
+import {
+  createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
+} from "./call-history-view.js?schema=22";
+import {
+  createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
+} from "./file-transfer-editor.js?schema=22";
+import {
+  createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
+} from "./maintenance-editor.js?schema=22";
+import {
+  createConfigurationEditorController,
+  renderConfigurationEditor,
+  bindConfigurationEditor,
+} from "./configuration-editor.js?schema=22";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -13,22 +28,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=20";
+} from "./controls.js?schema=22";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=20";
+} from "./entity-state.js?schema=22";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=20";
+} from "./render-state.js?schema=22";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=20";
+} from "./translations.js?schema=22";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -213,7 +228,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 20;
+const PANEL_SCHEMA_VERSION = 22;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -1670,6 +1685,97 @@ export const ADMIN_IA = Object.freeze([
   ]),
 ]);
 
+// Some catalog features include more than one independently reviewed form.
+// Partial links expose the working editor without claiming complete parity.
+export const SETTINGS_FEATURE_LINKS = Object.freeze({
+  internet_parental_controls: { ids: ["parental_profile_create", "parental_profile_edit", "parental_profile_delete"], complete: true },
+  network_vpn_management: { ids: ["vpn_peer_create", "vpn_peer_enabled", "vpn_peer_delete", "vpn_ipsec_key_rotate"], complete: true },
+  network_usb_safe_remove: { ids: ["storage_usb_safe_remove"], complete: true },
+  network_smarthome_activation: { ids: ["network_smarthome_activate", "network_smarthome_deactivate"], complete: true },
+  system_router_firmware: { ids: ["system_router_firmware_online"], complete: true },
+  system_router_password: { ids: ["system_router_password_change"], complete: true },
+  system_mesh_firmware: { ids: ["system_mesh_firmware_online"], complete: true },
+  system_mesh_restart: { ids: ["system_mesh_restart"], complete: true },
+  system_mesh_reset: { ids: ["system_mesh_reset"], complete: true },
+  internet_receiver_firmware_update: { ids: ["internet_receiver_firmware_update"], complete: true },
+  internet_receiver_factory_esim_restore: { ids: ["internet_receiver_factory_esim_restore"], complete: true },
+  internet_port_blocking: { ids: ["port_blocking_create", "port_blocking_edit", "port_blocking_delete"], complete: true },
+  network_media_folders: { ids: ["storage_media_folder", "storage_media_folder_delete", "storage_media_folder_create", "storage_media_reindex"], complete: true },
+  network_mesh_node_rename: { ids: ["network_mesh_node_rename"], complete: true },
+  network_mesh_node_delete: { ids: ["network_mesh_node_delete"], complete: true },
+  network_mesh_identify: { ids: ["network_mesh_identify_start", "network_mesh_identify_stop"], complete: true },
+  internet_port_forward_editor: { ids: ["port_forward_create", "port_forward_edit", "port_forward_delete", "port_forward_range_create", "port_forward_range_edit", "port_forward_range_delete"], complete: true },
+  telephony_provider_registration: { ids: ["telephony_provider_telekom", "telephony_provider_regio", "telephony_provider_other", "telephony_provider_create_telekom", "telephony_provider_create_regio", "telephony_provider_create_other", "telephony_number_create_telekom", "telephony_number_create_regio", "telephony_number_create_other"], complete: true },
+  telephony_number_assignment: { ids: ["telephony_incoming_assignment", "telephony_outgoing_assignment"], complete: true },
+  network_dns_rebind: { ids: ["dns_rebind_protection", "dns_exception_create", "dns_exception_edit", "dns_exception_delete"], complete: true },
+  telephony_hd_voice: { ids: ["telephony_hd_voice"], complete: true },
+  telephony_dialing_delay: { ids: ["telephony_dial_delay"], complete: true },
+  telephony_status_messages: { ids: ["telephony_status_audio"], complete: true },
+  telephony_call_encryption: { ids: ["telephony_voice_encryption"], complete: true },
+  telephony_automatic_speed_dial: { ids: ["telephony_automatic_speed_dial", "telephony_number_memory_clear"], complete: true },
+  telephony_dect_base: { ids: ["telephony_dect_enabled"], complete: true },
+  telephony_dect_base_pin: { ids: ["telephony_dect_settings"], complete: true },
+  telephony_dect_transmit_power: { ids: ["telephony_dect_settings"], complete: true },
+  telephony_dect_full_eco: { ids: ["telephony_dect_settings"], complete: true },
+  telephony_ip_pbx: { ids: ["telephony_ip_pbx_enabled"], complete: false },
+  telephony_ip_phone_configuration: { ids: ["telephony_ip_phone"], complete: true },
+  telephony_ip_phone_enrollment: { ids: ["telephony_ip_phone_create"], complete: true },
+  telephony_phonebook_management: { ids: ["telephony_phonebook_update_interval", "telephony_phonebook_contact", "telephony_phonebook_create", "telephony_handset_phonebook", "telephony_phonebook_rename", "telephony_phonebook_delete", "telephony_phonebook_disconnect", "telephony_phonebook_account_create", "telephony_phonebook_link"], complete: true },
+  telephony_call_lists: { ids: ["call_history_clear_dialed", "call_history_clear_missed", "call_history_clear_taken"], complete: true },
+  network_powerline_node_rename: { ids: ["powerline_rename"], complete: true },
+  internet_usb_tethering: { ids: ["usb_tethering_enabled", "usb_tethering_activate"], complete: true },
+  internet_hybrid_bonding: { ids: ["receiver_bonding"], complete: true },
+  internet_receiver_led: { ids: ["receiver_led_mode"], complete: true },
+  internet_receiver_routing_exceptions: { ids: ["routing_exception_enabled", "routing_exception_delete"], complete: false },
+  telephony_number_use: { ids: ["telephony_line_options"], complete: true },
+  telephony_analog_socket_name: { ids: ["telephony_analog_socket"], complete: true },
+  telephony_analog_number_assignment: { ids: ["telephony_analog_socket"], complete: true },
+  telephony_analog_device_type: { ids: ["telephony_analog_socket"], complete: true },
+  telephony_analog_call_waiting: { ids: ["telephony_analog_socket"], complete: true },
+  telephony_dect_handset_configuration: { ids: ["telephony_dect_handset"], complete: true },
+  telephony_dect_handset_call_waiting: { ids: ["telephony_dect_handset"], complete: true },
+  network_wifi_radio_settings: { ids: ["wifi_radio"], complete: true },
+  network_wifi_schedule: { ids: ["wifi_schedule"], complete: true },
+  network_wifi_identity_security: { ids: ["wifi_identity", "wifi_guest_settings", "wifi_office_settings"], complete: true },
+  network_wifi_allowlist: { ids: ["wifi_access"], complete: true },
+  network_traffic_prioritization: { ids: ["qos_devices", "qos_voice_priority"], complete: true },
+  network_wifi_guest: { ids: ["wifi_guest_settings"], complete: true },
+  network_wifi_office: { ids: ["wifi_office_settings"], complete: true },
+  network_lan_identity: { ids: ["lan_ipv4"], complete: false },
+  network_lan_dhcp: { ids: ["dhcp"], complete: true },
+  network_nas_shares: { ids: ["storage_nas_share", "storage_nas_share_create", "nas_workgroup"], complete: true },
+  internet_ddns_management: { ids: ["dynamic_dns", "dynamic_dns_delete"], complete: true },
+  internet_provider_configuration: { ids: ["internet_connection"], complete: true },
+  internet_dns_servers: { ids: ["internet_connection"], complete: true },
+  system_front_led_schedule: { ids: ["system_led_schedule"], complete: true },
+  system_energy_settings: { ids: ["system_energy"], complete: true },
+  system_https_access: { ids: ["system_https"], complete: true },
+  system_external_modem: { ids: ["system_external_modem"], complete: true },
+  system_messages: { ids: ["system_extended_logging", "system_log_filter"], complete: false },
+  system_easysupport_wifi_backup: { ids: ["system_cloud_backup"], complete: true },
+  system_easysupport_automatic_setup: { ids: ["system_easysupport", "system_easysupport_bng_activation", "system_easysupport_bng_deactivation"], complete: true },
+  system_easysupport_automatic_firmware: { ids: ["system_easysupport"], complete: true },
+  system_email_notifications: { ids: ["system_email_notifications"], complete: true },
+  system_local_display_settings: { ids: ["system_oled_display_rule", "wifi_identity", "wifi_guest_settings"], complete: true },
+});
+const MAINTENANCE_FEATURE_LINKS = Object.freeze({
+  system_factory_reset: "system_factory_reset",
+  system_dect_reset: "system_dect_reset",
+  system_dsl_modem_mode: "system_dsl_modem_mode",
+  system_messages: "system_log_clear",
+});
+const FILE_TRANSFER_FEATURE_LINKS = Object.freeze({
+  system_configuration_backup: "system_backup_download",
+  system_configuration_restore: "system_backup_restore",
+  system_router_firmware: "system_firmware_upload",
+  system_mesh_firmware: "system_mesh_firmware_upload",
+  system_messages: "system_log_download",
+  system_router_pass: "system_router_pass_download",
+  telephony_phonebook_management: Array.from({length: 6}, (_, book) => [
+    `phonebook_export_${book}`, `phonebook_import_${book}`,
+  ]).flat(),
+});
+
 const DECIMAL_DATA_FACTORS = {
   B: 1,
   kB: 1_000,
@@ -2321,7 +2427,7 @@ function adminPrivateQueryMac(value) {
 }
 
 function adminPrivateQueryPhonebookId(value) {
-  return Number.isInteger(value) && value >= 0 && value <= 4
+  return Number.isInteger(value) && value >= 0 && value <= 5
     ? value
     : undefined;
 }
@@ -2640,7 +2746,8 @@ export function capabilityGroupFor(meta) {
   if (key === "firmware_automatic_updates") {
     return "system_easysupport_firmware";
   }
-  if (key === "remote_support_active") return "system_remote_support";
+  // Keep the legacy entity key, but classify its actual br_active meaning.
+  if (key === "remote_support_active") return "system_support";
   if (key === "telephony_voip_policy") {
     return "telephony_call_encryption";
   }
@@ -3221,7 +3328,68 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._platformIconsLoading = false;
     this._selectedEntry = undefined;
     this._activeView = "dashboard";
+    this._settingsHost = undefined;
+    this._settingsBinding = undefined;
+    this._settingsEditor = createConfigurationEditorController({
+      request: (message) => {
+        if (this._hass?.user?.is_admin !== true || message.entry_id !== this._currentRouter()?.entry_id) {
+          return Promise.reject(new Error("administrator_required"));
+        }
+        return this._requestPrivate(message);
+      },
+      onChange: () => this._renderSettingsEditor(),
+      download: async (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url; link.download = filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      },
+    });
+    this._maintenanceHost = undefined;
+    this._maintenanceBinding = undefined;
+    this._maintenanceEditor = createMaintenanceEditorController({
+      request: (message) => {
+        if (this._hass?.user?.is_admin !== true || message.entry_id !== this._currentRouter()?.entry_id) {
+          return Promise.reject(new Error("administrator_required"));
+        }
+        return this._requestPrivate(message);
+      },
+      onChange: () => this._renderMaintenanceEditor(),
+    });
+    this._fileTransferHost = undefined;
+    this._fileTransferBinding = undefined;
+    this._fileTransferEditor = createFileTransferEditorController({
+      request: (path, options) => {
+        const entryId = this._currentRouter()?.entry_id;
+        if (this._hass?.user?.is_admin !== true || !entryId ||
+            !path.startsWith(`/api/speedport_smart/file_transfer/${encodeURIComponent(entryId)}/`)) {
+          return Promise.reject(new Error("administrator_required"));
+        }
+        return this._hass.fetchWithAuth(path, options);
+      },
+      download: async (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url; link.download = filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      },
+      onChange: () => this._renderFileTransferEditor(),
+    });
     this._adminRead = undefined;
+    this._callHistoryHost = undefined;
+    this._callHistoryBinding = undefined;
+    this._callHistoryView = createCallHistoryViewController({
+      request: (message) => {
+        if (this._hass?.user?.is_admin !== true || this._activeView !== "administration" ||
+            message.entry_id !== this._currentRouter()?.entry_id) {
+          return Promise.reject(new Error("administrator_required"));
+        }
+        return this._requestPrivate(message);
+      },
+      onChange: () => this._renderCallHistoryEditor(),
+    });
     this._adminReadEntry = undefined;
     this._adminReadLoading = false;
     this._adminReadError = "";
@@ -3529,6 +3697,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _clearAdminRead() {
+    this._clearSettingsEditor();
     this._invalidateAdminReadSnapshot();
     this._clearAdminPrivateQueries();
     this._clearAdminActionState();
@@ -3559,6 +3728,14 @@ export class SpeedportSmartPanel extends HTMLElement {
     }
   }
 
+  _requestPrivate(message) {
+    if (this._hass?.user?.is_admin !== true || this._activeView !== "administration" ||
+        message?.entry_id !== this._currentRouter()?.entry_id) {
+      return Promise.reject(new Error("administrator_required"));
+    }
+    return requestPrivateApi(this._hass, message);
+  }
+
   async _loadAdminRead(entryId, { force = false } = {}) {
     if (
       this._hass?.user?.is_admin !== true ||
@@ -3581,7 +3758,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminReadError = "";
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise({
+      const payload = await this._requestPrivate({
         type: ADMIN_READ_API_TYPE,
         entry_id: entryId,
       });
@@ -3649,6 +3826,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._activeView = view;
     this._notice = "";
     if (view !== "administration") {
+      this._clearSettingsEditor();
       this._clearAdminPrivateQueries();
       this._clearAdminActionState();
     }
@@ -3812,6 +3990,46 @@ export class SpeedportSmartPanel extends HTMLElement {
     );
     if (!target) return;
 
+    if (target.dataset.openTransfer) {
+      const router = this._currentRouter();
+      const action = router?.file_transfers?.find((item) => item.id === target.dataset.openTransfer);
+      if (this._hass?.user?.is_admin === true && action?.supported && action.available) {
+        this._fileTransferEditor.open({entryId: router.entry_id, action});
+        this._fileTransferHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
+      }
+      return;
+    }
+
+    if (target.dataset.openMaintenance) {
+      const router = this._currentRouter();
+      const action = router?.admin_actions?.find((item) =>
+        item.id === target.dataset.openMaintenance && item.execution_policy === "maintenance");
+      if (this._hass?.user?.is_admin === true && action?.supported && action.available) {
+        this._maintenanceEditor.open({entryId: router.entry_id, action});
+        this._maintenanceHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
+      }
+      return;
+    }
+
+    if (target.dataset.openSetting) {
+      const router = this._currentRouter();
+      const setting = router?.settings?.find((item) => item.id === target.dataset.openSetting);
+      if (this._hass?.user?.is_admin === true && setting?.supported && setting.available) {
+        this._settingsEditor.open({entryId: router.entry_id, setting});
+        this._settingsHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
+      }
+      return;
+    }
+    if (target.dataset.openCallHistory) {
+      const router = this._currentRouter();
+      if (this._hass?.user?.is_admin === true && this._activeView === "administration" &&
+          router?.entry_state === "loaded") {
+        this._callHistoryView.open({entryId: router.entry_id});
+        this._callHistoryHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
+      }
+      return;
+    }
+
     if (target.dataset.adminQueryClear) {
       this._clearAdminPrivateQueryResult(target.dataset.adminQueryClear);
       return;
@@ -3915,7 +4133,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     }
     if (target.dataset.adminActionPhonebookId !== undefined) {
       const phonebookId = Number(target.value);
-      if (Number.isInteger(phonebookId) && phonebookId >= 0 && phonebookId <= 4) {
+      if (Number.isInteger(phonebookId) && phonebookId >= 0 && phonebookId <= 5) {
         this._adminActionState.phonebookId = phonebookId;
         this._resetDestructiveActionTargets("phonebook_entry_delete");
         this._loadDestructiveAdminActionTargets("phonebook_entry_delete");
@@ -4103,7 +4321,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     state.result = undefined;
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise({
+      const payload = await this._requestPrivate({
         type: ADMIN_PRIVATE_QUERY_API_TYPES.ip_pbx_refresh,
         entry_id: entryId,
         client_id: expected.clientId,
@@ -4164,7 +4382,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     state.contactResult = undefined;
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise({
+      const payload = await this._requestPrivate({
         type: ADMIN_PRIVATE_QUERY_API_TYPES.phonebook_search,
         entry_id: entryId,
         phonebook_id: expected.phonebookId,
@@ -4227,7 +4445,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     state.contactResult = undefined;
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise({
+      const payload = await this._requestPrivate({
         type: ADMIN_PRIVATE_QUERY_API_TYPES.phonebook_contact,
         entry_id: entryId,
         phonebook_id: expected.phonebookId,
@@ -4399,7 +4617,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (force) state.result = undefined;
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise({
+      const payload = await this._requestPrivate({
         type: DECT_HANDSET_TARGETS_API_TYPE,
         entry_id: entryId,
       });
@@ -4457,7 +4675,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (force) state.result = undefined;
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise({
+      const payload = await this._requestPrivate({
         type: VOIP_LINE_TARGETS_API_TYPE,
         entry_id: entryId,
       });
@@ -4529,7 +4747,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       message.phonebook_id = this._adminActionState.phonebookId;
     }
     try {
-      const payload = await this._hass.connection.sendMessagePromise(message);
+      const payload = await this._requestPrivate(message);
       if (
         !this._adminActionContextIsCurrent(entryId, epoch, generation) ||
         request !==
@@ -4803,7 +5021,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._actionBusy = true;
     this._render();
     try {
-      const payload = await this._hass.connection.sendMessagePromise(message);
+      const payload = await this._requestPrivate(message);
       if (
         !this._adminActionContextIsCurrent(entryId, epoch) ||
         this._pendingAction !== pending
@@ -6070,7 +6288,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         </section>
       `
       : "";
-    const bookOptions = Array.from({ length: 5 }, (_, index) => `
+    const bookOptions = Array.from({ length: 6 }, (_, index) => `
       <option value="${index}" ${state.phonebookId === index ? "selected" : ""}>${escapeHtml(this._t("admin.query.phonebook.book", { number: index + 1 }))}</option>
     `).join("");
     return `
@@ -6307,7 +6525,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           <label class="admin-action-context">
             <span>${escapeHtml(this._t("admin.action.phonebook.selection"))}</span>
             <select data-admin-action-phonebook-id ${state.loading ? "disabled" : ""}>
-              ${Array.from({ length: 5 }, (_, index) => `
+              ${Array.from({ length: 6 }, (_, index) => `
                 <option value="${index}" ${this._adminActionState.phonebookId === index ? "selected" : ""}>${escapeHtml(this._t("admin.query.phonebook.book", { number: index + 1 }))}</option>
               `).join("")}
             </select>
@@ -6394,6 +6612,22 @@ export class SpeedportSmartPanel extends HTMLElement {
     capabilities,
     sourceAvailable,
   ) {
+    const settings = this._settingsForFeature(feature.id);
+    const maintenance = this._maintenanceForFeature(feature.id);
+    const transfer = this._fileTransferForFeature(feature.id);
+    if (transfer) return transfer.available
+      ? {key: "control_available", icon: "mdi:file-lock-outline"}
+      : {key: "control_unavailable", icon: "mdi:shield-lock-outline"};
+    if (maintenance) {
+      return maintenance.available
+        ? { key: "control_available", icon: "mdi:alert-octagon-outline" }
+        : { key: "control_unavailable", icon: "mdi:shield-lock-outline" };
+    }
+    if (settings.length > 0) {
+      return settings.some((setting) => setting.available)
+        ? { key: "control_available", icon: "mdi:form-select" }
+        : { key: "control_unavailable", icon: "mdi:shield-lock-outline" };
+    }
     const supportedControls = entities.filter(
       (entity) =>
         isSemanticControl(entity) &&
@@ -6481,12 +6715,17 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (features.length === 0) return "";
     const cards = features
       .map((feature) => {
+        const featureSettings = this._settingsForFeature(feature.id);
+        const maintenance = this._maintenanceForFeature(feature.id);
+        const transfers = this._fileTransfersForFeature(feature.id);
+        const transfer = transfers[0];
         const supportedReplacementAction =
           feature.adminActionReplacesBlocked &&
           feature.adminActions.some(
             (actionId) => this._adminActionDescriptor(actionId)?.supported,
           );
-        const featureContract = supportedReplacementAction
+        const featureContract = supportedReplacementAction || (transfer && !feature.id.includes("firmware") && feature.id !== "telephony_phonebook_management") || (maintenance && feature.id !== "system_messages") ||
+          (featureSettings.length > 0 && SETTINGS_FEATURE_LINKS[feature.id]?.complete)
           ? "reviewed"
           : feature.contract;
         const featureSourceAvailable = feature.readSections.length
@@ -6562,17 +6801,21 @@ export class SpeedportSmartPanel extends HTMLElement {
               )
               .join("")
           : "";
-        const queryMarkup = canReadAdmin
+        const queryMarkup = (canReadAdmin && feature.id === "telephony_call_lists"
+          ? '<button type="button" class="secondary" data-open-call-history="true">View or export private call history</button>' : "") + (canReadAdmin
           ? this._renderAdminPrivateQueries(feature.queries)
-          : "";
+          : "");
         const actionMarkup =
           canReadAdmin &&
           (!feature.adminActionReplacesBlocked || supportedReplacementAction)
           ? this._renderAdminActions(feature)
           : "";
+        const settingsMarkup = canReadAdmin && featureSettings.length
+          ? `<div class="sp-settings-buttons">${featureSettings.map((setting) => `<button type="button" data-open-setting="${escapeHtml(setting.id)}"${setting.available ? "" : " disabled"}>${escapeHtml(setting.title)}</button>`).join("")}</div>${SETTINGS_FEATURE_LINKS[feature.id]?.complete ? "" : "<p>Partial coverage: the editors above are implemented; other options in this feature remain pending.</p>"}`
+          : "";
         const ownedMarkup =
-          controlMarkup || readMarkup || queryMarkup || actionMarkup
-            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${controlMarkup}${readMarkup}${queryMarkup}${actionMarkup}</div>`
+          controlMarkup || readMarkup || queryMarkup || actionMarkup || settingsMarkup || maintenance || transfer
+            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${transfers.map((item) => `<button type="button" class="secondary" data-open-transfer="${escapeHtml(item.id)}"${item.available ? "" : " disabled"}>${escapeHtml(item.title)}</button>`).join("")}${maintenance ? `<button type="button" class="secondary" data-open-maintenance="${escapeHtml(maintenance.id)}"${maintenance.available ? "" : " disabled"}>Review ${escapeHtml(maintenance.title)}</button>` : ""}${settingsMarkup}${controlMarkup}${readMarkup}${queryMarkup}${actionMarkup}</div>`
             : "";
         const headingId = `speedport-admin-feature-${feature.id}`.replace(
           /[^a-z0-9_-]/gi,
@@ -6642,6 +6885,106 @@ export class SpeedportSmartPanel extends HTMLElement {
           .join("")}</div>`
       : "";
     return `${rootGrid}${childGrid}`;
+  }
+
+  _clearSettingsEditor() {
+    this._callHistoryBinding?.();
+    this._callHistoryBinding = undefined;
+    this._callHistoryView?.dispose();
+    if (this._callHistoryHost) this._callHistoryHost.innerHTML = "";
+    this._callHistoryHost = undefined;
+    this._settingsBinding?.();
+    this._settingsBinding = undefined;
+    this._settingsEditor?.dispose();
+    if (this._settingsHost) this._settingsHost.innerHTML = "";
+    this._settingsHost = undefined;
+    this._maintenanceBinding?.();
+    this._maintenanceBinding = undefined;
+    this._maintenanceEditor?.dispose();
+    if (this._maintenanceHost) this._maintenanceHost.innerHTML = "";
+    this._maintenanceHost = undefined;
+    this._fileTransferBinding?.();
+    this._fileTransferBinding = undefined;
+    this._fileTransferEditor?.dispose();
+    if (this._fileTransferHost) this._fileTransferHost.innerHTML = "";
+    this._fileTransferHost = undefined;
+  }
+
+  _renderCallHistoryEditor() {
+    if (!this.shadowRoot || this._activeView !== "administration") return;
+    const host = this.shadowRoot.querySelector("[data-call-history-editor-host]");
+    if (!host) return;
+    this._callHistoryHost = host;
+    host.innerHTML = renderCallHistoryView(this._callHistoryView);
+    if (!this._callHistoryBinding) this._callHistoryBinding = bindCallHistoryView(host, this._callHistoryView);
+  }
+
+  _fileTransferForFeature(featureId) {
+    const matches = this._fileTransfersForFeature(featureId);
+    return matches.find((item) => item.available) || matches[0];
+  }
+
+  _fileTransfersForFeature(featureId) {
+    if (this._hass?.user?.is_admin !== true) return [];
+    const mapped = FILE_TRANSFER_FEATURE_LINKS[featureId];
+    const ids = Array.isArray(mapped) ? mapped : [mapped];
+    return (this._currentRouter()?.file_transfers || []).filter((action) =>
+      ids.includes(action.id) && action.execution_policy === "file_transfer" && action.supported);
+  }
+
+  _renderFileTransferEditor() {
+    if (!this.shadowRoot || this._activeView !== "administration") return;
+    const host = this.shadowRoot.querySelector("[data-file-transfer-editor-host]");
+    if (!host) return;
+    this._fileTransferHost = host;
+    host.innerHTML = renderFileTransferEditor(this._fileTransferEditor);
+    if (!this._fileTransferBinding) this._fileTransferBinding = bindFileTransferEditor(host, this._fileTransferEditor);
+  }
+
+  _maintenanceForFeature(featureId) {
+    if (this._hass?.user?.is_admin !== true) return undefined;
+    const id = MAINTENANCE_FEATURE_LINKS[featureId];
+    return (this._currentRouter()?.admin_actions || []).find((action) =>
+      action.id === id && action.execution_policy === "maintenance" && action.supported);
+  }
+
+  _renderMaintenanceEditor() {
+    if (!this.shadowRoot || this._activeView !== "administration") return;
+    const host = this.shadowRoot.querySelector("[data-maintenance-editor-host]");
+    if (!host) return;
+    this._maintenanceHost = host;
+    host.innerHTML = renderMaintenanceEditor(this._maintenanceEditor);
+    if (!this._maintenanceBinding) this._maintenanceBinding = bindMaintenanceEditor(host, this._maintenanceEditor);
+  }
+
+  _settingsForFeature(featureId) {
+    if (this._hass?.user?.is_admin !== true) return [];
+    const ids = SETTINGS_FEATURE_LINKS[featureId]?.ids || [];
+    return (this._currentRouter()?.settings || []).filter((setting) =>
+      setting.supported && ids.includes(setting.id));
+  }
+
+  _renderSettingsEditor() {
+    if (!this.shadowRoot || this._activeView !== "administration") return;
+    const host = this.shadowRoot.querySelector("[data-settings-editor-host]");
+    if (!host) return;
+    this._settingsHost = host;
+    host.innerHTML = renderConfigurationEditor(this._settingsEditor);
+    if (!this._settingsBinding) this._settingsBinding = bindConfigurationEditor(host, this._settingsEditor);
+  }
+
+  _renderSettingsCatalog(router) {
+    if (this._hass?.user?.is_admin !== true || !router.settings?.length) return "";
+    const sections = [...new Set(router.settings.map((item) => item.section))];
+    return `<section class="administration-intro"><h2>Configuration editors</h2>
+      <p>Load current settings, edit, then explicitly confirm a save. Opening an editor never changes the router.</p>
+      <div class="sp-settings-catalog">${sections.map((section) => `<section><h3>${escapeHtml(section)}</h3>
+      <div class="sp-settings-buttons">${router.settings.filter((item) => item.section === section).map((item) =>
+        `<button type="button" data-open-setting="${escapeHtml(item.id)}"${!item.supported || !item.available ? " disabled" : ""}>${escapeHtml(item.title)}</button>`).join("")}</div></section>`).join("")}</div>
+      <div data-settings-editor-host></div>
+      <div data-maintenance-editor-host></div>
+      <div data-file-transfer-editor-host></div>
+      <div data-call-history-editor-host></div></section>`;
   }
 
   _renderAdministration(router, controls, reporting, accessSourceStates) {
@@ -6749,6 +7092,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           <p>${escapeHtml(this._t("administration.subtitle"))}</p>
         </section>
         ${this._renderAdminReadOverview()}
+        ${this._renderSettingsCatalog(router)}
         <section class="administration-areas" aria-label="${escapeHtml(this._t("administration.areas.label"))}">
           ${areas || `<div class="administration-empty"><h2>${escapeHtml(this._t("administration.no_controls.title"))}</h2><p>${escapeHtml(this._t("administration.no_controls.body"))}</p></div>`}
         </section>
@@ -7189,6 +7533,24 @@ export class SpeedportSmartPanel extends HTMLElement {
       </main>
       ${this._renderConfirmation()}
     `;
+    // Keep the same private editor DOM on telemetry refreshes. Never rehydrate
+    // passwords or clear an in-progress draft because WAN statistics changed.
+    const settingsPlaceholder = this.shadowRoot.querySelector("[data-settings-editor-host]");
+    if (settingsPlaceholder && this._settingsHost && settingsPlaceholder !== this._settingsHost) {
+      settingsPlaceholder.replaceWith(this._settingsHost);
+    }
+    const maintenancePlaceholder = this.shadowRoot.querySelector("[data-maintenance-editor-host]");
+    if (maintenancePlaceholder && this._maintenanceHost && maintenancePlaceholder !== this._maintenanceHost) {
+      maintenancePlaceholder.replaceWith(this._maintenanceHost);
+    }
+    const transferPlaceholder = this.shadowRoot.querySelector("[data-file-transfer-editor-host]");
+    if (transferPlaceholder && this._fileTransferHost && transferPlaceholder !== this._fileTransferHost) {
+      transferPlaceholder.replaceWith(this._fileTransferHost);
+    }
+    const callHistoryPlaceholder = this.shadowRoot.querySelector("[data-call-history-editor-host]");
+    if (callHistoryPlaceholder && this._callHistoryHost && callHistoryPlaceholder !== this._callHistoryHost) {
+      callHistoryPlaceholder.replaceWith(this._callHistoryHost);
+    }
     restoreDetailsState(this.shadowRoot, renderState);
     if (this._pendingAction) {
       window.requestAnimationFrame(() => {
@@ -7572,6 +7934,12 @@ export class SpeedportSmartPanel extends HTMLElement {
           cursor: pointer;
         }
         .administration-view { width: 100%; min-width: 0; }
+        .sp-settings-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 18px; }
+        .sp-settings-catalog h3 { margin: 8px 0; font-size: 15px; }
+        .sp-settings-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+        .sp-settings-buttons button { padding: 10px 14px; border: 1px solid var(--divider-color); border-radius: 10px; background: var(--secondary-background-color); color: var(--primary-text-color); cursor: pointer; }
+        .sp-settings-buttons button:disabled { opacity: .5; cursor: default; }
+        [data-settings-editor-host]:not(:empty) { margin-top: 20px; width: 100%; min-width: 0; }
         .administration-intro,
         .admin-read-overview {
           width: 100%;

@@ -85,7 +85,7 @@ function router(overrides = {}) {
 
 function panelFixture(routerData = router()) {
   const panel = new SpeedportSmartPanel();
-  panel._metadata = { routers: [routerData], schema_version: 20 };
+  panel._metadata = { routers: [routerData], schema_version: 22 };
   panel._selectedEntry = routerData.entry_id;
   panel._platformIcons = {};
   panel._componentIcons = {};
@@ -307,7 +307,7 @@ test("router identity and telemetry are rendered only from current runtime data"
     model: "Model-B-Unique",
     title: "Router-B-Unique",
   });
-  panel._metadata = { routers: [secondRouter], schema_version: 20 };
+  panel._metadata = { routers: [secondRouter], schema_version: 22 };
   panel._hass.states[REPORTING_META.entity_id] = {
     attributes: { friendly_name: "Runtime metric" },
     state: "Metric-B-Unique",
@@ -359,7 +359,7 @@ test("control stays singular and recovers in place across session loss", () => {
   const blockedRouter = router({
     management: { controls_available: false, state: "blocked" },
   });
-  panel._metadata = { routers: [blockedRouter], schema_version: 20 };
+  panel._metadata = { routers: [blockedRouter], schema_version: 22 };
   const blocked = renderedMarkup(panel);
   assert.equal(
     exactCount(blocked, `data-more-info="${WIFI_CONTROL_META.entity_id}"`),
@@ -384,7 +384,7 @@ test("control stays singular and recovers in place across session loss", () => {
     new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*\\sdisabled(?:\\s|>|=)`),
   );
 
-  panel._metadata = { routers: [router()], schema_version: 20 };
+  panel._metadata = { routers: [router()], schema_version: 22 };
   const recovered = renderedMarkup(panel);
   assert.equal(
     exactCount(recovered, `data-more-info="${WIFI_CONTROL_META.entity_id}"`),

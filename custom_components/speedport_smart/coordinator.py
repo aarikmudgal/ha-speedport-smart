@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -17,6 +18,7 @@ from .api import (
     SpeedportSessionBusyError,
 )
 from .const import DOMAIN
+from .private_authorization import autonomous_ha_context
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -70,6 +72,18 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
             update_interval=interval,
             always_update=False,
         )
+
+    @callback
+    def _schedule_refresh(self) -> None:
+        """Keep autonomous poll timers independent of an initiating admin request."""
+        with autonomous_ha_context():
+            super()._schedule_refresh()
+
+    @callback
+    def async_set_updated_data(self, data: GroupSnapshot) -> None:
+        """Publish snapshots without binding entity/automation tasks to a request."""
+        with autonomous_ha_context():
+            super().async_set_updated_data(data)
 
     async def _async_update_data(self) -> GroupSnapshot:
         """Fetch one polling group."""

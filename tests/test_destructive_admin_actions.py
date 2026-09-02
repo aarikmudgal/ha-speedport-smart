@@ -694,6 +694,98 @@ async def test_phonebook_search_projects_free_entry_capacity() -> None:
     )
 
 
+@pytest.mark.parametrize("count", [33, 100, 256, 1000])
+async def test_phonebook_delete_targets_are_complete_not_voip_capped(
+    count: int,
+) -> None:
+    """Every contact in the bounded complete inventory remains selectable."""
+    client = SpeedportClient(MagicMock(), "speedport.ip")
+    response = {
+        "addbookentry": [
+            {"id": str(index), "name": f"Contact {index}"} for index in range(count)
+        ],
+        "num_entries": count,
+    }
+    with patch.object(client, "_post_json_unlocked", AsyncMock(return_value=response)):
+        result = await client.query_phonebook_entry_delete_targets(phonebook_id=0)
+    assert len(result["targets"]) == count
+    assert result["truncated"] is False
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {
+            "addbookentry": [{"id": str(index)} for index in range(1001)],
+            "num_entries": 1001,
+        },
+        {"addbookentry": [{"id": "1"}], "num_entries": 2},
+        {"num_entries": 0},
+        {"status": "ok", "num_entries": 0, "free_entry_num": 99, "addbookentry": None},
+    ],
+)
+async def test_phonebook_delete_refuses_unproven_or_truncated_inventory(
+    response: dict[str, Any],
+) -> None:
+    """Missing rows and mismatched totals cannot become a partial target list."""
+    client = SpeedportClient(MagicMock(), "speedport.ip")
+    with (
+        patch.object(client, "_post_json_unlocked", AsyncMock(return_value=response)),
+        pytest.raises(SpeedportUnsupportedError),
+    ):
+        await client.query_phonebook_entry_delete_targets(phonebook_id=0)
+
+
+async def test_phonebook_last_contact_absence_uses_real_zero_count_shape() -> None:
+    """The firmware omits addbookentry once the local book becomes empty."""
+    client = SpeedportClient(MagicMock(), "speedport.ip")
+    response = {"status": "ok", "num_entries": "0", "free_entry_num": "100"}
+    with patch.object(client, "_post_json_unlocked", AsyncMock(return_value=response)):
+        assert await client.query_phonebook_entry_delete_targets(phonebook_id=0) == {
+            "targets": [],
+            "truncated": False,
+        }
+        assert (
+            await client.get_phonebook_entry_present(
+                phonebook_id=0,
+                contact_id="1",
+                target_fingerprint="a" * 64,
+            )
+            is False
+        )
+
+
+async def test_only_phonebook_grants_allow_complete_inventory_above_32(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Increase only phonebook capacity; all other action bounds remain unchanged."""
+    action = "phonebook_entry_delete"
+    hub = await _ready_hub(hass, mock_speedport_client, action)
+    targets = [
+        {**_raw_target(action), "target_id": str(index), "reference": str(index)}
+        for index in range(1000)
+    ]
+    result = hub._issue_admin_action_targets(  # noqa: SLF001
+        ADMIN_ACTION_CONTRACTS[action],
+        {"targets": targets, "truncated": False},
+        requester=_REQUESTER,
+    )
+    assert len(result["targets"]) == 1000
+    with pytest.raises(AdminActionUnavailableError):
+        hub._issue_admin_action_targets(  # noqa: SLF001
+            ADMIN_ACTION_CONTRACTS[action],
+            {"targets": targets, "truncated": True},
+            requester=_REQUESTER,
+        )
+    with pytest.raises(AdminActionUnavailableError):
+        hub._issue_admin_action_targets(  # noqa: SLF001
+            ADMIN_ACTION_CONTRACTS["voip_provider_delete"],
+            {"targets": targets[:33], "truncated": False},
+            requester=_REQUESTER,
+        )
+
+
 @pytest.mark.parametrize(("action", "_endpoint", "_referer", "phrase"), _ACTIONS)
 def test_destructive_websocket_schemas_require_exact_phrase(
     action: str,

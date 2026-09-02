@@ -836,7 +836,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[SpeedportBinarySensorEntityDescription, ...] =
     SpeedportBinarySensorEntityDescription(
         key="remote_support_active",
         translation_key="remote_support_active",
-        data_path="system.remote_support_active",
+        data_path="system.cloud_backup_active",
         capability="system",
         coordinator_group=SLOW,
         device_class=BinarySensorDeviceClass.RUNNING,

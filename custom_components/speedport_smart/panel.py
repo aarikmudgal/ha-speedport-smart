@@ -22,7 +22,10 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .management import ManagementRisk, get_entity_write_contract
-from .panel_queries import async_register_admin_query_commands
+from .panel_queries import (
+    async_register_admin_query_commands,
+    private_websocket_rejection,
+)
 from .panel_read import admin_read_payload
 
 if TYPE_CHECKING:
@@ -38,7 +41,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 20
+PANEL_SCHEMA_VERSION: Final = 22
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -308,7 +311,12 @@ class _ChildDevicePanelData(TypedDict):
 
 async def async_register_panel(hass: HomeAssistant) -> None:
     """Register static assets, metadata API, and one global sidebar panel."""
+    from .file_transfer_http import async_register_file_transfer_views  # noqa: PLC0415
+    from .panel_private_http import async_register_private_panel_view  # noqa: PLC0415
+
     panel_state: dict[str, bool] = hass.data.setdefault(_PANEL_DATA_KEY, {})
+    async_register_file_transfer_views(hass)
+    async_register_private_panel_view(hass)
 
     if not panel_state.get("static_registered"):
         await hass.http.async_register_static_paths(
@@ -324,7 +332,9 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 
     if not panel_state.get("websocket_registered"):
         websocket_api.async_register_command(hass, websocket_panel_info)
-        websocket_api.async_register_command(hass, websocket_panel_admin_read)
+        websocket_api.async_register_command(
+            hass, private_websocket_rejection(_PANEL_ADMIN_READ_WS_TYPE)
+        )
         async_register_admin_query_commands(hass)
         panel_state["websocket_registered"] = True
 
@@ -480,6 +490,8 @@ def _entry_panel_data(
     access_sources: list[dict[str, Any]] = []
     capability_families: list[dict[str, str]] = []
     admin_actions: list[dict[str, Any]] = []
+    settings: list[dict[str, Any]] = []
+    file_transfers: list[dict[str, Any]] = []
     if hub is not None:
         identity = hub.router_identity
         model = identity.model
@@ -494,6 +506,12 @@ def _entry_panel_data(
             action_metadata = getattr(hub, "admin_actions_metadata", None)
             if callable(action_metadata):
                 admin_actions = action_metadata()
+            settings_metadata = getattr(hub, "settings_metadata", None)
+            if callable(settings_metadata):
+                settings = settings_metadata()
+            transfer_metadata = getattr(hub, "file_transfers_metadata", None)
+            if callable(transfer_metadata):
+                file_transfers = transfer_metadata()
         else:
             access_sources = _permission_scoped_access_sources(source_data, entities)
             if any(
@@ -513,6 +531,8 @@ def _entry_panel_data(
         "capabilities": capabilities,
         "capability_families": capability_families,
         "admin_actions": admin_actions,
+        "settings": settings,
+        "file_transfers": file_transfers,
         "entities": entities,
     }
 
