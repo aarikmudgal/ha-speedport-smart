@@ -43,6 +43,7 @@ const {
   SpeedportSmartPanel,
   adminPlacementFor,
   buildAdminEntityGroupPlacements,
+  capabilityGroupFor,
   formatAdminReadValue,
   highestAdminRisk,
   iconFor,
@@ -414,7 +415,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
     telephony_providers: "telephony",
     telephone_lines: "telephony",
     usb_devices: "network",
-    vpn_peers: "internet",
+    vpn_peers: "network",
     wifi_2_4_identity: "network",
     wifi_5_identity: "network",
     wifi_guest_identity: "network",
@@ -426,6 +427,7 @@ test("fixed Administration manifest places reviewed controls and collections", (
   );
   assert.equal(readSubsectionPlacements.mesh_nodes, "network_mesh");
   assert.equal(readSubsectionPlacements.powerline_nodes, "network_mesh");
+  assert.equal(readSubsectionPlacements.vpn_peers, "network_vpn");
   assert.equal(readSubsectionPlacements.ddns_identity, "internet_ddns");
   assert.equal(readSubsectionPlacements.wifi_2_4_identity, "network_wifi");
   assert.equal(readSubsectionPlacements.wifi_5_identity, "network_wifi");
@@ -450,10 +452,17 @@ test("fixed Administration manifest places reviewed controls and collections", (
     "switch:wifi",
     "text:client_name",
   ]);
-  const analogFeature = ADMIN_IA.flatMap((area) => area.subsections)
+  const analogFeatures = ADMIN_IA.flatMap((area) => area.subsections)
     .flatMap((subsection) => subsection.features)
-    .find((feature) => feature.id === "telephony_analog_sockets");
-  assert.deepEqual(analogFeature.capabilities, ["telephony", "analog"]);
+    .filter((feature) => feature.id.startsWith("telephony_analog_"));
+  assert.equal(analogFeatures.length, 4);
+  assert.ok(
+    analogFeatures.every(
+      (feature) =>
+        JSON.stringify(feature.capabilities) ===
+        JSON.stringify(["telephony", "analog"]),
+    ),
+  );
   assert.deepEqual(adminPlacementFor(CONFIG_META), {
     areaId: "network",
     subsectionId: "network_wifi",
@@ -467,8 +476,20 @@ test("fixed Administration manifest places reviewed controls and collections", (
     ["mobile", "mobile_status_code", ["internet", "internet_mobile"]],
     ["mobile", "mobile_nr_signal", ["internet", "internet_mobile"]],
     ["mobile", "mobile_lte_band", ["internet", "internet_mobile"]],
+    ["clients", "lan_port_1_connected", ["system", "system_information"]],
+    ["wireless", "guest_wifi_display_key_enabled", ["system", "system_information"]],
     ["system", "system_operating_mode", ["system", "system_information"]],
+    ["system", "easy_support_enabled", ["system", "system_support"]],
+    ["system", "firmware_automatic_updates", ["system", "system_support"]],
+    ["system", "remote_support_active", ["system", "system_support"]],
     ["system", "router_https_enabled", ["system", "system_security"]],
+    ["telephony", "telephony_voip_policy", ["telephony", "telephony_numbers"]],
+    ["telephony", "telephony_hd_voice_active", ["telephony", "telephony_numbers"]],
+    ["telephony", "dect_enabled", ["telephony", "telephony_dect"]],
+    ["telephony", "dect_scan_active", ["telephony", "telephony_dect"]],
+    ["telephony", "dect_paging_active", ["telephony", "telephony_dect"]],
+    ["telephony", "dect_handsets", ["telephony", "telephony_dect"]],
+    ["telephony", "dect_repeaters", ["telephony", "telephony_dect"]],
   ]) {
     assert.deepEqual(
       adminPlacementFor({
@@ -479,6 +500,29 @@ test("fixed Administration manifest places reviewed controls and collections", (
         translation_key: translationKey,
       }),
       { areaId: expected[0], subsectionId: expected[1] },
+      translationKey,
+    );
+  }
+  for (const [section, translationKey, expectedGroup] of [
+    ["system", "firmware_automatic_updates", "system_easysupport_firmware"],
+    ["telephony", "telephony_voip_policy", "telephony_call_encryption"],
+    ["telephony", "telephony_hd_voice_active", "telephony_hd_voice"],
+    ["telephony", "dect_enabled", "telephony_dect_base"],
+    ["telephony", "dect_scan_active", "telephony_dect_scan"],
+    ["telephony", "dect_paging_active", "telephony_dect_paging"],
+    ["telephony", "dect_paging_handsets", "telephony_dect_paging"],
+    ["telephony", "dect_handsets", "telephony_dect_handsets"],
+    ["telephony", "dect_repeaters", "telephony_dect_repeaters"],
+  ]) {
+    assert.equal(
+      capabilityGroupFor({
+        access_source: "protected_json",
+        control: false,
+        domain: "sensor",
+        section,
+        translation_key: translationKey,
+      }),
+      expectedGroup,
       translationKey,
     );
   }
@@ -529,6 +573,28 @@ test("fixed Administration manifest places reviewed controls and collections", (
       translation_key: "registered",
     }),
     { areaId: "telephony", subsectionId: "telephony_dect" },
+  );
+  assert.equal(
+    capabilityGroupFor({
+      access_source: "protected_json",
+      child_device: { device_id: "handset-1", kind: "dect_handset" },
+      control: false,
+      domain: "binary_sensor",
+      section: "telephony",
+      translation_key: "registered",
+    }),
+    "telephony_dect_handsets",
+  );
+  assert.equal(
+    capabilityGroupFor({
+      access_source: "protected_json",
+      child_device: { device_id: "repeater-1", kind: "dect_repeater" },
+      control: false,
+      domain: "binary_sensor",
+      section: "telephony",
+      translation_key: "registered",
+    }),
+    "telephony_dect_repeaters",
   );
   assert.deepEqual(
     adminPlacementFor({
@@ -631,8 +697,8 @@ test("Administration catalog covers every reviewed management family without gen
   const features = subsections.flatMap((subsection) => subsection.features);
   const featureIds = features.map((feature) => feature.id);
 
-  assert.equal(subsections.length, 27);
-  assert.equal(features.length, 78);
+  assert.equal(subsections.length, 28);
+  assert.equal(features.length, 108);
   assert.equal(new Set(featureIds).size, featureIds.length);
   assert.deepEqual(
     [...new Set(features.map((feature) => feature.contract))].sort(),
@@ -670,10 +736,140 @@ test("Administration catalog covers every reviewed management family without gen
   const webUiVersion = features.find(
     (feature) => feature.id === "system_web_ui_version",
   );
-  assert.equal(webUiVersion.contract, "blocked");
+  assert.equal(webUiVersion.contract, "read_only");
   assert.deepEqual(webUiVersion.controls, []);
   assert.deepEqual(webUiVersion.entityGroups, []);
   assert.deepEqual(webUiVersion.readSections, []);
+
+  const featureById = new Map(features.map((feature) => [feature.id, feature]));
+  for (const featureId of [
+    "telephony_number_assignment",
+    "telephony_number_use",
+    "telephony_dect_base_pin",
+    "telephony_dect_transmit_power",
+    "telephony_dect_full_eco",
+    "telephony_dect_handset_call_waiting",
+  ]) {
+    assert.deepEqual(featureById.get(featureId).entityGroups, [], featureId);
+    assert.deepEqual(featureById.get(featureId).readSections, [], featureId);
+  }
+  for (const [featureId, expectedGroups] of [
+    ["telephony_call_encryption", ["telephony_call_encryption"]],
+    ["telephony_hd_voice", ["telephony_hd_voice"]],
+    ["telephony_dect_base", ["telephony_dect_base"]],
+    ["telephony_dect_handset_enrollment", ["telephony_dect_scan"]],
+    ["telephony_dect_handset_configuration", ["telephony_dect_handsets"]],
+    ["telephony_dect_handset_disconnect", ["telephony_dect_handsets"]],
+    ["telephony_dect_handset_paging", ["telephony_dect_paging"]],
+    ["telephony_dect_repeater_enrollment", ["telephony_dect_repeaters"]],
+    ["telephony_dect_repeater_disconnect", ["telephony_dect_repeaters"]],
+    ["system_easysupport_automatic_firmware", ["system_easysupport_firmware"]],
+  ]) {
+    assert.deepEqual(
+      featureById.get(featureId).entityGroups,
+      expectedGroups,
+      featureId,
+    );
+  }
+
+  const records = new Map(
+    ADMIN_IA.flatMap((area) =>
+      area.subsections.flatMap((subsection) =>
+        subsection.features.map((feature) => [
+          feature.id,
+          { areaId: area.id, subsectionId: subsection.id },
+        ]),
+      ),
+    ),
+  );
+  assert.deepEqual(records.get("network_vpn_management"), {
+    areaId: "network",
+    subsectionId: "network_vpn",
+  });
+  assert.deepEqual(records.get("network_smarthome_activation"), {
+    areaId: "network",
+    subsectionId: "network_smarthome",
+  });
+  for (const featureId of [
+    "internet_receiver_mode",
+    "internet_receiver_routing_exceptions",
+    "internet_receiver_firmware",
+    "telephony_automatic_speed_dial",
+    "telephony_number_use",
+    "telephony_call_encryption",
+    "telephony_hd_voice",
+    "telephony_dialing_delay",
+    "telephony_status_messages",
+    "telephony_analog_socket_name",
+    "telephony_analog_number_assignment",
+    "telephony_analog_device_type",
+    "telephony_analog_call_waiting",
+    "telephony_dect_base_pin",
+    "telephony_dect_transmit_power",
+    "telephony_dect_full_eco",
+    "telephony_dect_handset_enrollment",
+    "telephony_dect_handset_configuration",
+    "telephony_dect_handset_call_waiting",
+    "telephony_dect_handset_disconnect",
+    "telephony_dect_handset_paging",
+    "telephony_dect_repeater_enrollment",
+    "telephony_dect_repeater_disconnect",
+    "telephony_ip_pbx",
+    "telephony_ip_phone_enrollment",
+    "telephony_ip_phone_configuration",
+    "telephony_ip_phone_disconnect",
+    "network_client_delete",
+    "network_mesh_management",
+    "network_powerline_management",
+    "network_wifi_wps_enablement",
+    "network_wifi_wps_pin_mode",
+    "system_lan_port_status",
+    "system_mesh_restart",
+    "system_mesh_reset",
+    "system_router_firmware",
+    "system_mesh_firmware",
+    "system_local_display_settings",
+    "system_physical_front_panel_actions",
+    "system_easysupport_automatic_setup",
+    "system_easysupport_automatic_firmware",
+    "system_easysupport_wifi_backup",
+    "system_easysupport_remote_support",
+  ]) {
+    assert.ok(records.has(featureId), featureId);
+  }
+  for (const conflatedId of [
+    "internet_receiver_management",
+    "internet_vpn_management",
+    "telephony_dect_handsets",
+    "telephony_dect_repeaters",
+    "telephony_number_behavior",
+    "telephony_analog_sockets",
+    "telephony_pbx_management",
+    "network_mesh_powerline_management",
+    "network_mesh_maintenance",
+    "network_mesh_restart",
+    "network_mesh_reset",
+    "network_wifi_wps_settings",
+    "network_lan_port_status",
+    "system_router_mesh_firmware",
+    "system_smarthome",
+    "system_front_panel",
+    "system_cloud_backup",
+  ]) {
+    assert.equal(records.has(conflatedId), false, conflatedId);
+  }
+  assert.deepEqual(records.get("system_mesh_restart"), {
+    areaId: "system",
+    subsectionId: "system_maintenance",
+  });
+  assert.deepEqual(records.get("system_mesh_reset"), {
+    areaId: "system",
+    subsectionId: "system_maintenance",
+  });
+  assert.deepEqual(records.get("system_lan_port_status"), {
+    areaId: "system",
+    subsectionId: "system_information",
+  });
 });
 
 test("hero renders only safe runtime router identity with neutral decorative LEDs", () => {
@@ -740,7 +936,7 @@ test("manual capability gaps are explicit safe cards without invented controls",
     network_wifi_guest_access_pass: {
       areaId: "network",
       contract: "read_only",
-      entityGroups: ["wireless_guest"],
+      entityGroups: [],
       subsectionId: "network_wifi_access",
     },
     system_energy_settings: {
@@ -794,6 +990,18 @@ test("manual capability gaps are explicit safe cards without invented controls",
     }),
     { areaId: "network", subsectionId: "network_wifi" },
   );
+  assert.deepEqual(
+    adminPlacementFor({
+      access_source: "protected_json",
+      capability_group: "system_services",
+      control: false,
+      domain: "binary_sensor",
+      entity_id: "binary_sensor.speedport_smarthome_linked",
+      section: "system",
+      translation_key: "smarthome_linked",
+    }),
+    { areaId: "network", subsectionId: "network_smarthome" },
+  );
 });
 
 test("reviewed controls and cached reads render once under deterministic feature owners", () => {
@@ -826,12 +1034,11 @@ test("reviewed controls and cached reads render once under deterministic feature
       .sort(([left], [right]) => left.localeCompare(right)),
   );
   assert.deepEqual(sharedReadOwners, {
-    clients: "network_client_rename",
-    mesh_nodes: "network_mesh_powerline_management",
+    dect_handsets: "telephony_dect_handset_configuration",
+    dect_repeaters: "telephony_dect_repeater_enrollment",
+    mesh_nodes: "network_mesh_management",
     port_forward_rules: "internet_port_forward_toggle",
-    receivers: "internet_receiver_led",
     storage_devices: "network_usb_printer_media",
-    telephone_lines: "telephony_provider_registration",
   });
 
   const controls = [...controlOwners].map(([control, featureId]) => {
@@ -986,7 +1193,7 @@ test("feature status comes only from current entities, collections, and capabili
   );
   assert.equal(
     fixture.panel._adminFeaturePresentation(
-      byId("internet_vpn_management"),
+      byId("network_vpn_management"),
       [],
       new Map(),
       new Set(["vpn"]),
@@ -1021,6 +1228,66 @@ test("feature status comes only from current entities, collections, and capabili
   );
 });
 
+test("Administration explains blocked, absent, and unsupported features distinctly", () => {
+  const fixture = panelFixture();
+  const reconnect = {
+    ...CONTROL_META,
+    entity_id: "button.speedport_reconnect_internet",
+    management_feature: "internet_reconnect",
+    translation_key: "reconnect_internet",
+  };
+  fixture.panel._hass.states[CONFIG_META.entity_id] = {
+    attributes: {},
+    state: "weekly",
+  };
+  fixture.panel._hass.states[reconnect.entity_id] = {
+    attributes: {},
+    state: "unknown",
+  };
+  const html = fixture.panel._renderAdministration(
+    router("entry-a", [CONFIG_META, reconnect]),
+    [reconnect],
+    [CONFIG_META],
+    { protected_json: { available: true } },
+  );
+  const featureWindow = (featureId) => {
+    const marker = `data-admin-feature="${featureId}"`;
+    const start = html.indexOf(marker);
+    assert.notEqual(start, -1, featureId);
+    const following = html.slice(start + marker.length);
+    const next = following.search(/data-admin-feature="[^"]+"/);
+    return next === -1
+      ? html.slice(start)
+      : html.slice(start, start + marker.length + next);
+  };
+
+  assert.match(
+    featureWindow("network_wifi_schedule"),
+    /Read-only; control contract not proven/,
+  );
+  assert.match(
+    featureWindow("internet_dns_servers"),
+    /Not exposed by this router/,
+  );
+  for (const featureId of [
+    "telephony_number_assignment",
+    "telephony_number_use",
+    "telephony_dect_base_pin",
+    "telephony_dect_transmit_power",
+    "telephony_dect_full_eco",
+    "telephony_dect_handset_call_waiting",
+    "system_easysupport_automatic_firmware",
+    "system_easysupport_wifi_backup",
+  ]) {
+    assert.match(featureWindow(featureId), /Not exposed by this router/, featureId);
+  }
+  assert.match(
+    featureWindow("system_safe_mail_allowlist"),
+    /No local router control/,
+  );
+  assert.match(featureWindow("internet_reconnect"), /Control available/);
+});
+
 test("broad related telemetry never claims exact blocked-setting coverage", () => {
   const fixture = panelFixture();
   const providerFeature = ADMIN_IA.flatMap((area) => area.subsections)
@@ -1053,6 +1320,180 @@ test("broad related telemetry never claims exact blocked-setting coverage", () =
   assert.equal(
     PANEL_TRANSLATIONS.en["admin.feature.status.read_only"],
     "Related read-only data available",
+  );
+});
+
+test("split management cards require exact read evidence", () => {
+  const fixture = panelFixture();
+  const features = new Map(
+    ADMIN_IA.flatMap((area) => area.subsections)
+      .flatMap((subsection) => subsection.features)
+      .map((feature) => [feature.id, feature]),
+  );
+  const entity = (translationKey, section, state = "on", extra = {}) => {
+    const meta = {
+      access_source: "protected_json",
+      control: false,
+      domain: "binary_sensor",
+      entity_id: `binary_sensor.speedport_${translationKey}`,
+      section,
+      translation_key: translationKey,
+      ...extra,
+    };
+    fixture.panel._hass.states[meta.entity_id] = { attributes: {}, state };
+    return meta;
+  };
+  const dectBase = entity("dect_enabled", "telephony");
+  const genericVoip = entity("telephony_providers", "telephony", "1", {
+    capability_group: "telephony_voip",
+    domain: "sensor",
+  });
+  const routerFirmware = entity("firmware_version", "system", "1.2.3", {
+    domain: "sensor",
+  });
+  const presentation = (featureId, entities) =>
+    fixture.panel._adminFeaturePresentation(
+      features.get(featureId),
+      entities,
+      new Map(),
+      new Set(["dect", "telephony", "system", "easysupport"]),
+      true,
+    ).key;
+
+  assert.equal(presentation("telephony_dect_base", [dectBase]), "read_only");
+  for (const featureId of [
+    "telephony_dect_base_pin",
+    "telephony_dect_transmit_power",
+    "telephony_dect_full_eco",
+    "telephony_dect_handset_call_waiting",
+  ]) {
+    assert.equal(presentation(featureId, [dectBase]), "not_observed", featureId);
+  }
+  for (const featureId of [
+    "telephony_number_assignment",
+    "telephony_number_use",
+    "telephony_call_encryption",
+    "telephony_hd_voice",
+  ]) {
+    assert.equal(presentation(featureId, [genericVoip]), "not_observed", featureId);
+  }
+  assert.equal(
+    presentation("system_easysupport_automatic_firmware", [routerFirmware]),
+    "not_observed",
+  );
+
+  const exactEncryption = entity(
+    "telephony_voip_policy",
+    "telephony",
+    "level_1",
+    { domain: "sensor" },
+  );
+  const exactHdVoice = entity("telephony_hd_voice_active", "telephony");
+  const exactAutomaticFirmware = entity(
+    "firmware_automatic_updates",
+    "system",
+  );
+  assert.equal(
+    presentation("telephony_call_encryption", [exactEncryption]),
+    "read_only",
+  );
+  assert.equal(
+    presentation("telephony_hd_voice", [exactHdVoice]),
+    "read_only",
+  );
+  assert.equal(
+    presentation("system_easysupport_automatic_firmware", [exactAutomaticFirmware]),
+    "read_only",
+  );
+});
+
+test("receiver telemetry never proves receiver firmware evidence", () => {
+  const fixture = panelFixture();
+  const features = new Map(
+    ADMIN_IA.flatMap((area) => area.subsections)
+      .flatMap((subsection) => subsection.features)
+      .map((feature) => [feature.id, feature]),
+  );
+  const receiverMode = {
+    access_source: "protected_json",
+    child_device: { device_id: "receiver-1", kind: "receiver" },
+    control: false,
+    domain: "sensor",
+    entity_id: "sensor.speedport_receiver_mode",
+    section: "mobile",
+    translation_key: "receiver_mode",
+  };
+  fixture.panel._hass.states[receiverMode.entity_id] = {
+    attributes: {},
+    state: "hybrid",
+  };
+  const receiverSections = new Map([
+    [
+      "receivers",
+      {
+        id: "receivers",
+        rows: [{ model: "5G receiver", connected: true }],
+        source: "protected_json",
+        truncated: false,
+      },
+    ],
+  ]);
+
+  assert.deepEqual(
+    features.get("internet_receiver_firmware").entityGroups,
+    ["mobile_receiver_firmware"],
+  );
+  assert.deepEqual(features.get("internet_receiver_firmware").readSections, []);
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      features.get("internet_receiver_firmware"),
+      [receiverMode],
+      receiverSections,
+      new Set(["receiver"]),
+      true,
+    ).key,
+    "not_observed",
+  );
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      features.get("internet_receiver_mode"),
+      [receiverMode],
+      receiverSections,
+      new Set(["receiver"]),
+      true,
+    ).key,
+    "read_only",
+  );
+});
+
+test("exact receiver firmware entity proves receiver firmware evidence", () => {
+  const fixture = panelFixture();
+  const feature = ADMIN_IA.flatMap((area) => area.subsections)
+    .flatMap((subsection) => subsection.features)
+    .find((candidate) => candidate.id === "internet_receiver_firmware");
+  const firmware = {
+    access_source: "protected_json",
+    capability_group: "mobile_receiver_firmware",
+    control: false,
+    domain: "sensor",
+    entity_id: "sensor.speedport_receiver_firmware_version",
+    section: "mobile",
+    translation_key: "receiver_firmware_version",
+  };
+  fixture.panel._hass.states[firmware.entity_id] = {
+    attributes: {},
+    state: "1.2.3",
+  };
+
+  assert.equal(
+    fixture.panel._adminFeaturePresentation(
+      feature,
+      [firmware],
+      new Map(),
+      new Set(["receiver"]),
+      true,
+    ).key,
+    "read_only",
   );
 });
 
@@ -1114,7 +1555,7 @@ test("complete capability catalog remains visible and noninteractive without liv
     /<article class="admin-feature-card[^>]*data-admin-feature="home_assistant_capability_inventory"[\s\S]*?<\/article>/,
   )?.[0];
 
-  assert.equal(featureMarkers.length, 78);
+  assert.equal(featureMarkers.length, 108);
   assert.ok(inventoryCard);
   assert.match(inventoryCard, /Read-only by design/);
   assert.doesNotMatch(inventoryCard, /destructive-candidate/);
@@ -1124,16 +1565,16 @@ test("complete capability catalog remains visible and noninteractive without liv
   );
   assert.equal(
     (html.match(/class="administration-subsection"/g) || []).length,
-    27,
+    28,
   );
   for (const label of [
     "Provider, account, MTU, VLAN, and fixed-IP configuration",
-    "Analog socket configuration",
+    "Analog socket incoming and outgoing number assignment",
     "Wi-Fi environment scan",
     "NAS shares and folders",
     "Restore local configuration backup",
     "Email notifications and event selection",
-    "Front-panel display and key actions",
+    "Local router display settings",
     "Read-only router capability inventory",
   ]) {
     assert.match(html, new RegExp(label));
@@ -2091,8 +2532,9 @@ test("failed admin refresh marks cached feature evidence temporarily unavailable
     [],
     { protected_json: { available: true } },
   );
-  const card = [...html.matchAll(/<article class="admin-feature-card ([^"]*)"[\s\S]*?<\/article>/g)]
-    .find((match) => match[0].includes("Connected-device inventory and addressing"));
+  const card = html.match(
+    /<(?:article|details) class="admin-feature-card ([^"]*)"[^>]*data-admin-feature="network_client_inventory"/,
+  );
 
   assert.ok(card);
   assert.match(card[1], /status-temporarily_unavailable/);

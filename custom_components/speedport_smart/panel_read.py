@@ -293,6 +293,12 @@ _RECORDS: Final = (
     ),
 )
 
+# Public, immutable schema views used by the unified read-surface registry.
+# The projection implementation continues to own these declarations; consumers
+# can audit coverage without duplicating the administrator allowlist.
+ADMIN_READ_COLLECTION_SPECS: Final = _COLLECTIONS
+ADMIN_READ_RECORD_SPECS: Final = _RECORDS
+
 
 def admin_read_payload(
     data: Mapping[str, Any],

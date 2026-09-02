@@ -26,6 +26,7 @@ from custom_components.speedport_smart.api import (
 from custom_components.speedport_smart.const import DOMAIN
 from custom_components.speedport_smart.coordinator import PollGroup
 from custom_components.speedport_smart.hub import SpeedportHub
+from custom_components.speedport_smart.management import get_command_write_contract
 from custom_components.speedport_smart.models import (
     CandidateInventoryResult,
     CapabilityReport,
@@ -2027,7 +2028,13 @@ async def test_command_gate_and_verification(
     assert unimplemented_error.value.translation_key == "command_unsupported"
 
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="ok")
-    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+
+    def publish_requested_state(_group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": True}})  # noqa: SLF001
+
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_requested_state
+    )
     normal_coordinator = MagicMock()
     hub.attach_coordinator(PollGroup.NORMAL, normal_coordinator)
     assert hub.supports_command("wifi_set_enabled")
@@ -2044,6 +2051,256 @@ async def test_command_gate_and_verification(
         PollGroup.NORMAL
     )
     normal_coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_stateful_command_cannot_bypass_contract_readback(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A caller-provided None cannot suppress a stateful command's refresh."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute(
+            "wifi_set_enabled",
+            verify_group=None,
+            enabled=False,
+        )
+
+    assert failure.value.translation_key == "command_unsupported"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+@pytest.mark.parametrize("invalid_enabled", [1, 0, "1", None])
+async def test_command_input_types_are_checked_before_router_io(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    invalid_enabled: object,
+) -> None:
+    """Python's bool/int overlap cannot widen an exact boolean write contract."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=invalid_enabled)
+
+    assert failure.value.translation_key == "command_unsupported"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "rename_client",
+            "clients",
+            "rename_client",
+            {
+                "source_kind": "addmdevice",
+                "row_id": "7",
+                "stable_mac": "00:11:22:33:44:55",
+                "name": "Living Room",
+            },
+        ),
+        (
+            "rename_client",
+            "clients",
+            "rename_client",
+            {
+                "source_kind": "addmdevice",
+                "row_id": "   ",
+                "stable_mac": "00:11:22:33:44:55",
+                "name": "Living-Room",
+            },
+        ),
+        (
+            "set_client_fixed_dhcp",
+            "clients",
+            "set_client_fixed_dhcp",
+            {
+                "source_kind": "addmdevice",
+                "row_id": "7",
+                "stable_mac": "00:11:22:aa:bb:cc",
+                "enabled": True,
+            },
+        ),
+        (
+            "set_port_forward_rule",
+            "port_forwarding",
+            "set_port_forward_rule",
+            {
+                "rule_id": "   ",
+                "enabled": True,
+                "expected_name": None,
+                "expected_fingerprint": "a" * 64,
+            },
+        ),
+        (
+            "set_port_forward_rule",
+            "port_forwarding",
+            "set_port_forward_rule",
+            {
+                "rule_id": "3",
+                "enabled": True,
+                "expected_name": None,
+                "expected_fingerprint": "A" * 64,
+            },
+        ),
+    ],
+)
+async def test_formatted_command_inputs_fail_without_io_or_invalidation(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    case: tuple[str, str, str, dict[str, object]],
+) -> None:
+    """Malformed IDs and fingerprints cannot reach a client pre-read."""
+    command, capability, handler_name, parameters = case
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    hub._capabilities = frozenset(  # noqa: SLF001 - isolate input contract
+        {"authenticated_json", capability}
+    )
+    hub._set_management_access("available")  # noqa: SLF001
+    handler = AsyncMock(return_value="accepted")
+    setattr(mock_speedport_client, handler_name, handler)
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute(command, **parameters)
+
+    assert failure.value.translation_key == "command_unsupported"
+    assert hub.get("management.access.state") == "available"
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+async def test_exact_scalar_readback_mismatch_fails_without_session_invalidation(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """An accepted write is not reported successful when fresh state disagrees."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    def publish_mismatch(_group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": True}})  # noqa: SLF001
+
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_mismatch
+    )
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_verification_failed"
+    assert failure.value.__cause__ is None
+    assert hub.get("management.access.state") == "available"
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+    handler.assert_awaited_once_with(enabled=False)
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+def test_collection_readback_requires_exact_stable_identity(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Collection verification rejects missing, reused, or duplicated row IDs."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    client_contract = get_command_write_contract("rename_client")
+    port_contract = get_command_write_contract("set_port_forward_rule")
+    assert client_contract is not None
+    assert client_contract.verification is not None
+    assert port_contract is not None
+    assert port_contract.verification is not None
+    client_parameters = {
+        "source_kind": "addmdevice",
+        "row_id": "7",
+        "stable_mac": "00:11:22:33:44:55",
+        "name": "Living-Room",
+    }
+    client_row = {
+        "source_kind": "addmdevice",
+        "source_row_id": "7",
+        "mac": "00:11:22:33:44:55",
+        "name": "Living-Room",
+    }
+    hub._merge_data({"clients": {"items": [client_row]}})  # noqa: SLF001
+    assert hub._matches_command_readback(  # noqa: SLF001
+        client_contract.verification,
+        client_parameters,
+    )
+    hub._merge_data(  # noqa: SLF001
+        {"clients": {"items": [{**client_row, "source_row_id": "8"}]}}
+    )
+    assert not hub._matches_command_readback(  # noqa: SLF001
+        client_contract.verification,
+        client_parameters,
+    )
+    hub._merge_data({"clients": {"items": [client_row, client_row]}})  # noqa: SLF001
+    assert not hub._matches_command_readback(  # noqa: SLF001
+        client_contract.verification,
+        client_parameters,
+    )
+
+    port_parameters = {
+        "rule_id": "3",
+        "enabled": True,
+        "expected_name": "HTTPS",
+        "expected_fingerprint": "a" * 64,
+    }
+    port_row = {
+        "id": "3",
+        "name": "HTTPS",
+        "_identity_fingerprint": "a" * 64,
+        "active": True,
+    }
+    hub._merge_data({"nat": {"port_forward_rules": [port_row]}})  # noqa: SLF001
+    assert hub._matches_command_readback(  # noqa: SLF001
+        port_contract.verification,
+        port_parameters,
+    )
+    hub._merge_data(  # noqa: SLF001
+        {
+            "nat": {
+                "port_forward_rules": [{**port_row, "_identity_fingerprint": "b" * 64}]
+            }
+        }
+    )
+    assert not hub._matches_command_readback(  # noqa: SLF001
+        port_contract.verification,
+        port_parameters,
+    )
 
 
 async def test_command_rechecks_runtime_capability_before_handler_io(
@@ -2068,7 +2325,6 @@ async def test_command_rechecks_runtime_capability_before_handler_io(
     with pytest.raises(HomeAssistantError) as failure:
         await hub.async_execute(
             "wifi_set_enabled",
-            verify_group=None,
             enabled=False,
         )
 
@@ -2096,7 +2352,6 @@ async def test_command_rechecks_capability_after_waiting_for_operation_lock(
         command = asyncio.create_task(
             hub.async_execute(
                 "wifi_set_enabled",
-                verify_group=None,
                 enabled=False,
             )
         )
@@ -2516,12 +2771,18 @@ async def test_firmware_write_block_rejects_before_handler_io(
     hub._merge_data(  # noqa: SLF001 - explicit router readback clears latch
         {"system": {"settings_write_blocked": False}}
     )
+
+    def publish_disabled_wifi(_group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": False}})  # noqa: SLF001
+
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_disabled_wifi
+    )
     assert hub.management_controls_available
     assert (
         await hub.async_execute(
             "wifi_set_enabled",
             enabled=False,
-            verify_group=None,
         )
         == "accepted"
     )
@@ -2542,17 +2803,24 @@ async def test_commands_remain_serialized(
     await hub.async_setup()
     active = 0
     max_active = 0
+    requested_state = False
 
     async def execute_wifi(*, enabled: bool) -> bool:
-        nonlocal active, max_active
+        nonlocal active, max_active, requested_state
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0)
+        requested_state = enabled
         active -= 1
         return enabled
 
+    def publish_requested_state(_group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": requested_state}})  # noqa: SLF001
+
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(side_effect=execute_wifi)
-    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_requested_state
+    )
 
     assert await asyncio.gather(
         hub.async_execute("wifi_set_enabled", enabled=True),

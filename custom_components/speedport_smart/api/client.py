@@ -569,6 +569,29 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("public_ip", "gateway", "dns", "ipv"),
                 ),
             ),
+            "internet_configuration": (
+                _endpoint(
+                    "internet_configuration",
+                    "data/InternetConnection.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                    evidence_keys=(
+                        "onlinestatus",
+                        "auto_external_modem",
+                        "extwan_status",
+                        "lte_status",
+                    ),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "internet_configuration",
+                    "data/INetIP.json",
+                    authenticated=True,
+                    referer="html/content/internet/connection.html",
+                    evidence_keys=("inet_isp", "isp_selection", "internet"),
+                    automatic_probe=False,
+                ),
+            ),
             "connection_privacy": (
                 _endpoint(
                     "connection_privacy",
@@ -603,6 +626,32 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/phone/phone_internet.html",
                     evidence_keys=("ip_phone", "ipphone", "sip"),
+                ),
+            ),
+            "telephony_configuration": (
+                _endpoint(
+                    "telephony_configuration",
+                    "data/IPPhone.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                    evidence_keys=("addipphoneprovider", "isp_selection", "phone"),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "telephony_configuration",
+                    "data/IPPhoneNumbers.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                    evidence_keys=("addipnumber", "number_status", "phone"),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "telephony_configuration",
+                    "data/PhoneNumberAssignment.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_number.html",
+                    evidence_keys=("phone", "number", "assignment"),
+                    automatic_probe=False,
                 ),
             ),
             "wps": (
@@ -694,6 +743,16 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/internet/webnwalk.html",
                     evidence_keys=("lte", "webnwalk"),
+                ),
+            ),
+            "lte_log": (
+                _endpoint(
+                    "lte_log",
+                    "data/LTElog.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("addmessage", "message", "log"),
+                    automatic_probe=False,
                 ),
             ),
             "5g": (
@@ -1005,6 +1064,16 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("pbx", "sip", "ip_phone", "ipphone"),
                 ),
             ),
+            "pbx_clients": (
+                _endpoint(
+                    "pbx_clients",
+                    "data/IPClients.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_ippbx.html",
+                    evidence_keys=("addipclient", "ipclient_status", "pbx"),
+                    automatic_probe=False,
+                ),
+            ),
             "dect": (
                 _endpoint(
                     "dect",
@@ -1190,6 +1259,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("nas", "usb", "storage", "folder", "share"),
                 ),
             ),
+            "nas_folders": (
+                _endpoint(
+                    "nas_folders",
+                    "data/NASFolder.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_share.html",
+                    evidence_keys=(
+                        "nas_active",
+                        "nas_folder_name",
+                        "nas_secure",
+                    ),
+                    automatic_probe=False,
+                ),
+            ),
             "logs": (
                 _endpoint(
                     "logs",
@@ -1226,6 +1309,16 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/energy.html",
                     evidence_keys=("energy", "power", "eco", "led"),
+                    automatic_probe=False,
+                ),
+            ),
+            "backup_restore": (
+                _endpoint(
+                    "backup_restore",
+                    "data/BackupRestore.json",
+                    authenticated=True,
+                    referer="html/content/config/save_settings.html",
+                    evidence_keys=("br_active", "backup", "restore"),
                     automatic_probe=False,
                 ),
             ),

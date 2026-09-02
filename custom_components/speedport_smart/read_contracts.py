@@ -586,9 +586,6 @@ _DECLARED_NATIVE_SCALAR_READ_CONTRACTS: Final = (
             "usb_tethering_enabled": "usb.tethering_enabled",
             "usb_tethering_connected": "usb.tethering_connected",
             "usb_printer_connected": "usb.printer_connected",
-            "nas_enabled": "usb.nas_enabled",
-            "nas_secure": "usb.nas_secure",
-            "nas_read_only": "usb.nas_read_only",
         },
     ),
     *_group(

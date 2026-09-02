@@ -606,20 +606,25 @@ export const ADMIN_IA = Object.freeze([
           contract: "reviewed",
           controls: ["select:receiver_led_mode_control"],
           entityGroups: ["mobile_receiver_status"],
-          readSections: ["receivers"],
           capabilities: ["receiver"],
         }),
-        fixedAdminFeature("internet_receiver_management", {
+        fixedAdminFeature("internet_receiver_mode", {
           entityGroups: [
             "mobile_connection",
             "mobile_radio",
             "mobile_signal",
             "mobile_receiver_status",
-            "mobile_receiver_firmware",
             "mobile_receivers",
           ],
           readSections: ["receivers"],
           capabilities: ["receiver", "mobile"],
+        }),
+        fixedAdminFeature("internet_receiver_routing_exceptions", {
+          capabilities: ["receiver", "mobile"],
+        }),
+        fixedAdminFeature("internet_receiver_firmware", {
+          entityGroups: ["mobile_receiver_firmware"],
+          capabilities: ["receiver"],
         }),
       ],
     }),
@@ -684,19 +689,6 @@ export const ADMIN_IA = Object.freeze([
         }),
       ],
     }),
-    fixedAdminSubsection({
-      id: "internet_vpn",
-      icon: "mdi:vpn",
-      entityGroups: ["system_vpn"],
-      readSections: [{ id: "vpn_peers", capabilities: ["vpn"] }],
-      features: [
-        fixedAdminFeature("internet_vpn_management", {
-          entityGroups: ["system_vpn"],
-          readSections: ["vpn_peers"],
-          capabilities: ["vpn"],
-        }),
-      ],
-    }),
   ]),
   fixedAdminArea("telephony", "mdi:phone", [
     fixedAdminSubsection({
@@ -706,6 +698,8 @@ export const ADMIN_IA = Object.freeze([
         "telephony_registration",
         "telephony_lines",
         "telephony_voip",
+        "telephony_call_encryption",
+        "telephony_hd_voice",
       ],
       readSections: [
         { id: "telephony_providers", capabilities: ["telephony"] },
@@ -718,12 +712,26 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["telephony"],
         }),
         fixedAdminFeature("telephony_number_assignment", {
-          entityGroups: ["telephony_registration", "telephony_voip"],
-          readSections: ["telephone_lines"],
           capabilities: ["telephony"],
         }),
-        fixedAdminFeature("telephony_number_behavior", {
-          entityGroups: ["telephony_registration", "telephony_voip"],
+        fixedAdminFeature("telephony_number_use", {
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_call_encryption", {
+          entityGroups: ["telephony_call_encryption"],
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_hd_voice", {
+          entityGroups: ["telephony_hd_voice"],
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_dialing_delay", {
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_status_messages", {
+          capabilities: ["telephony"],
+        }),
+        fixedAdminFeature("telephony_automatic_speed_dial", {
           capabilities: ["telephony"],
         }),
       ],
@@ -732,7 +740,16 @@ export const ADMIN_IA = Object.freeze([
       id: "telephony_analog",
       icon: "mdi:phone-outline",
       features: [
-        fixedAdminFeature("telephony_analog_sockets", {
+        fixedAdminFeature("telephony_analog_socket_name", {
+          capabilities: ["telephony", "analog"],
+        }),
+        fixedAdminFeature("telephony_analog_number_assignment", {
+          capabilities: ["telephony", "analog"],
+        }),
+        fixedAdminFeature("telephony_analog_device_type", {
+          capabilities: ["telephony", "analog"],
+        }),
+        fixedAdminFeature("telephony_analog_call_waiting", {
           capabilities: ["telephony", "analog"],
         }),
       ],
@@ -740,25 +757,64 @@ export const ADMIN_IA = Object.freeze([
     fixedAdminSubsection({
       id: "telephony_dect",
       icon: "mdi:phone-wireless",
-      entityGroups: ["telephony_dect"],
+      entityGroups: [
+        "telephony_dect",
+        "telephony_dect_base",
+        "telephony_dect_scan",
+        "telephony_dect_paging",
+        "telephony_dect_handsets",
+        "telephony_dect_repeaters",
+      ],
       readSections: [
         { id: "dect_handsets", capabilities: ["dect"] },
         { id: "dect_repeaters", capabilities: ["dect"] },
       ],
       features: [
         fixedAdminFeature("telephony_dect_base", {
-          entityGroups: ["telephony_dect"],
+          entityGroups: ["telephony_dect_base"],
           capabilities: ["dect"],
         }),
-        fixedAdminFeature("telephony_dect_handsets", {
-          entityGroups: ["telephony_dect"],
+        fixedAdminFeature("telephony_dect_base_pin", {
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_transmit_power", {
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_full_eco", {
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_handset_enrollment", {
+          entityGroups: ["telephony_dect_scan"],
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_handset_configuration", {
+          entityGroups: ["telephony_dect_handsets"],
           readSections: ["dect_handsets"],
           capabilities: ["dect"],
         }),
-        fixedAdminFeature("telephony_dect_repeaters", {
-          entityGroups: ["telephony_dect"],
+        fixedAdminFeature("telephony_dect_handset_call_waiting", {
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_handset_disconnect", {
+          entityGroups: ["telephony_dect_handsets"],
+          readSections: ["dect_handsets"],
+          capabilities: ["dect"],
+          destructive: true,
+        }),
+        fixedAdminFeature("telephony_dect_handset_paging", {
+          entityGroups: ["telephony_dect_paging"],
+          capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_repeater_enrollment", {
+          entityGroups: ["telephony_dect_repeaters"],
           readSections: ["dect_repeaters"],
           capabilities: ["dect"],
+        }),
+        fixedAdminFeature("telephony_dect_repeater_disconnect", {
+          entityGroups: ["telephony_dect_repeaters"],
+          readSections: ["dect_repeaters"],
+          capabilities: ["dect"],
+          destructive: true,
         }),
       ],
     }),
@@ -771,10 +827,24 @@ export const ADMIN_IA = Object.freeze([
         { id: "pbx_clients", capabilities: ["pbx"] },
       ],
       features: [
-        fixedAdminFeature("telephony_pbx_management", {
-          entityGroups: ["telephony_pbx", "telephony_ip"],
-          readSections: ["ip_phones", "pbx_clients"],
+        fixedAdminFeature("telephony_ip_pbx", {
+          entityGroups: ["telephony_pbx"],
+          readSections: ["pbx_clients"],
           capabilities: ["pbx"],
+        }),
+        fixedAdminFeature("telephony_ip_phone_enrollment", {
+          entityGroups: ["telephony_ip"],
+          readSections: ["ip_phones"],
+          capabilities: ["pbx"],
+        }),
+        fixedAdminFeature("telephony_ip_phone_configuration", {
+          entityGroups: ["telephony_ip"],
+          capabilities: ["pbx"],
+        }),
+        fixedAdminFeature("telephony_ip_phone_disconnect", {
+          entityGroups: ["telephony_ip"],
+          capabilities: ["pbx"],
+          destructive: true,
         }),
       ],
     }),
@@ -816,16 +886,15 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("network_client_rename", {
           contract: "reviewed",
           controls: ["text:client_name"],
-          readSections: ["clients"],
           capabilities: ["clients"],
         }),
         fixedAdminFeature("network_client_fixed_dhcp", {
           contract: "reviewed",
           controls: ["switch:client_fixed_dhcp"],
-          readSections: ["clients"],
           capabilities: ["clients"],
         }),
         fixedAdminFeature("network_client_inventory", {
+          contract: "read_only",
           entityGroups: ["clients_devices"],
           readSections: ["clients"],
           capabilities: ["clients"],
@@ -833,6 +902,11 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("network_client_manual_add", {
           entityGroups: ["clients_devices"],
           capabilities: ["clients"],
+        }),
+        fixedAdminFeature("network_client_delete", {
+          entityGroups: ["clients_devices"],
+          capabilities: ["clients"],
+          destructive: true,
         }),
       ],
     }),
@@ -845,16 +919,14 @@ export const ADMIN_IA = Object.freeze([
         { id: "powerline_nodes", capabilities: ["powerline"] },
       ],
       features: [
-        fixedAdminFeature("network_mesh_powerline_management", {
-          entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
-          readSections: ["mesh_nodes", "powerline_nodes"],
-          capabilities: ["mesh", "powerline"],
-        }),
-        fixedAdminFeature("network_mesh_maintenance", {
+        fixedAdminFeature("network_mesh_management", {
           entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
           readSections: ["mesh_nodes"],
           capabilities: ["mesh"],
-          destructive: true,
+        }),
+        fixedAdminFeature("network_powerline_management", {
+          readSections: ["powerline_nodes"],
+          capabilities: ["powerline"],
         }),
       ],
     }),
@@ -928,17 +1000,15 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["wireless_wps"],
           capabilities: ["wifi", "wps"],
         }),
-        fixedAdminFeature("network_wifi_wps_settings", {
+        fixedAdminFeature("network_wifi_wps_enablement", {
           entityGroups: ["wireless_wps"],
           capabilities: ["wifi", "wps"],
         }),
+        fixedAdminFeature("network_wifi_wps_pin_mode", {
+          capabilities: ["wifi", "wps"],
+        }),
         fixedAdminFeature("network_wifi_identity_security", {
-          entityGroups: [
-            "wireless_2_4",
-            "wireless_5",
-            "wireless_guest",
-            "wireless_office",
-          ],
+          entityGroups: ["wireless_guest", "wireless_office"],
           readSections: [
             "wifi_guest_identity",
             "wifi_office_identity",
@@ -947,7 +1017,6 @@ export const ADMIN_IA = Object.freeze([
         }),
         fixedAdminFeature("network_wifi_guest_access_pass", {
           contract: "read_only",
-          entityGroups: ["wireless_guest"],
           capabilities: ["wifi", "guest_wifi"],
         }),
         fixedAdminFeature("network_wifi_allowlist", {
@@ -973,11 +1042,6 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["clients_lan", "clients_dhcp"],
           capabilities: ["lan", "clients"],
         }),
-        fixedAdminFeature("network_lan_port_status", {
-          contract: "read_only",
-          entityGroups: ["clients_lan"],
-          capabilities: ["lan"],
-        }),
       ],
     }),
     fixedAdminSubsection({
@@ -998,6 +1062,19 @@ export const ADMIN_IA = Object.freeze([
           entityGroups: ["system_security_dns"],
           readSections: ["dns_rebind_exceptions"],
           capabilities: ["dns_rebind"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_vpn",
+      icon: "mdi:vpn",
+      entityGroups: ["system_vpn"],
+      readSections: [{ id: "vpn_peers", capabilities: ["vpn"] }],
+      features: [
+        fixedAdminFeature("network_vpn_management", {
+          entityGroups: ["system_vpn"],
+          readSections: ["vpn_peers"],
+          capabilities: ["vpn"],
         }),
       ],
     }),
@@ -1024,6 +1101,17 @@ export const ADMIN_IA = Object.freeze([
         fixedAdminFeature("network_media_folders", {
           entityGroups: ["system_nas", "system_usb"],
           capabilities: ["usb", "nas", "media_server"],
+        }),
+      ],
+    }),
+    fixedAdminSubsection({
+      id: "network_smarthome",
+      icon: "mdi:home-automation",
+      entityGroups: ["network_smarthome"],
+      features: [
+        fixedAdminFeature("network_smarthome_activation", {
+          entityGroups: ["network_smarthome"],
+          capabilities: ["smarthome", "system"],
         }),
       ],
     }),
@@ -1066,6 +1154,18 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["dect"],
           destructive: true,
         }),
+        fixedAdminFeature("system_mesh_restart", {
+          entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
+          readSections: ["mesh_nodes"],
+          capabilities: ["mesh"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_mesh_reset", {
+          entityGroups: ["wireless_mesh", "wireless_mesh_nodes"],
+          readSections: ["mesh_nodes"],
+          capabilities: ["mesh"],
+          destructive: true,
+        }),
         fixedAdminFeature("system_dsl_modem_mode", {
           entityGroups: ["dsl_status", "connection_internet"],
           capabilities: ["dsl"],
@@ -1078,14 +1178,19 @@ export const ADMIN_IA = Object.freeze([
       icon: "mdi:update",
       entityGroups: ["system_firmware"],
       features: [
-        fixedAdminFeature("system_router_mesh_firmware", {
-          entityGroups: ["system_firmware", "wireless_mesh_nodes"],
+        fixedAdminFeature("system_router_firmware", {
+          entityGroups: ["system_firmware"],
+          capabilities: ["firmware"],
+          destructive: true,
+        }),
+        fixedAdminFeature("system_mesh_firmware", {
+          entityGroups: ["wireless_mesh_nodes"],
           readSections: ["mesh_nodes"],
           capabilities: ["firmware", "mesh"],
           destructive: true,
         }),
         fixedAdminFeature("system_web_ui_version", {
-          contract: "blocked",
+          contract: "read_only",
           capabilities: ["system"],
         }),
       ],
@@ -1122,27 +1227,32 @@ export const ADMIN_IA = Object.freeze([
     fixedAdminSubsection({
       id: "system_information",
       icon: "mdi:information-outline",
-      entityGroups: ["system_health", "system_services"],
+      entityGroups: [
+        "system_health",
+        "system_services",
+        "system_lan_ports",
+        "system_local_display",
+      ],
       features: [
         fixedAdminFeature("system_front_led_schedule", {
-          entityGroups: ["system_services"],
           capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_lan_port_status", {
+          contract: "read_only",
+          entityGroups: ["system_lan_ports"],
+          capabilities: ["lan", "system"],
         }),
         fixedAdminFeature("system_energy_settings", {
           entityGroups: ["wireless_general", "wireless_radios"],
           capabilities: ["system", "wifi"],
         }),
         fixedAdminFeature("system_information_services", {
+          contract: "read_only",
           entityGroups: ["system_health", "system_services"],
           capabilities: ["system"],
         }),
         fixedAdminFeature("system_messages", {
-          entityGroups: ["system_health"],
           capabilities: ["system"],
-        }),
-        fixedAdminFeature("system_smarthome", {
-          entityGroups: ["system_services"],
-          capabilities: ["smarthome"],
         }),
         fixedAdminFeature("system_external_modem", {
           entityGroups: [
@@ -1153,9 +1263,12 @@ export const ADMIN_IA = Object.freeze([
           capabilities: ["receiver", "lan"],
           destructive: true,
         }),
-        fixedAdminFeature("system_front_panel", {
+        fixedAdminFeature("system_local_display_settings", {
+          entityGroups: ["system_local_display"],
+          capabilities: ["system"],
+        }),
+        fixedAdminFeature("system_physical_front_panel_actions", {
           contract: "unsupported",
-          entityGroups: ["system_services", "wireless_general"],
           capabilities: ["system"],
         }),
       ],
@@ -1163,15 +1276,31 @@ export const ADMIN_IA = Object.freeze([
     fixedAdminSubsection({
       id: "system_support",
       icon: "mdi:lifebuoy",
-      entityGroups: ["system_support"],
+      entityGroups: [
+        "system_support",
+        "system_easysupport",
+        "system_easysupport_firmware",
+        "system_remote_support",
+      ],
       features: [
-        fixedAdminFeature("system_cloud_backup", {
-          entityGroups: ["system_support"],
+        fixedAdminFeature("system_easysupport_automatic_setup", {
+          entityGroups: ["system_easysupport"],
+          capabilities: ["system", "easysupport"],
+        }),
+        fixedAdminFeature("system_easysupport_automatic_firmware", {
+          entityGroups: ["system_easysupport_firmware"],
+          capabilities: ["system", "easysupport"],
+        }),
+        fixedAdminFeature("system_easysupport_wifi_backup", {
+          capabilities: ["system", "easysupport"],
+        }),
+        fixedAdminFeature("system_easysupport_remote_support", {
+          entityGroups: ["system_remote_support"],
           capabilities: ["system", "easysupport"],
         }),
         fixedAdminFeature("system_device_manager", {
           contract: "unsupported",
-          entityGroups: ["system_support"],
+          entityGroups: ["system_easysupport"],
           capabilities: ["easysupport"],
         }),
       ],
@@ -1268,8 +1397,15 @@ const CAPABILITY_GROUP_INFO = {
   telephony_calls: { titleKey: "group.telephony_calls", icon: "mdi:phone-in-talk" },
   telephony_lines: { titleKey: "group.telephony_lines", icon: "mdi:phone-classic" },
   telephony_dect: { titleKey: "group.telephony_dect", icon: "mdi:phone-wireless" },
+  telephony_dect_base: { titleKey: "group.telephony_dect_base", icon: "mdi:phone-wireless" },
+  telephony_dect_scan: { titleKey: "group.telephony_dect_scan", icon: "mdi:access-point-plus" },
+  telephony_dect_paging: { titleKey: "group.telephony_dect_paging", icon: "mdi:phone-ring" },
+  telephony_dect_handsets: { titleKey: "group.telephony_dect_handsets", icon: "mdi:cellphone" },
+  telephony_dect_repeaters: { titleKey: "group.telephony_dect_repeaters", icon: "mdi:access-point" },
   telephony_pbx: { titleKey: "group.telephony_pbx", icon: "mdi:phone-switch" },
   telephony_voip: { titleKey: "group.telephony_voip", icon: "mdi:phone-lock" },
+  telephony_call_encryption: { titleKey: "group.telephony_call_encryption", icon: "mdi:phone-lock" },
+  telephony_hd_voice: { titleKey: "group.telephony_hd_voice", icon: "mdi:waveform" },
   telephony_ip: { titleKey: "group.telephony_ip", icon: "mdi:deskphone" },
   telephony_phonebooks: { titleKey: "group.telephony_phonebooks", icon: "mdi:book-open-page-variant" },
   system_health: { titleKey: "group.system_health", icon: "mdi:chip" },
@@ -1285,7 +1421,13 @@ const CAPABILITY_GROUP_INFO = {
   system_usb_tethering: { titleKey: "group.system_usb_tethering", icon: "mdi:usb-port" },
   system_nas: { titleKey: "group.system_nas", icon: "mdi:nas" },
   system_support: { titleKey: "group.system_support", icon: "mdi:lifebuoy" },
+  system_easysupport: { titleKey: "group.system_easysupport", icon: "mdi:lifebuoy" },
+  system_easysupport_firmware: { titleKey: "group.system_easysupport_firmware", icon: "mdi:update" },
+  system_remote_support: { titleKey: "group.system_remote_support", icon: "mdi:remote-desktop" },
+  system_lan_ports: { titleKey: "group.system_lan_ports", icon: "mdi:ethernet" },
+  system_local_display: { titleKey: "group.system_local_display", icon: "mdi:monitor" },
   system_services: { titleKey: "group.system_services", icon: "mdi:cog-outline" },
+  network_smarthome: { titleKey: "group.network_smarthome", icon: "mdi:home-automation" },
   management_session: { titleKey: "group.management_session", icon: "mdi:account-lock-outline" },
   management_health: { titleKey: "group.management_health", icon: "mdi:home-assistant" },
   controls_wireless: { titleKey: "group.controls_wireless", icon: "mdi:wifi-cog" },
@@ -1308,9 +1450,9 @@ const CAPABILITY_GROUP_ORDER = {
   dsl: ["dsl_status", "dsl_sync", "dsl_attainable", "dsl_quality", "dsl_errors"],
   mobile: ["mobile_connection", "mobile_radio", "mobile_signal", "mobile_tunnel", "mobile_receiver_status", "mobile_receiver_firmware", "mobile_receivers"],
   wireless: ["wireless_2_4", "wireless_5", "wireless_guest", "wireless_office", "wireless_radios", "wireless_access", "wireless_wps", "wireless_schedule", "wireless_mesh", "wireless_mesh_nodes", "wireless_general"],
-  clients: ["clients_overview", "clients_devices", "clients_lan", "clients_dhcp", "clients_forwarding", "clients_upnp"],
-  telephony: ["telephony_registration", "telephony_calls", "telephony_lines", "telephony_dect", "telephony_pbx", "telephony_voip", "telephony_ip", "telephony_phonebooks"],
-  system: ["system_health", "system_firmware", "system_support", "system_security", "system_security_dns", "system_security_port_block", "system_security_qos", "system_ddns", "system_vpn", "system_parental", "system_usb", "system_usb_tethering", "system_nas", "system_services"],
+  clients: ["clients_overview", "clients_devices", "clients_lan", "clients_dhcp", "system_lan_ports", "clients_forwarding", "clients_upnp"],
+  telephony: ["telephony_registration", "telephony_calls", "telephony_lines", "telephony_dect", "telephony_dect_base", "telephony_dect_scan", "telephony_dect_paging", "telephony_dect_handsets", "telephony_dect_repeaters", "telephony_pbx", "telephony_voip", "telephony_call_encryption", "telephony_hd_voice", "telephony_ip", "telephony_phonebooks"],
+  system: ["system_health", "system_firmware", "system_support", "system_easysupport", "system_easysupport_firmware", "system_remote_support", "system_security", "system_security_dns", "system_security_port_block", "system_security_qos", "system_ddns", "system_vpn", "system_parental", "system_usb", "system_usb_tethering", "system_nas", "system_services", "system_local_display"],
   management: ["management_session", "management_health"],
   controls: ["controls_session", "controls_diagnostics", "controls_wireless", "controls_internet", "controls_mobile", "controls_mesh", "controls_clients", "controls_forwarding", "controls_ddns", "controls_vpn", "controls_parental", "controls_media", "controls_system"],
 };
@@ -1508,12 +1650,34 @@ export function capabilityGroupFor(meta) {
   if (childKind === "powerline_node") return "clients_lan";
   if (childKind === "receiver") return "mobile_receivers";
   if (childKind === "telephone_line") return "telephony_lines";
-  if (["dect_handset", "dect_repeater"].includes(childKind)) {
-    return "telephony_dect";
-  }
+  if (childKind === "dect_handset") return "telephony_dect_handsets";
+  if (childKind === "dect_repeater") return "telephony_dect_repeaters";
   if (childKind === "ip_phone") return "telephony_ip";
   if (childKind === "usb_device") return "system_usb";
   if (childKind) return `${section}_other_devices`;
+  if (key.startsWith("lan_port_")) return "system_lan_ports";
+  if (key === "guest_wifi_display_key_enabled") {
+    return "system_local_display";
+  }
+  if (key === "easy_support_enabled") return "system_easysupport";
+  if (key === "firmware_automatic_updates") {
+    return "system_easysupport_firmware";
+  }
+  if (key === "remote_support_active") return "system_remote_support";
+  if (key === "telephony_voip_policy") {
+    return "telephony_call_encryption";
+  }
+  if (key === "telephony_hd_voice_active") return "telephony_hd_voice";
+  if (key === "dect_enabled") return "telephony_dect_base";
+  if (key === "dect_scan_active") return "telephony_dect_scan";
+  if (key === "dect_paging_active" || key === "dect_paging_handsets") {
+    return "telephony_dect_paging";
+  }
+  if (key === "dect_handsets") return "telephony_dect_handsets";
+  if (key === "dect_repeaters") return "telephony_dect_repeaters";
+  // Telekom places SmartHome under Network. Keep the exact linked-state entity
+  // there without moving unrelated router-service diagnostics with it.
+  if (key === "smarthome_linked") return "network_smarthome";
   if (meta.capability_group && CAPABILITY_GROUP_INFO[meta.capability_group]) {
     return meta.capability_group;
   }
@@ -3772,7 +3936,15 @@ export class SpeedportSmartPanel extends HTMLElement {
           capabilities,
           sourceAvailable,
         );
-        const status = this._t(`admin.feature.status.${presentation.key}`);
+        const statusKey =
+          feature.contract === "unsupported"
+            ? "no_local_control"
+            : feature.contract === "blocked" && presentation.key === "read_only"
+              ? "read_only_control_unproven"
+              : feature.contract === "blocked" && presentation.key === "not_observed"
+                ? "not_exposed"
+                : presentation.key;
+        const status = this._t(`admin.feature.status.${statusKey}`);
         const contract = this._t(`admin.contract.${feature.contract}`);
         const contractHint =
           feature.contract === "blocked"

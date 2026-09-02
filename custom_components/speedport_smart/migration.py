@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _RETIRED_ROUTER_EVENT_SUFFIX: Final = "_router_event"
+_RETIRED_GLOBAL_NAS_BINARY_SENSOR_KEYS: Final = frozenset(
+    {"nas_enabled", "nas_read_only", "nas_secure"}
+)
 _WAN_TOTAL_KEYS: Final = frozenset({"wan_bytes_received", "wan_bytes_sent"})
 _SENSOR_OPTIONS_DOMAIN: Final = "sensor"
 _SENSOR_PRIVATE_OPTIONS_DOMAIN: Final = "sensor.private"
@@ -36,6 +39,28 @@ def async_remove_retired_router_event_entities(
     )
     removed = 0
     for entry in retired_entries:
+        registry.async_remove(entry.entity_id)
+        removed += 1
+    return removed
+
+
+@callback
+def async_remove_retired_global_nas_entities(
+    hass: HomeAssistant,
+    config_entry_id: str,
+) -> int:
+    """Remove only the three retired router-global NAS binary sensors."""
+    registry = er.async_get(hass)
+    removed = 0
+    for entry in er.async_entries_for_config_entry(registry, config_entry_id):
+        translation_key = entry.translation_key
+        if (
+            entry.domain != "binary_sensor"
+            or entry.platform != DOMAIN
+            or translation_key not in _RETIRED_GLOBAL_NAS_BINARY_SENSOR_KEYS
+            or not entry.unique_id.endswith(f"_{translation_key}")
+        ):
+            continue
         registry.async_remove(entry.entity_id)
         removed += 1
     return removed

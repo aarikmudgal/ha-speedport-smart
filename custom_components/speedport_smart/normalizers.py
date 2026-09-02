@@ -260,6 +260,7 @@ def normalize_feature_payload(
         "usb": _normalize_usb,
         "media_server": _normalize_media_server,
         "nas": _normalize_usb,
+        "nas_folders": _normalize_nas_folders,
         "usb_tethering": _normalize_usb,
         "system": _normalize_system,
         "easy_support": _normalize_system,
@@ -561,7 +562,6 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
             (
                 "mobile_connected",
                 "lte_connected",
-                "lte_tunnel",
                 "ex5g_status",
             ),
             _boolean_or_state,
@@ -656,16 +656,6 @@ def _mobile_fields(view: Mapping[str, Any], *, include_generic: bool) -> Normali
         mobile["nr"] = nr
     if lte:
         mobile["lte"] = lte
-    if "signal_dbm" in nr:
-        mobile["rsrp_dbm"] = nr["signal_dbm"]
-        if "band_code" in nr:
-            mobile["band"] = nr["band_code"]
-        mobile.setdefault("network_type", "5G")
-    elif "signal_dbm" in lte:
-        mobile["rsrp_dbm"] = lte["signal_dbm"]
-        if "band_code" in lte:
-            mobile["band"] = lte["band_code"]
-        mobile.setdefault("network_type", "LTE")
     return mobile
 
 
@@ -694,7 +684,6 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
                 ("use_wlan", "wlan_active", "wlan_enabled", "wifi_enabled"),
                 _boolean,
             ),
-            "wps_status": (("wps_status", "use_wps", "wps_active"), _boolean_or_state),
             "wps_enabled": (("use_wps",), _boolean),
             "wps_state_code": (("wlan_wps_state",), _wps_state_code),
             "wps_disabled_by_firmware": (("disabled_wps",), _boolean),
@@ -703,6 +692,14 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
             "band_mode": (("wlan_band",), _wifi_band_mode),
         },
     )
+    wps_state_code = wifi.get("wps_state_code")
+    if isinstance(wps_state_code, int):
+        wifi["wps_status"] = {
+            -2: "failed",
+            -1: "failed",
+            0: "success",
+            1: "connecting",
+        }[wps_state_code]
     # wlan_access.js presents the inverse of this firmware form flag.
     wlan_allow_all = _first(view, ("wlan_allow_all",), _boolean)
     if wlan_allow_all is not None:
@@ -843,6 +840,9 @@ def _wifi_fields(view: Mapping[str, Any]) -> NormalizedData:
         wifi["schedule"] = schedule
         if "schedule_enabled" not in wifi and "mode" in schedule:
             wifi["schedule_enabled"] = schedule["mode"] != 0
+    # Smart 4R firmware exposes one main-WLAN encryption selector shared by
+    # both radios. The per-radio values are presentation mirrors, not evidence
+    # of independently configurable 2.4 GHz and 5 GHz encryption modes.
     main_encryption = _first(view, ("wlan_enc",), _nonnegative_integer)
     if main_encryption is not None:
         wifi["encryption_mode"] = main_encryption
@@ -2202,9 +2202,6 @@ def _normalize_usb(raw: Mapping[str, Any]) -> NormalizedData:
             "tethering_enabled": (("use_tethering",), _boolean),
             "tethering_status_code": (("tethering_status",), _nonnegative_integer),
             "printer_connected": (("printer_connected",), _boolean),
-            "nas_enabled": (("nas_active",), _boolean),
-            "nas_secure": (("nas_secure",), _boolean),
-            "nas_read_only": (("nas_folder_nur_lesen",), _boolean),
         },
     )
     devices = _normalize_stable_devices(
@@ -2252,6 +2249,12 @@ def _normalize_media_server(raw: Mapping[str, Any]) -> NormalizedData:
     """Normalize only the safe media-server summary fields into USB state."""
     usb = _media_server_fields(raw)
     return {"usb": usb} if usb else {}
+
+
+def _normalize_nas_folders(raw: Mapping[str, Any]) -> NormalizedData:
+    """Keep NAS-folder state on identified share rows, never global USB state."""
+    shares = _normalize_nas_shares(raw)
+    return {"usb": {"shares": shares}} if shares is not None else {}
 
 
 def _media_server_fields(raw: Mapping[str, Any]) -> NormalizedData:
@@ -2352,14 +2355,12 @@ def _normalize_nas_shares(raw: Mapping[str, Any]) -> list[NormalizedData] | None
         observed = True
         records.extend(_records(view[group])[:_MAX_COLLECTION_ROWS])
 
-    flat_fields = {
-        "nas_active",
-        "nas_folder_nur_lesen",
-        "nas_secure",
-        "nas_share_name",
-        "nas_folder_name",
-    }
-    if not observed and flat_fields.intersection(view):
+    flat_name = _first(
+        view,
+        ("nas_folder_name", "nas_share_name", "share_name"),
+        _bounded_collection_text,
+    )
+    if not observed and flat_name is not None:
         observed = True
         records = [view]
 

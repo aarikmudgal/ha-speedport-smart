@@ -29,7 +29,7 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Separate Dashboard and Administration views in the native Home Assistant
   panel, with administrator-only, on-demand structured details projected from
   the existing normalized cache without additional router traffic.
-- A responsive Administration catalog covering 78 router-management features
+- A responsive Administration catalog covering 108 router-management features
   across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
   mobile receivers, and system services. Every entry distinguishes reviewed
   controls, related read-only evidence, blocked contracts, and unsupported
@@ -41,6 +41,12 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Immediate management commands now verify the exact scalar or collection
+  identity/value readback before reporting success; transient and disruptive
+  commands are explicitly refresh-only or deferred.
+- Device names, identifiers, MAC addresses, and certificate fingerprints now
+  use the same strict preflight validation as their router handlers, rejecting
+  invalid input before any router request.
 - Normalized cross-family data now publishes native entities only after the
   router actually returns that semantic root; read-only projections can no
   longer unlock an unrelated management command.
@@ -67,6 +73,10 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   rule groups consistently without merging colliding rule IDs.
 - Unknown Wi-Fi channel-width codes, malformed DNS exception names, free-form
   telephony failure text, and phone-like line identifiers now fail closed.
+- NAS folder enablement, access, and read-only flags now remain scoped to
+  identified administrator-only share rows. The three unproven router-global
+  NAS binary sensors are retired and removed from the entity registry on
+  upgrade, preventing permanent unavailable entries.
 
 ### Security
 

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
@@ -32,6 +32,8 @@ from .diagnostics import safe_error_class_name
 from .management import (
     ManagementCommandDecision,
     ManagementExecutionSurface,
+    ManagementVerificationPolicy,
+    ManagementVerificationStrategy,
     get_command_write_contract,
 )
 from .normalizers import normalize_feature_payload, normalize_status_payload
@@ -136,6 +138,18 @@ _TRANSITION_KEYS: Final[frozenset[str]] = frozenset(
 )
 _MISSING = object()
 _T = TypeVar("_T")
+
+
+def _same_exact_value(current: object, expected: object) -> bool:
+    """Compare normalized command state without bool/int type widening."""
+    return type(current) is type(expected) and current == expected
+
+
+class _ContractVerificationSentinel:
+    """Marker for callers that leave verification entirely to the contract."""
+
+
+_CONTRACT_VERIFICATION = _ContractVerificationSentinel()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1569,14 +1583,60 @@ class SpeedportHub:
         ]
         return eligible[0] if eligible else self._counter_samples[-2]
 
+    def _matches_command_readback(
+        self,
+        verification: ManagementVerificationPolicy,
+        parameters: Mapping[str, Any],
+    ) -> bool:
+        """Match refreshed normalized state to one exact command target."""
+        if (
+            verification.strategy is not ManagementVerificationStrategy.EXACT
+            or verification.expected_parameter is None
+            or len(verification.readback_paths) != 1
+        ):
+            return False
+        expected = parameters[verification.expected_parameter]
+        current = self.get(verification.readback_paths[0], _MISSING)
+        value_field = verification.collection_value_field
+        if value_field is None:
+            return _same_exact_value(current, expected)
+        if not isinstance(current, Sequence) or isinstance(
+            current, (str, bytes, bytearray)
+        ):
+            return False
+
+        matches: list[Mapping[str, Any]] = []
+        for item in current:
+            if not isinstance(item, Mapping):
+                continue
+            identity_matches = True
+            for identity in verification.collection_identity:
+                identity_expected = parameters[identity.parameter]
+                if identity.ignore_when_none and identity_expected is None:
+                    continue
+                if not _same_exact_value(
+                    item.get(identity.field, _MISSING),
+                    identity_expected,
+                ):
+                    identity_matches = False
+                    break
+            if identity_matches:
+                matches.append(item)
+        return len(matches) == 1 and _same_exact_value(
+            matches[0].get(value_field, _MISSING),
+            expected,
+        )
+
     async def async_execute(
         self,
         command: str,
         *,
-        verify_group: PollGroup | None = PollGroup.NORMAL,
+        verify_group: PollGroup | _ContractVerificationSentinel | None = (
+            _CONTRACT_VERIFICATION
+        ),
         **parameters: Any,
     ) -> Any:
-        """Run one allowed native-entity command and optionally publish readback."""
+        """Run one allowed command through its immutable verification contract."""
         if not self.controls_enabled:
             raise HomeAssistantError(
                 "Router controls are disabled in the Telekom Speedport Smart "
@@ -1603,13 +1663,31 @@ class SpeedportHub:
                 translation_domain=DOMAIN,
                 translation_key="command_unsupported",
             )
-        if (
-            contract is not None
-            and contract.parameter_names is not None
-            and frozenset(parameters) != contract.parameter_names
-        ):
+        if contract is None or not contract.accepts_parameters(parameters):
             raise HomeAssistantError(
                 "The requested action parameters do not match its reviewed contract.",
+                translation_domain=DOMAIN,
+                translation_key="command_unsupported",
+            )
+        verification = contract.verification
+        if verification is None:
+            raise HomeAssistantError(
+                "This router does not support the requested action.",
+                translation_domain=DOMAIN,
+                translation_key="command_unsupported",
+            )
+        contract_verify_group = (
+            PollGroup(verification.cadence.value)
+            if verification.cadence is not None
+            else None
+        )
+        if (
+            verify_group is not _CONTRACT_VERIFICATION
+            and verify_group is not contract_verify_group
+        ):
+            raise HomeAssistantError(
+                "The requested verification policy does not match its reviewed "
+                "contract.",
                 translation_domain=DOMAIN,
                 translation_key="command_unsupported",
             )
@@ -1639,11 +1717,11 @@ class SpeedportHub:
                         translation_key="command_failed",
                     ) from err
 
-                if verify_group is None:
+                if contract_verify_group is None:
                     return result
 
                 try:
-                    await self._async_update_group_locked(verify_group)
+                    await self._async_update_group_locked(contract_verify_group)
                 except SpeedportError as err:
                     self._publish_authenticated_failure(err)
                     raise HomeAssistantError(
@@ -1652,16 +1730,26 @@ class SpeedportHub:
                         translation_domain=DOMAIN,
                         translation_key="command_verification_failed",
                     ) from err
-                coordinator = self._coordinators.get(verify_group)
+                coordinator = self._coordinators.get(contract_verify_group)
                 if coordinator is not None:
                     coordinator.async_set_updated_data(
                         GroupSnapshot(
-                            group=verify_group,
+                            group=contract_verify_group,
                             data=self._data,
                             generation=self._generation,
                             updated_at=datetime.now(UTC),
                             transitions=self._last_transitions,
                         )
+                    )
+                if (
+                    verification.strategy is ManagementVerificationStrategy.EXACT
+                    and not self._matches_command_readback(verification, parameters)
+                ):
+                    raise HomeAssistantError(
+                        "The router action was sent, but its resulting state did not "
+                        "match the requested value.",
+                        translation_domain=DOMAIN,
+                        translation_key="command_verification_failed",
                     )
                 return result
             finally:

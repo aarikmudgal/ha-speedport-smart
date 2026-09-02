@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
+import sys
 from dataclasses import FrozenInstanceError
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -11,6 +13,7 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.speedport_smart import hub as hub_module
+from custom_components.speedport_smart import management as management_module
 from custom_components.speedport_smart.api import SpeedportClient
 from custom_components.speedport_smart.hub import SpeedportHub
 from custom_components.speedport_smart.management import (
@@ -19,7 +22,14 @@ from custom_components.speedport_smart.management import (
     ManagementCommandDecision,
     ManagementConfirmation,
     ManagementExecutionSurface,
+    ManagementInputKind,
+    ManagementInputSpec,
+    ManagementReadbackIdentity,
     ManagementRisk,
+    ManagementStringFormat,
+    ManagementVerificationCadence,
+    ManagementVerificationPolicy,
+    ManagementVerificationStrategy,
     RouterWriteContract,
     get_command_write_contract,
     get_entity_write_contract,
@@ -163,6 +173,87 @@ _EXPECTED_EXECUTION = {
     "wps": ("wps", frozenset()),
 }
 
+_EXPECTED_VERIFICATION = {
+    "reboot": (None, ()),
+    "reconnect": (None, ()),
+    "rename_client": (ManagementVerificationCadence.NORMAL, ("clients.items",)),
+    "set_client_fixed_dhcp": (
+        ManagementVerificationCadence.NORMAL,
+        ("clients.items",),
+    ),
+    "set_guest_wifi": (
+        ManagementVerificationCadence.NORMAL,
+        ("wifi.guest.enabled",),
+    ),
+    "set_hybrid_bonding": (
+        ManagementVerificationCadence.NORMAL,
+        ("hybrid.enabled",),
+    ),
+    "set_internet_privacy_level": (
+        ManagementVerificationCadence.SLOW,
+        ("internet.privacy_level",),
+    ),
+    "set_office_wifi": (
+        ManagementVerificationCadence.NORMAL,
+        ("wifi.office.enabled",),
+    ),
+    "set_port_forward_rule": (
+        ManagementVerificationCadence.SLOW,
+        ("nat.port_forward_rules",),
+    ),
+    "set_receiver_led_mode": (
+        ManagementVerificationCadence.NORMAL,
+        ("receiver.led_mode",),
+    ),
+    "wifi_set_enabled": (
+        ManagementVerificationCadence.NORMAL,
+        ("wifi.enabled",),
+    ),
+    "wps": (ManagementVerificationCadence.NORMAL, ("wifi.wps_status",)),
+}
+
+_EXPECTED_VALUE_PARAMETERS = {
+    "rename_client": ("name", "name"),
+    "set_client_fixed_dhcp": ("enabled", "fixed_dhcp"),
+    "set_guest_wifi": ("enabled", None),
+    "set_hybrid_bonding": ("enabled", None),
+    "set_internet_privacy_level": ("level", None),
+    "set_office_wifi": ("enabled", None),
+    "set_port_forward_rule": ("enabled", "active"),
+    "set_receiver_led_mode": ("mode", None),
+    "wifi_set_enabled": ("enabled", None),
+}
+
+_VALID_PARAMETERS = {
+    "reboot": {},
+    "reconnect": {},
+    "rename_client": {
+        "source_kind": "addmdevice",
+        "row_id": "7",
+        "stable_mac": "00:11:22:33:44:55",
+        "name": "Living-Room",
+    },
+    "set_client_fixed_dhcp": {
+        "source_kind": "addmwlandevice",
+        "row_id": "7",
+        "stable_mac": "00:11:22:33:44:55",
+        "enabled": True,
+    },
+    "set_guest_wifi": {"enabled": True},
+    "set_hybrid_bonding": {"enabled": False},
+    "set_internet_privacy_level": {"level": 2},
+    "set_office_wifi": {"enabled": True},
+    "set_port_forward_rule": {
+        "rule_id": "3",
+        "enabled": False,
+        "expected_name": None,
+        "expected_fingerprint": "a" * 64,
+    },
+    "set_receiver_led_mode": {"mode": 0},
+    "wifi_set_enabled": {"enabled": True},
+    "wps": {},
+}
+
 
 def test_registry_covers_only_existing_commands_and_aliases() -> None:
     """Every existing command and alias resolves to its canonical contract."""
@@ -194,10 +285,58 @@ def test_registry_covers_only_existing_commands_and_aliases() -> None:
         assert (contract.handler, contract.parameter_names) == _EXPECTED_EXECUTION[
             canonical
         ]
+        assert contract.verification is not None
+        expected_cadence, expected_paths = _EXPECTED_VERIFICATION[canonical]
+        assert contract.verification.cadence is expected_cadence
+        assert contract.verification.readback_paths == expected_paths
+        if expected_cadence is None:
+            assert (
+                contract.verification.strategy
+                is ManagementVerificationStrategy.DEFERRED
+            )
+        elif canonical == "wps":
+            assert (
+                contract.verification.strategy
+                is ManagementVerificationStrategy.REFRESH_ONLY
+            )
+        else:
+            assert (
+                contract.verification.strategy is ManagementVerificationStrategy.EXACT
+            )
+            expected_parameter, collection_field = _EXPECTED_VALUE_PARAMETERS[canonical]
+            assert contract.verification.expected_parameter == expected_parameter
+            assert contract.verification.collection_value_field == collection_field
+            assert all(
+                isinstance(identity, ManagementReadbackIdentity)
+                for identity in contract.verification.collection_identity
+            )
+            assert bool(contract.verification.collection_identity) is (
+                collection_field is not None
+            )
         for alias in aliases:
             assert get_command_write_contract(alias) is contract
-
     assert get_command_write_contract("factory_reset") is None
+
+
+def test_management_contract_registry_loads_without_package_context() -> None:
+    """Parity tooling can inspect contracts without importing HA runtime modules."""
+    module_path = management_module.__file__
+    assert module_path is not None
+    spec = importlib.util.spec_from_file_location(
+        "speedport_management_standalone_test",
+        module_path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    standalone_contracts = module.COMMAND_WRITE_CONTRACTS
+    assert set(standalone_contracts) == set(COMMAND_WRITE_CONTRACTS)
 
 
 def test_safety_metadata_vocabulary_is_stable_and_complete() -> None:
@@ -217,6 +356,28 @@ def test_safety_metadata_vocabulary_is_stable_and_complete() -> None:
     assert {surface.value for surface in ManagementExecutionSurface} == {
         "native_entity",
         "admin_action",
+    }
+    assert {kind.value for kind in ManagementInputKind} == {
+        "bool",
+        "int",
+        "str",
+        "enum",
+    }
+    assert {string_format.value for string_format in ManagementStringFormat} == {
+        "nonblank",
+        "device_name",
+        "normalized_mac",
+        "lowercase_sha256",
+    }
+    assert {strategy.value for strategy in ManagementVerificationStrategy} == {
+        "exact",
+        "refresh_only",
+        "deferred",
+    }
+    assert {cadence.value for cadence in ManagementVerificationCadence} == {
+        "fast",
+        "normal",
+        "slow",
     }
 
 
@@ -316,6 +477,113 @@ def test_every_native_contract_is_complete_and_matches_client_signature() -> Non
         assert actual_parameters == contract.parameter_names
 
 
+def test_every_native_contract_owns_typed_runtime_inputs() -> None:
+    """Current commands accept their exact valid values and reject type widening."""
+    canonical_contracts = {
+        contract.command: contract for contract in COMMAND_WRITE_CONTRACTS.values()
+    }
+    assert set(canonical_contracts) == set(_VALID_PARAMETERS)
+
+    for command, parameters in _VALID_PARAMETERS.items():
+        contract = canonical_contracts[command]
+        assert contract.accepts_parameters(parameters)
+        if not parameters:
+            assert not contract.accepts_parameters({"unexpected": True})
+            continue
+        first_name = next(iter(parameters))
+        wrong_type = dict(parameters)
+        wrong_type[first_name] = object()
+        assert not contract.accepts_parameters(wrong_type)
+        assert not contract.accepts_parameters(
+            {name: value for name, value in parameters.items() if name != first_name}
+        )
+
+
+def test_input_specs_enforce_bool_int_string_enum_and_ranges() -> None:
+    """Primitive types are exact, including bool/int separation and closed bounds."""
+    boolean = ManagementInputSpec(ManagementInputKind.BOOLEAN)
+    integer = ManagementInputSpec(ManagementInputKind.INTEGER, minimum=1, maximum=3)
+    string = ManagementInputSpec(ManagementInputKind.STRING, minimum=2, maximum=4)
+    enum = ManagementInputSpec(
+        ManagementInputKind.ENUM,
+        choices=frozenset({"one", "two"}),
+    )
+    nullable = ManagementInputSpec(ManagementInputKind.STRING, allow_none=True)
+
+    assert boolean.accepts(value=True)
+    assert not boolean.accepts(1)
+    assert integer.accepts(2)
+    assert not integer.accepts(value=True)
+    assert not integer.accepts(0)
+    assert string.accepts("abc")
+    assert not string.accepts("a")
+    assert enum.accepts("one")
+    assert not enum.accepts("three")
+    assert nullable.accepts(None)
+
+
+def test_string_formats_match_client_facing_write_constraints() -> None:
+    """Formatted strings fail before the client can perform a pre-read."""
+    nonblank = ManagementInputSpec(
+        ManagementInputKind.STRING,
+        string_format=ManagementStringFormat.NONBLANK,
+    )
+    device_name = ManagementInputSpec(
+        ManagementInputKind.STRING,
+        string_format=ManagementStringFormat.DEVICE_NAME,
+    )
+    normalized_mac = ManagementInputSpec(
+        ManagementInputKind.STRING,
+        string_format=ManagementStringFormat.NORMALIZED_MAC,
+    )
+    fingerprint = ManagementInputSpec(
+        ManagementInputKind.STRING,
+        string_format=ManagementStringFormat.LOWERCASE_SHA256,
+    )
+
+    assert nonblank.accepts(" 7 ")
+    assert not nonblank.accepts(" \t")
+    assert device_name.accepts("Living-Room-7")
+    assert not device_name.accepts("Living Room")
+    assert not device_name.accepts("a" * 29)
+    assert normalized_mac.accepts("00:11:22:AA:BB:CC")
+    assert not normalized_mac.accepts("00-11-22-AA-BB-CC")
+    assert not normalized_mac.accepts("00:11:22:aa:bb:cc")
+    assert fingerprint.accepts("a" * 64)
+    assert not fingerprint.accepts("A" * 64)
+    assert not fingerprint.accepts("g" * 64)
+
+
+def test_verification_policies_reject_ambiguous_declarations() -> None:
+    """A command cannot silently mix immediate and deferred verification."""
+    with pytest.raises(ValueError, match="requires one readback path"):
+        ManagementVerificationPolicy(
+            ManagementVerificationStrategy.EXACT,
+            None,
+        )
+    with pytest.raises(ValueError, match="requires stable identity"):
+        ManagementVerificationPolicy(
+            ManagementVerificationStrategy.EXACT,
+            ManagementVerificationCadence.NORMAL,
+            ("clients.items",),
+            expected_parameter="enabled",
+            collection_value_field="fixed_dhcp",
+        )
+    with pytest.raises(ValueError, match="cannot declare an expected value"):
+        ManagementVerificationPolicy(
+            ManagementVerificationStrategy.REFRESH_ONLY,
+            ManagementVerificationCadence.NORMAL,
+            ("wifi.wps_status",),
+            expected_parameter="enabled",
+        )
+    with pytest.raises(ValueError, match="cannot declare immediate readback"):
+        ManagementVerificationPolicy(
+            ManagementVerificationStrategy.DEFERRED,
+            ManagementVerificationCadence.NORMAL,
+            ("wifi.enabled",),
+        )
+
+
 def test_read_only_management_telemetry_has_no_write_contracts() -> None:
     """Newly discovered management fields cannot become guessed commands."""
     pseudo_commands = {
@@ -380,7 +648,7 @@ def test_native_contracts_require_complete_execution_metadata() -> None:
     )
     with pytest.raises(
         ValueError,
-        match="require a feature, handler, and exact parameter set",
+        match="require a feature, handler, exact inputs, and verification policy",
     ):
         ManagementCommandContract(
             command="example",
@@ -504,6 +772,13 @@ def test_registry_and_contract_values_are_immutable() -> None:
     with pytest.raises(FrozenInstanceError):
         contract.risk = ManagementRisk.DESTRUCTIVE  # type: ignore[misc]
 
+    wifi = COMMAND_WRITE_CONTRACTS["wifi_set_enabled"]
+    assert wifi.input_specs is not None
+    with pytest.raises(TypeError):
+        wifi.input_specs["enabled"] = ManagementInputSpec(  # type: ignore[index]
+            ManagementInputKind.STRING
+        )
+
 
 def test_hub_uses_the_requested_commands_firmware_contract(
     hass: HomeAssistant,
@@ -530,7 +805,13 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
             feature_id="network_wifi_main",
             handler="execute_wifi_set_enabled",
-            parameter_names=frozenset({"enabled"}),
+            input_specs={"enabled": ManagementInputSpec(ManagementInputKind.BOOLEAN)},
+            verification=ManagementVerificationPolicy(
+                ManagementVerificationStrategy.EXACT,
+                ManagementVerificationCadence.NORMAL,
+                ("wifi.enabled",),
+                expected_parameter="enabled",
+            ),
         ),
         "reboot": ManagementCommandContract(
             command="reboot",
@@ -541,7 +822,11 @@ def test_hub_uses_the_requested_commands_firmware_contract(
             execution_surface=ManagementExecutionSurface.NATIVE_ENTITY,
             feature_id="system_reboot",
             handler="reboot",
-            parameter_names=frozenset(),
+            input_specs={},
+            verification=ManagementVerificationPolicy(
+                ManagementVerificationStrategy.DEFERRED,
+                None,
+            ),
         ),
     }
     monkeypatch.setattr(

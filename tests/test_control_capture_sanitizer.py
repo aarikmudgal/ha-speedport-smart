@@ -84,8 +84,8 @@ def _private_fields(state: str, *, auth_marker: str) -> dict[str, str]:
         "ssid": "Family Network",
         "mdevice_mac": "AA:BB:CC:DD:EE:FF",
         "mdevice_ipv4": "192.0.2.23",
-        "mdevice_name": "Aarik Phone",
-        "phone_number": "+49 30 1234567",
+        "mdevice_name": "Example Phone",
+        "phone_number": "+1 202 555 0100",
         "contact_email": "private@example.test",
         "serial_number": "PRIVATE-SERIAL-123",
     }
@@ -98,7 +98,7 @@ def _readback(state: str) -> dict[str, Any]:
         "ssid": "Family Network",
         "mdevice_mac": "AA:BB:CC:DD:EE:FF",
         "mdevice_ipv4": "192.0.2.23",
-        "phone_number": "+49 30 1234567",
+        "phone_number": "+1 202 555 0100",
     }
 
 
@@ -136,7 +136,7 @@ def _complete_har() -> dict[str, Any]:
                             "status": "success",
                             "message": (
                                 "Family Network AA:BB:CC:DD:EE:FF "
-                                "192.0.2.23 +49 30 1234567"
+                                "192.0.2.23 +1 202 555 0100"
                             ),
                         }
                     ),
@@ -235,8 +235,8 @@ def test_sanitizes_complete_encrypted_roundtrip_without_private_values() -> None
         "Family Network",
         "AA:BB:CC:DD:EE:FF",
         "192.0.2.23",
-        "Aarik Phone",
-        "+49 30 1234567",
+        "Example Phone",
+        "+1 202 555 0100",
         "private@example.test",
         "PRIVATE-SERIAL-123",
     ):

@@ -285,7 +285,7 @@ def test_observed_schema_rejects_identifiers_values_and_is_immutable() -> None:
                     "endpoint": "data/private.json",
                     "router_password": "password-field",
                     "raw_payload": "raw-field",
-                    "aarik": "opaque-user-label",
+                    "synthetic_user": "opaque-user-label",
                     "livingroom": "opaque-device-label",
                     "living_room": "underscore-device-label",
                     "wifi_alice": "prefixed-user-label",
@@ -322,7 +322,7 @@ def test_observed_schema_rejects_identifiers_values_and_is_immutable() -> None:
         "router_password",
         "raw_payload",
         "data/private.json",
-        "aarik",
+        "synthetic_user",
         "livingroom",
         "living_room",
         "wifi_alice",
@@ -2685,6 +2685,12 @@ def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
         "logs",
         "system_services",
         "energy",
+        "internet_configuration",
+        "telephony_configuration",
+        "pbx_clients",
+        "nas_folders",
+        "lte_log",
+        "backup_restore",
     }
 
     assert inventory_only <= set(DEFAULT_FEATURE_CANDIDATES)
@@ -2704,6 +2710,138 @@ def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
         for family in inventory_only - inventory_excluded
         for candidate in DEFAULT_FEATURE_CANDIDATES[family]
     )
+
+
+def test_target_firmware_inventory_gets_have_exact_safety_contracts() -> None:
+    """New firmware-proven GETs remain authenticated inventory reads only."""
+    expected = {
+        (
+            "internet_configuration",
+            "data/InternetConnection.json",
+        ): "html/content/phone/phone_internet.html",
+        (
+            "internet_configuration",
+            "data/INetIP.json",
+        ): "html/content/internet/connection.html",
+        (
+            "telephony_configuration",
+            "data/IPPhone.json",
+        ): "html/content/phone/phone_internet.html",
+        (
+            "telephony_configuration",
+            "data/IPPhoneNumbers.json",
+        ): "html/content/phone/phone_internet.html",
+        (
+            "telephony_configuration",
+            "data/PhoneNumberAssignment.json",
+        ): "html/content/phone/phone_number.html",
+        (
+            "pbx_clients",
+            "data/IPClients.json",
+        ): "html/content/phone/phone_ippbx.html",
+        (
+            "nas_folders",
+            "data/NASFolder.json",
+        ): "html/content/network/nas_share.html",
+        (
+            "lte_log",
+            "data/LTElog.json",
+        ): "html/content/internet/lte_mode.html",
+        (
+            "backup_restore",
+            "data/BackupRestore.json",
+        ): "html/content/config/save_settings.html",
+    }
+
+    families = {family for family, _endpoint in expected}
+    candidates = {
+        (family, candidate.endpoint): candidate
+        for family in families
+        for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+    }
+    assert set(candidates) == set(expected)
+    for key, referer in expected.items():
+        candidate = candidates[key]
+        assert candidate.referer == referer
+        assert candidate.authenticated is True
+        assert candidate.automatic_probe is False
+        assert candidate.inventory_safe is True
+        assert candidate.evidence_keys
+
+
+def test_action_dynamic_and_unsupported_routes_are_absent_from_inventory() -> None:
+    """Firmware names alone never authorize actions, dynamic reads, or 404 aliases."""
+    excluded = {
+        "data/ActiveNode.json",
+        "data/Connect.json",
+        "data/DiskDirectoryEntry.json",
+        "data/NewDirectoryEntry.json",
+        "data/PhoneBookEntry.json",
+        "data/PhoneBookImport.json",
+        "data/Reboot.json",
+        "data/Wire.json",
+        "data/WLAN.json",
+        "data/WLANGuest.json",
+    }
+    configured = {
+        candidate.endpoint
+        for candidates in DEFAULT_FEATURE_CANDIDATES.values()
+        for candidate in candidates
+    }
+
+    assert configured.isdisjoint(excluded)
+
+
+def test_backup_restore_uses_reachable_target_page_not_response_alias() -> None:
+    """The firmware graph binds this GET to save_settings, not backup_restore."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["backup_restore"][0]
+
+    assert candidate.endpoint == "data/BackupRestore.json"
+    assert candidate.referer == "html/content/config/save_settings.html"
+    assert candidate.referer != "html/content/config/backup_restore.html"
+
+
+def test_new_inventory_schemas_retain_shapes_but_no_router_values() -> None:
+    """Sensitive telephony and NAS responses emit allowlisted shapes only."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    phone = next(
+        candidate
+        for candidate in DEFAULT_FEATURE_CANDIDATES["telephony_configuration"]
+        if candidate.endpoint == "data/IPPhoneNumbers.json"
+    )
+    nas = DEFAULT_FEATURE_CANDIDATES["nas_folders"][0]
+
+    client._observe_candidate_data(  # noqa: SLF001 - value-free policy regression
+        "telephony_configuration",
+        phone,
+        {
+            "addipnumber": [
+                {
+                    "ip_number": "+49-PRIVATE",
+                    "number_status": "registered-private",
+                    "password": "PRIVATE-SIP-PASSWORD",
+                }
+            ]
+        },
+    )
+    client._observe_candidate_data(  # noqa: SLF001 - value-free policy regression
+        "nas_folders",
+        nas,
+        {
+            "nas_folder_name": "PRIVATE-FOLDER",
+            "nas_secure": True,
+            "nas_user_name": "PRIVATE-USER",
+        },
+    )
+
+    snapshot = client.observed_candidate_schema
+    rendered = repr(snapshot)
+    assert "addipnumber[].number_status" in rendered
+    assert "nas_folder_name" in rendered
+    assert "nas_secure" in rendered
+    assert "PRIVATE" not in rendered
+    assert "password" not in rendered
+    assert "nas_user_name" not in rendered
 
 
 def test_unreviewed_endpoint_capability_defaults_are_fail_closed() -> None:

@@ -501,7 +501,7 @@ def test_connection_privacy_is_scoped_and_identifier_free() -> None:
 
 
 def test_wifi_management_metadata_omits_network_credentials() -> None:
-    """Wi-Fi settings retain admin-visible names and modes, never keys."""
+    """Wi-Fi retains safe settings; shared encryption mirrors to both radios."""
     normalized = normalize_feature_payload(
         "wlan_configuration",
         {
@@ -536,6 +536,7 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
     assert wifi["wps_enabled"] is True
     assert wifi["wps_disabled_by_firmware"] is False
     assert wifi["wps_state_code"] == 1
+    assert wifi["wps_status"] == "connecting"
     assert wifi["radio_2_4"]["visible"] is False
     assert wifi["radio_2_4"]["encryption_mode"] == 6
     assert wifi["radio_5"]["encryption_mode"] == 6
@@ -561,6 +562,36 @@ def test_wifi_management_metadata_omits_network_credentials() -> None:
         "12345670",
     ):
         assert private_value not in rendered
+
+
+def test_wps_enablement_does_not_claim_an_active_pairing_session() -> None:
+    """The persistent use_wps setting is distinct from WPS transaction state."""
+    wifi = normalize_feature_payload(
+        "wps",
+        {"use_wps": "1", "wps_status": "active", "wps_active": "1"},
+    )["wifi"]
+
+    assert wifi == {"wps_enabled": True}
+
+
+@pytest.mark.parametrize(
+    ("firmware_state", "lifecycle"),
+    [("-2", "failed"), ("-1", "failed"), ("0", "success"), ("1", "connecting")],
+)
+def test_wps_transaction_code_maps_to_exact_firmware_lifecycle(
+    firmware_state: str,
+    lifecycle: str,
+) -> None:
+    """WPSStatus.json state is the sole proven pairing-lifecycle source."""
+    wifi = normalize_feature_payload(
+        "wps",
+        {"wlan_wps_state": firmware_state},
+    )["wifi"]
+
+    assert wifi == {
+        "wps_status": lifecycle,
+        "wps_state_code": int(firmware_state),
+    }
 
 
 @pytest.mark.parametrize("invalid_width", [True, -1, 4, 999, "4", "2 MHz", 2.5])
@@ -728,6 +759,9 @@ def test_mobile_status_preserves_both_radio_bearers_without_eid() -> None:
         "signal_dbm": -97.0,
         "band_code": "LTE1800",
     }
+    assert "rsrp_dbm" not in normalized["mobile"]
+    assert "band" not in normalized["mobile"]
+    assert "network_type" not in normalized["mobile"]
     assert "frequency_mhz" not in normalized["mobile"]
     assert normalized["receiver"] == {
         "model": "5G Receiver SE",
@@ -745,8 +779,15 @@ def test_mobile_failure_code_is_disconnected_and_unknown_code_is_absent() -> Non
     assert "mobile" not in unknown
 
 
-def test_zero_nr_sentinel_preserves_valid_lte_as_primary_radio() -> None:
-    """A firmware zero for NR cannot mask a simultaneous LTE bearer."""
+def test_lte_tunnel_state_does_not_claim_a_mobile_radio_connection() -> None:
+    """Bonding transport state remains separate from mobile registration."""
+    normalized = normalize_feature_payload("mobile", {"lte_tunnel": "1"})
+
+    assert normalized == {"hybrid": {"lte_tunnel": True}}
+
+
+def test_zero_nr_sentinel_preserves_valid_lte_bearer() -> None:
+    """A firmware zero for NR cannot mask an independently observed LTE bearer."""
     mobile = normalize_feature_payload(
         "mobile",
         {
@@ -760,12 +801,31 @@ def test_zero_nr_sentinel_preserves_valid_lte_as_primary_radio() -> None:
 
     assert "nr" not in mobile
     assert mobile["lte"] == {"signal_dbm": -91.0, "band_code": "LTE1800"}
-    assert mobile["network_type"] == "LTE"
-    assert mobile["rsrp_dbm"] == -91.0
-    assert mobile["band"] == "LTE1800"
+    assert "network_type" not in mobile
+    assert "rsrp_dbm" not in mobile
+    assert "band" not in mobile
 
 
-def test_zero_lte_sentinel_never_becomes_primary_radio() -> None:
+def test_explicit_mobile_summary_fields_remain_independent_from_bearers() -> None:
+    """Only dedicated summary varids populate generic mobile radio metrics."""
+    mobile = normalize_feature_payload(
+        "mobile",
+        {
+            "ex5g_rsrp": "-88.5",
+            "ex5g_band": "n78",
+            "mobile_network_type": "5G",
+            "ex5g_signal_lte": "-95",
+            "ex5g_freq_lte": "LTE1800",
+        },
+    )["mobile"]
+
+    assert mobile["rsrp_dbm"] == -88.5
+    assert mobile["band"] == "n78"
+    assert mobile["network_type"] == "5G"
+    assert mobile["lte"] == {"signal_dbm": -95.0, "band_code": "LTE1800"}
+
+
+def test_zero_lte_sentinel_never_becomes_a_signal_reading() -> None:
     """A firmware zero for LTE means no LTE signal, not a perfect signal."""
     mobile = normalize_feature_payload(
         "mobile",
@@ -1075,9 +1135,6 @@ def test_usb_tethering_and_nas_keep_admin_inventory_without_credentials() -> Non
     assert nas == {
         "port_enabled": True,
         "printer_connected": False,
-        "nas_enabled": True,
-        "nas_secure": True,
-        "nas_read_only": False,
         "storage_device_count": 1,
         "storage_items": [
             {
@@ -1091,7 +1148,6 @@ def test_usb_tethering_and_nas_keep_admin_inventory_without_credentials() -> Non
         "storage_total_bytes": 2_097_152,
         "storage_used_bytes": 524_288,
         "storage_free_bytes": 1_572_864,
-        "shares": [{"enabled": True, "read_only": False, "secure": True}],
     }
     rendered = repr(nas)
     for private_value in (
@@ -1680,6 +1736,32 @@ def test_nas_admin_inventory_excludes_credentials() -> None:
     assert "/private/media" not in rendered
     assert "PRIVATE-NAS-USER" not in rendered
     assert "PRIVATE-NAS-PASSWORD" not in rendered
+
+
+def test_nas_folder_flags_stay_scoped_to_an_identified_share() -> None:
+    """Folder configuration cannot impersonate global NAS/USB state."""
+    normalized = normalize_feature_payload(
+        "nas_folders",
+        {
+            "nas_active": "1",
+            "nas_folder_name": "/mnt/backup",
+            "nas_folder_nur_lesen": "1",
+            "nas_secure": "1",
+        },
+    )
+
+    assert normalized == {
+        "usb": {
+            "shares": [
+                {
+                    "name": "/mnt/backup",
+                    "enabled": True,
+                    "read_only": True,
+                    "secure": True,
+                }
+            ]
+        }
+    }
 
 
 def test_media_server_normalizer_is_scoped_to_safe_summary_counts() -> None:

@@ -257,9 +257,6 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "usb_storage_free": "system_nas",
     "media_server_folders": "system_usb",
     "media_server_active_folders": "system_usb",
-    "nas_enabled": "system_nas",
-    "nas_secure": "system_nas",
-    "nas_read_only": "system_nas",
     # Network security configuration summaries.
     "firewall_enabled": "system_security",
     "dns_rebind_protection": "system_security",

@@ -165,7 +165,6 @@ def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:
             "device_name",
             "model_name",
             "product_name",
-            "domain_name",
         )
         or "Speedport",
         firmware=_first_text(raw, "firmware_version", "firmware", "sw_version"),
@@ -183,7 +182,6 @@ def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:
             "online_status",
             "internet_status",
             "inet_status",
-            "router_state",
         ),
         dsl_state=_first_text(raw, "dsl_link_status", "dsl_status"),
         dsl_downstream_bps=_first_int(raw, "dsl_downstream"),
