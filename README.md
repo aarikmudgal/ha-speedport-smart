@@ -13,6 +13,12 @@ Home Assistant dashboard without a cloud account.
 The integration domain is **speedport_smart**. The public integration name is
 **Telekom Speedport Smart**.
 
+This documentation covers the 0.3.0 code line, including its prerelease builds.
+For available downloads, use the versions offered by HACS or the
+[published releases](https://github.com/aarikmudgal/ha-speedport-smart/releases).
+The [upgrade guidance](#upgrading-and-removal) covers both 0.2.0 and 0.3.0 beta
+installations.
+
 > [!IMPORTANT]
 > This repository is prepared for installation as a HACS custom repository and
 > for submission to the HACS default catalog. It must not be described as
@@ -52,19 +58,20 @@ the remaining connection cards and Administration navigation.
 
 ## Compatibility
 
-The current integration code has been validated with read-only requests against:
+The read-only validated router and supported Home Assistant requirements are:
 
 - **Router:** Speedport Smart 4R Typ A
 - **Firmware:** 010152.5.0.001.0
 - **Home Assistant:** 2025.12.0 or newer
 - **Languages:** English and German for the integration and main dashboard;
-  the new beta administration editors currently use English.
+  Administration navigation and structured editors currently use English.
 
 That live validation covers read-only discovery and polling. The administrator
-actions described below are current beta functionality for this exact router
-and firmware, built from downloaded firmware request contracts and automated
-tests. None of those actions has completed a live change/readback/rollback
-roundtrip on a physical router yet.
+actions described below target this exact router and firmware. Their
+implementations use downloaded firmware request contracts and automated tests.
+Development validation did not execute those actions on the router. Firmware
+evidence and offline tests do not certify every live change/readback/restoration
+cycle; the router owner must test the controls they intend to use.
 
 Other Speedport models or firmware may expose a different set of endpoints and
 entities. An entity appears only when both the integration implements it and
@@ -170,6 +177,10 @@ The panel:
   summaries, DSL link speeds, mobile receiver signal and wired devices
 - supports graph hover, touch and keyboard sample inspection, and displays
   actual reported LAN link speeds rather than a generic connected label
+- offers 5, 15, 30 and 60-minute graph windows, with 15 minutes selected initially
+- shows downloaded and uploaded volume from valid recorded byte-counter
+  segments in a separate graph, using the same selected window and automatic
+  decimal MB, GB or TB units without additional router requests
 - presents reviewed controls and detailed router settings in **Administration**
 - keeps all entities and their recorded history available in Home Assistant's
   standard device pages, linked from Dashboard
@@ -179,12 +190,12 @@ The panel:
 - requires confirmation before every router-changing action and an exact typed
   phrase for destructive administrator actions
 
-Administration now follows the six router tabs **Overview**, **Status**,
+Administration follows the six router tabs **Overview**, **Status**,
 **Internet**, **Telephony**, **Network** and **System**, with contextual left
 navigation on desktop and a page menu on mobile. Its 69 content pages and 13
-navigation groups map 120 existing
-router feature entries and 110 existing settings editors. Those counts describe
-navigation coverage, not 120 writable or universally supported capabilities.
+navigation groups make 82 navigation entries, mapping 120 router feature entries
+and 110 settings editors. Those counts describe navigation coverage, not 120
+writable or universally supported capabilities.
 The organization follows a [read-only audit of the real router's complete
 navigation](docs/NATIVE_ADMIN_NAVIGATION.md),
 adapted to Home Assistant rather than copied pixel for pixel.
@@ -197,10 +208,15 @@ it. Contextual creation, deletion and maintenance actions remain explicit.
 and expired sessions or revisions require a fresh read. Secrets are not
 prefilled. **Refresh** reloads current state; **Cancel changes** restores the
 last loaded values without sending a router request. When management access
-recovers, an emptied settings page automatically reads again; it does not
-require navigation away and back. See the [Dashboard and Administration guide](docs/dashboard.md) for
-navigation, privacy and outcome details. No live writes were tested for this
-redesign; router owners must validate writes explicitly.
+recovers, invalidated sections automatically read again without navigating away
+and back. A session change during a save preserves the dispatched operation's
+result, then clears stale sibling drafts and reloads those sections at their
+previous targets. If a section becomes available without a session change, it
+loads alongside the existing forms without discarding their drafts. Its read
+waits for any active save to finish. Neither recovery path repeats the save. See the
+[Dashboard and Administration guide](docs/dashboard.md) for navigation, privacy
+and outcome details. No live writes were tested for this redesign; router
+owners must validate writes explicitly.
 
 The router device page also links directly to the configured local Speedport
 web interface through Home Assistant's standard **Visit** action.
@@ -248,23 +264,50 @@ the same interval.
 Change these values from **Settings > Devices & services > Telekom Speedport
 Smart > Configure**. The Fast setting controls public status only. The advanced
 WAN counter setting uses `0` for Auto or `1` to `60` for a requested target.
-Auto begins at five seconds and, after stable successful reads, tests four,
-three, two, and one second in sequence. These shorter cadences remain adaptive
-and should not be treated as independently validated for every model or firmware.
+Auto starts at five seconds. Five consecutive, complete successful WAN polls
+at each cadence move it one step faster: `5 → 4 → 3 → 2 → 1` seconds. Five
+successful polls at one second mark it **Stable**. These are short learning
+windows, not a guarantee that every router will sustain the selected speed.
 
-If the router returns ToTR64 fault `9801` (session busy), WAN polling backs off
-and retries later instead of disturbing public, normal, or slow polling.
+Any WAN read failure, including ToTR64 fault `9801` (session busy), resets the
+success count and starts a fixed **60-second Cooldown** after that request
+finishes. Polling then retries at the same cadence. Each later failure starts
+another 60-second cooldown; the delay never increases. Unsupported endpoints
+remain excluded rather than being retried indefinitely.
 Previously confirmed cumulative totals remain available with their last-success
 freshness information while retrying; derived live rates resume from valid
-samples after recovery. A manually selected WAN target keeps the same busy
-protection. Normal and Slow retain their existing intervals and data scopes.
+samples after recovery. A manually selected WAN target uses the same fixed
+cooldown. Normal and Slow retain their configured intervals and data scopes,
+but wait while Dashboard or Administration has focus.
 
-The router supplies cumulative byte counters. The integration calculates live
-rates from counter changes over monotonic time and rejects negative values,
+The dashboard footer shows the target cadence, the latest observed sample
+interval, **Learning**, **Cooldown** or **Stable**, plus learning progress or
+an approximate retry countdown. WAN polling targets fixed slots rather than waiting
+another interval after a response completes. Requests never overlap; missed
+slots are skipped, not queued. Request duration, scheduling jitter and other
+serialized router operations can still make samples farther apart, so selecting
+one second does not promise a fresh sample every second.
+See [WAN polling](docs/WAN_POLLING.md) for the complete timing and recovery rules.
+
+The router supplies cumulative byte counters. Rates use the **latest two valid
+observations** and their actual monotonic elapsed time, without a rolling
+average or a held nonzero value. The actual sample span is available in the
+rate-entity attributes. Repeated totals can mean idle traffic or delayed
+router-side accounting; polling every second does not prove the source updates
+every second. The integration rejects negative values,
 reboot resets, and false reset spikes. Totals use Home Assistant's
 total-increasing statistics model, allowing Home Assistant to select a readable
 unit and retain long-term statistics. Use Home Assistant's Utility Meter
 integration for daily, weekly, monthly, or yearly consumption.
+
+While the connected panel is visible and focused, Dashboard gives WAN work
+priority and Administration gives explicit settings operations priority.
+Automatic Normal and Slow reads wait without making their cached data appear
+fresh. Leaving or hiding the panel, losing focus or disconnecting releases that
+priority; a 45-second expiry also handles lost clients. Background reads then
+resume without replaying missed updates. An active router transaction always
+finishes before the next operation begins, so focus cannot interrupt a write,
+readback or logout and cannot guarantee immediate one-second samples.
 
 Live rate is aggregate WAN traffic, not packet capture and not per-client
 throughput. On validated Hybrid firmware, the active BONDING/habond interface
@@ -322,7 +365,7 @@ discovered capabilities remain read only unless they have their own reviewed
 write contract. Controls remain idle during setup, polling, discovery, retry,
 reload, and diagnostics.
 
-The version 0.3 beta adds structured Administration editors for Internet and
+The 0.3.0 code line includes structured Administration editors for Internet and
 LAN configuration, Wi-Fi, schedules, forwarding and blocking rules, parental
 controls, telephony, phonebooks, VPN peers, storage shares, receivers and system
 settings. It also provides explicit maintenance actions and private file
@@ -357,7 +400,7 @@ Router-changing commands were not executed during development validation.
 These implementations have static firmware evidence and offline tests, not a
 live change/readback/rollback certification. The reviewed write boundary is
 Speedport Smart 4R Typ A firmware `010152.5.0.001.0`; other firmware remains
-read-only unless explicitly supported. Review each beta action before testing
+read-only unless explicitly supported. Review each action before testing
 it. Factory resets, firmware updates, restores, credentials, network modes and
 deletions can interrupt access or remove working configuration.
 
@@ -382,14 +425,32 @@ material. See [Security](SECURITY.md) for private vulnerability reporting.
 
 ## Upgrading and removal
 
-For a HACS installation, install the desired update in HACS and restart Home
-Assistant when prompted. Read release notes before moving between stable and
-beta channels.
+Read the release notes and make a Home Assistant backup before upgrading. Wait
+for any router-changing operation to finish, then close its editor. Upgrading
+the integration does not apply router settings or test its controls.
 
-After this administration update, reload the dashboard page as well. Older
-cached pages cannot use the retired private WebSocket commands; no operation is
-automatically replayed. Existing entities, options and recorded history are
-preserved.
+For a HACS installation, select the intended published version, install it and
+restart Home Assistant. You do not need to remove and re-add the integration.
+
+- From **0.2.0**, select **0.3.0** when that stable release is available. The
+  existing config entry and options remain in use; the expanded Administration
+  panel comes in the same package.
+- From any **0.3.0 beta**, use the same update process.
+  To leave the beta channel, turn off the repository's prerelease switch and
+  explicitly select the intended stable version. Turning the switch off alone
+  does not establish which version is installed.
+- After the restart, reload the dashboard page. If it still shows an older
+  layout or a private-transport warning, hard-refresh the browser or close and
+  reopen the panel in the Home Assistant app. Cached private WebSocket commands
+  are no longer accepted, and no interrupted operation is replayed.
+
+Supported entities and their recorded history remain in Home Assistant.
+Upgrades remove retired beta placeholders, including unproven router-global
+NAS sensors and obsolete router-control entities. These are not replacements
+for the target-specific Administration editors. Check any custom cards or
+automations that referenced retired entities; see the [changelog](CHANGELOG.md)
+for the cleanup details. Removing and re-adding the integration is not a
+remedy for an unsupported firmware capability.
 
 For a manual installation, replace the complete
 **/config/custom_components/speedport_smart** directory with the contents of

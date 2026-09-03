@@ -1,14 +1,17 @@
 # Router management capability matrix
 
-Current repository coverage, reviewed 2 September 2026, for the **unreleased
-version 0.3 branch**. This replaces the earlier implementation plan. The reviewed
+Current repository coverage, reviewed 3 September 2026, for **0.3.0 release
+preparation**; this does not claim that release is published. The reviewed
 write target is **Speedport Smart 4R Typ A, firmware 010152.5.0.001.0**; equivalent
 support on every Smart 4, 4R, 4R2 or firmware variant is not claimed.
 
-The branch contains broad bidirectional administration, not only read-only
-status. It does **not** cover every native menu or every operation within a
-covered family. Registered editors can remain unavailable when the current
-router omits required fields, hardware, identity, capacity or provider prerequisites.
+The panel provides broad bidirectional administration and navigation covering
+all **69 observed native screens**, documented in the
+[native-page audit](NATIVE_ADMIN_NAVIGATION.md). Complete observed navigation
+coverage is not complete operation support: the unsupported portions of partial
+families, missing operations and exclusions below remain unavailable.
+Registered editors can also be unavailable when the current router omits
+required fields, hardware, identity, capacity or provider prerequisites.
 
 ## Coverage and live validation are separate
 
@@ -22,7 +25,7 @@ router omits required fields, hardware, identity, capacity or provider prerequis
 | **Excluded** | Physical/keypad/account-only, intentionally non-editable, unsupported or unbound behavior is not exposed as a local control. |
 
 **Interactive does not mean live-write validated.** No controlled live
-mutation/readback/restoration evidence is claimed here for the new beta
+mutation/readback/restoration evidence is claimed here for the expanded 0.3.0
 families. Their metadata continues to mark live-write verification false.
 
 | Evidence layer | Established | Not established |
@@ -30,7 +33,7 @@ families. Their metadata continues to mark live-write verification false.
 | Native contract | Actual HTML actions, companion scripts, serializer, defaults and validators inspected. | Field lists alone are not complete requests; unbound handlers are not usable controls. |
 | Offline tests | Payloads, bounds, requester/target binding, preservation, API/session/file paths and frontend state. | Router acceptance, persistent credentials, connectivity or hardware recovery. |
 | Live read-only observations | Selected scalar forms, Wi-Fi/QoS device forms, parental profile, analog/global assignments and empty creation inventories. | Every populated schema, successful writes or other variants. |
-| Live writes/restoration | Not validated by this work; evidence captures sent no configuration mutation. | Stable promotion needs an explicitly authorized reversible roundtrip or maintenance/recovery test. |
+| Live writes/restoration | Not validated by this work; evidence captures sent no configuration mutation. | A live-validation claim needs an explicitly authorized reversible roundtrip or maintenance/recovery test; a stable version label does not provide that evidence. |
 
 Exact readback verifies requested readable state; an ACK alone cannot.
 Credential edits can leave secrets unverified. Router-password change instead
@@ -55,13 +58,21 @@ cache/draft invalidation and cleanup belong to execution. File transfers also
 bind approved bytes, length and SHA-256 digest.
 
 Safe telemetry remains native when returned. Structured inventories use bounded
-administrator views. Passwords, VPN files, contacts/call records, backups and
-private logs use explicit private transactions/downloads, not ordinary entity
-state, Recorder, diagnostics, logs or general panel snapshots. Router-Pass and
+administrator views. Private page-entry reads can load settings and the selected
+call category automatically; they are not background Recorder collection.
+Passwords, VPN files, contacts/call records, backups and private logs use private
+transactions, with explicit writes/downloads, not ordinary entity state,
+Recorder, diagnostics, logs or general panel snapshots. Router-Pass and
 Syslog files intentionally contain private information, not redacted diagnostics.
 Private browser data is cleared on close or view change. Sensitive panel
 transactions use authenticated administrator-only, no-store HTTP rather than
 Home Assistant WebSocket frames that core debug logging could capture.
+
+Exact legacy router-event, global-NAS and router-control entities are retired
+in 0.3.0; see [entity retirements](MANAGEMENT.md#entity-retirements). Their old
+presence is not evidence of a currently supported native command. Native entity
+services retain normal Home Assistant authorization and automation semantics;
+private administrator editors add their own requester-bound approvals.
 
 Detailed evidence: [network](ADMIN_NETWORK_EVIDENCE.md),
 [telephony/storage](ADMIN_TELEPHONY_STORAGE_EVIDENCE.md),
@@ -136,7 +147,7 @@ Code owners below are within `custom_components/speedport_smart/`.
 | Voice/dialing behavior | Interactive | VoSIP, HD Voice, dial delay, announcements, CLIR and busy/multiple-call behavior. | Telephony/basic/target editors |
 | Automatic number memory | Partial | Learning switch and one-shot learned-number clear. Clear always requires manual inspection: no learned-list/count/generation proof, no verified-deletion claim. No arbitrary entry editing. | Telephony/small-control editors |
 | Call aggregates | Read only | Safe returned count/last-call metadata, not private records. | Native normalizers/entities |
-| Private call view/CSV/clear | Interactive | Explicit private load, local CSV export and three one-shot category clears wired/tested. Complete selected collection required; global-only replies remain unavailable, not empty. | Call-history modules/view |
+| Private call view/CSV/clear | Interactive | Automatic private read on each native category-page entry; explicit Refresh, local CSV export and one-shot category clear. Complete selected collection required; global-only replies remain unavailable, not empty. No private records enter Recorder. | Call-history modules/view |
 | Local contacts | Interactive | Private search/detail and guarded create/edit/delete with complete readback; no general contact cache. | Phonebook modules |
 | Local books/handset assignment | Interactive | Create/rename/delete, assignment and update interval where fresh choices permit. Exact local indexes/capacity from current registries. | Account/assignment modules |
 | Phonebook import/export | Partial | Private native local-book transfers. Import counters/acceptance leave contents unverified; merge semantics/populated live transfers unvalidated. | File-transfer transaction |
@@ -188,7 +199,7 @@ Code owners below are within `custom_components/speedport_smart/`.
 | Device Manager/hotline/account | Excluded | Account login/consent/remote password/reconfiguration external and user-operated. | Official EasySupport documentation |
 | Physical display/keys/speed test | Partial / excluded | Proven web equivalents above; no display-only speed test/keypad/unbound reset invented. | Official manual/native forms |
 
-## Remaining work and promotion
+## Remaining contracts and live validation
 
 1. Resolve routing full/create and NAS picker/mkdir lifecycle evidence.
 2. An in-panel raw system-message viewer remains absent; private native log

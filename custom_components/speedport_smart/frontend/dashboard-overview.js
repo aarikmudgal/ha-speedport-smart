@@ -70,8 +70,8 @@ function fallbackFormat(state) {
   return unit ? `${state.state} ${unit}` : String(state.state);
 }
 
-/** Render supplied metadata and current states; trafficMarkup must be trusted local graph HTML. */
-export function renderDashboardOverview({router, states = {}, trafficMarkup = "", formatState = fallbackFormat, entityName} = {}) {
+/** Render supplied metadata and current states; graph markup must be trusted local HTML. */
+export function renderDashboardOverview({router, states = {}, trafficMarkup = "", volumeMarkup = "", formatState = fallbackFormat, entityName} = {}) {
   const seen = new Set();
   const entities = (Array.isArray(router?.entities) ? router.entities : []).filter((meta) => {
     if (!meta || !READ_DOMAINS.has(meta.domain) || !ENTITY_ID.test(meta.entity_id) ||
@@ -170,6 +170,7 @@ export function renderDashboardOverview({router, states = {}, trafficMarkup = ""
   const cards = [wifiCard, dslCard, mobileCard, lanCard].filter(Boolean).join("");
   return `<div class="dashboard-overview">
     ${trafficMarkup ? `<section class="overview-traffic" aria-label="Live WAN traffic">${trafficMarkup}</section>` : ""}
+    ${volumeMarkup ? `<section class="overview-traffic overview-volume" aria-label="WAN data transferred">${volumeMarkup}</section>` : ""}
     ${cards ? `<div class="overview-grid">${cards}</div>` : '<p class="overview-empty">No overview telemetry is available for this router yet.</p>'}
     </div>`;
 }

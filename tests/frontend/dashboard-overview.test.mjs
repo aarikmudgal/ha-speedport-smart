@@ -34,6 +34,18 @@ test("trusted internal traffic graph owns full-width first slot", () => {
   assert.equal(html.split("Real graph").length - 1, 1);
 });
 
+test("transferred volume has its own full-width slot immediately below rates", () => {
+  const f = fixture(); f.add("wifi_2_4_clients", "12");
+  const html = f.render({trafficMarkup: '<div data-rate-graph>Rate graph</div>',
+    volumeMarkup: '<div data-volume-graph>Volume graph</div>'});
+  assert.match(html, /class="overview-traffic overview-volume" aria-label="WAN data transferred"/);
+  assert.ok(html.indexOf("data-rate-graph") < html.indexOf("data-volume-graph"));
+  assert.ok(html.indexOf("data-volume-graph") < html.indexOf('data-overview-section="wifi"'));
+  assert.equal(html.split("Volume graph").length - 1, 1);
+  assert.match(DASHBOARD_OVERVIEW_STYLES, /\.overview-traffic\s*\{[^}]*width: 100%/);
+  assert.doesNotMatch(f.render(), /overview-volume|WAN data transferred/);
+});
+
 test("wireless bands retain separate actual status, channel and client counts", () => {
   const f = fixture();
   f.add("wifi_2_4_enabled", "on", {domain: "binary_sensor"});

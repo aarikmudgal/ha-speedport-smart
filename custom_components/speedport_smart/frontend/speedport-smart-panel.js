@@ -1,25 +1,25 @@
-import { requestPrivateApi } from "./private-api.js?schema=32";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=32";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=32";
-import { createPollingFocusController } from "./polling-focus.js?schema=32";
+import { requestPrivateApi } from "./private-api.js?schema=33";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=33";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=33";
+import { createPollingFocusController } from "./polling-focus.js?schema=33";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=32";
-import { keepDialogFocus } from "./accessibility.js?schema=32";
+} from "./admin-navigation.js?schema=33";
+import { keepDialogFocus } from "./accessibility.js?schema=33";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=32";
+} from "./call-history-view.js?schema=33";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=32";
+} from "./file-transfer-editor.js?schema=33";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=32";
+} from "./maintenance-editor.js?schema=33";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=32";
+} from "./configuration-editor.js?schema=33";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -34,22 +34,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=32";
+} from "./controls.js?schema=33";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=32";
+} from "./entity-state.js?schema=33";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=32";
+} from "./render-state.js?schema=33";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=32";
+} from "./translations.js?schema=33";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -235,7 +235,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 32;
+const PANEL_SCHEMA_VERSION = 33;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3427,6 +3427,13 @@ export class SpeedportSmartPanel extends HTMLElement {
         if (this.isConnected && this._activeView === "dashboard") this._scheduleRender();
       },
     });
+    this._volumeHistory = createTrafficHistoryController({
+      metric: "bytes",
+      request: (message) => this._hass.connection.sendMessagePromise(message),
+      onChange: () => {
+        if (this.isConnected && this._activeView === "dashboard") this._scheduleRender();
+      },
+    });
     this._pollingFocus = createPollingFocusController({isEligible: () => this._pollingFocusEligible()});
     this._adminTab = "overview";
     this._adminPage = undefined;
@@ -3612,6 +3619,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._renderFrame = undefined;
     this._clearAdminRead();
     this._trafficHistory.dispose();
+    this._volumeHistory.dispose();
     this._clearTrafficBinding();
     this.shadowRoot.innerHTML = "";
   }
@@ -3620,6 +3628,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (
       !previous ||
       !this._metadata ||
+      previous.connection !== next.connection ||
       previous.user?.id !== next.user?.id ||
       previous.user?.is_admin !== next.user?.is_admin ||
       previous.language !== next.language ||
@@ -3802,22 +3811,33 @@ export class SpeedportSmartPanel extends HTMLElement {
   _syncTrafficHistory() {
     const router = this._currentRouter();
     const userId = this._hass?.user?.id;
+    const connection = this._hass?.connection;
     if (!this.isConnected || this._activeView !== "dashboard" || !router || router.entry_state !== "loaded" || !userId ||
-        typeof this._hass?.connection?.sendMessagePromise !== "function") {
+        typeof connection?.sendMessagePromise !== "function") {
       this._trafficHistory.dispose();
+      this._volumeHistory.dispose();
       this._clearTrafficBinding();
       return;
     }
-    const entities = Object.fromEntries(["download", "upload"].map((direction) => [direction,
+    const mapping = (keys) => Object.fromEntries(Object.entries(keys).map(([direction, key]) => [direction,
       router.entities?.find((meta) => meta.domain === "sensor" && !meta.disabled_by && !meta.disabled &&
         !meta.child_device && !meta.control && !meta.control_supported && /^sensor\.[a-z0-9_]+$/.test(meta.entity_id) &&
-        meta.translation_key === `wan_${direction}_rate`)?.entity_id ?? null,
+        meta.translation_key === key)?.entity_id ?? null,
     ]));
-    const scope = JSON.stringify([router.entry_id, userId, entities.download, entities.upload]);
+    const entities = mapping({download: "wan_download_rate", upload: "wan_upload_rate"});
+    const volumeEntities = mapping({download: "wan_bytes_received", upload: "wan_bytes_sent"});
+    if (this._trafficConnection && this._trafficConnection !== connection) {
+      this._trafficHistory.dispose();
+      this._volumeHistory.dispose();
+      this._clearTrafficBinding();
+    }
+    const scope = JSON.stringify([router.entry_id, userId, entities.download, entities.upload,
+      volumeEntities.download, volumeEntities.upload]);
     if (this._trafficScope !== scope) {
       this._clearTrafficBinding();
       this._trafficScope = scope;
     }
+    this._trafficConnection = connection;
     const source = liveWanSourceFromEntityStates(
       router.access_sources?.find((item) => item.id === "wan_counters"), router.entities, this._hass.states,
     );
@@ -3831,10 +3851,30 @@ export class SpeedportSmartPanel extends HTMLElement {
       .map((value) => typeof value === "string" ? Date.parse(value) : NaN)
       .filter((time) => Number.isFinite(time) && time <= now + LIVE_TRAFFIC_CLOCK_SKEW_MS);
     const sampledAt = observationTimes.length ? Math.max(...observationTimes) : undefined;
-    this._trafficHistory.open({entryId: router.entry_id, userId, entities, states: this._hass.states,
+    const observation = {entryId: router.entry_id, userId, states: this._hass.states,
       stale: source?.available === false || source?.retrying === true || source?.state === "cooldown" || source?.supported === false,
       staleAfterMs: Math.max(30000, (Number(source?.effective_interval_seconds) || 10) * 4000), sampledAt,
-    });
+    };
+    this._trafficHistory.open({...observation, entities});
+    this._volumeHistory.open({...observation, entities: volumeEntities,
+      windowMinutes: this._trafficHistory.snapshot()?.windowMinutes});
+    // Both graphs retain one shared timeframe, including metadata-only remaps.
+    this._volumeHistory.setWindowMinutes(this._trafficHistory.snapshot()?.windowMinutes);
+  }
+
+  _setTrafficWindowMinutes(minutes) {
+    return Promise.all([this._trafficHistory, this._volumeHistory]
+      .map((controller) => controller.setWindowMinutes(minutes)));
+  }
+
+  _trafficGraphs() {
+    return [
+      {host: "_trafficHost", binding: "_trafficBinding", selector: "[data-traffic-history-host]",
+        controller: {snapshot: () => this._trafficHistory.snapshot(),
+          setWindowMinutes: (minutes) => this._setTrafficWindowMinutes(minutes)}, options: {language: this._language()}},
+      {host: "_volumeHost", binding: "_volumeBinding", selector: "[data-volume-history-host]",
+        controller: this._volumeHistory, options: {language: this._language(), hideRangeSelector: true}},
+    ];
   }
 
   _pollingFocusEligible() {
@@ -3867,11 +3907,14 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _clearTrafficBinding() {
     this._trafficWindowRenderPending = false;
-    this._trafficBinding?.();
-    this._trafficBinding = undefined;
+    for (const graph of this._trafficGraphs()) {
+      this[graph.binding]?.();
+      this[graph.binding] = undefined;
+      if (this[graph.host]) this[graph.host].innerHTML = "";
+      this[graph.host] = undefined;
+    }
     this._trafficScope = undefined;
-    if (this._trafficHost) this._trafficHost.innerHTML = "";
-    this._trafficHost = undefined;
+    this._trafficConnection = undefined;
   }
 
   _canShowAdministration(router = this._currentRouter()) {
@@ -7764,6 +7807,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     const overview = renderDashboardOverview({
       router: {...router, entities: reporting}, states: this._hass?.states,
       trafficMarkup: `<div data-traffic-history-host>${renderTrafficHistory(this._trafficHistory.snapshot(), {language: this._language()})}</div>`,
+      volumeMarkup: `<div data-volume-history-host>${renderTrafficHistory(this._volumeHistory.snapshot(), {language: this._language(), hideRangeSelector: true})}</div>`,
       formatState: (state) => this._formatState(state),
     });
     const wan = accessSourceStates.wan_counters;
@@ -8046,8 +8090,10 @@ export class SpeedportSmartPanel extends HTMLElement {
         activeEditorElement && activeEditorElement === this._trafficHost?.querySelector?.("[data-traffic-window]")) {
       // Keep the native select connected while still refreshing graph data and
       // stale/cooldown readouts. Repaint the rest of the page after focus leaves.
-      if (refreshTrafficHistoryContent(this._trafficHost, trafficView, {language: this._language()})) {
-        this._trafficBinding?.refresh();
+      for (const graph of this._trafficGraphs()) {
+        if (refreshTrafficHistoryContent(this[graph.host], graph.controller.snapshot(), graph.options)) {
+          this[graph.binding]?.refresh();
+        }
       }
       this._trafficWindowRenderPending = true;
       return;
@@ -8213,14 +8259,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (callHistoryPlaceholder && this._callHistoryHost && callHistoryPlaceholder !== this._callHistoryHost) {
       callHistoryPlaceholder.replaceWith(this._callHistoryHost);
     }
-    const trafficPlaceholder = this.shadowRoot.querySelector("[data-traffic-history-host]");
-    if (trafficPlaceholder) {
-      if (this._trafficHost && trafficPlaceholder !== this._trafficHost) {
-        this._trafficHost.innerHTML = trafficPlaceholder.innerHTML;
-        trafficPlaceholder.replaceWith(this._trafficHost);
-      } else this._trafficHost = trafficPlaceholder;
-      if (!this._trafficBinding) this._trafficBinding = bindTrafficHistory(this._trafficHost, this._trafficHistory);
-      this._trafficBinding.refresh();
+    for (const graph of this._trafficGraphs()) {
+      const placeholder = this.shadowRoot.querySelector(graph.selector);
+      if (!placeholder) continue;
+      if (this[graph.host] && placeholder !== this[graph.host]) {
+        this[graph.host].innerHTML = placeholder.innerHTML;
+        placeholder.replaceWith(this[graph.host]);
+      } else this[graph.host] = placeholder;
+      if (!this[graph.binding]) this[graph.binding] = bindTrafficHistory(this[graph.host], graph.controller);
+      this[graph.binding].refresh();
     }
     restoreDetailsState(this.shadowRoot, renderState);
     if (this._pendingAction) {

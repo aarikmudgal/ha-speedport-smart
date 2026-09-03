@@ -59,6 +59,31 @@ The integration:
 - never runs router-changing commands during setup, polling, discovery,
   diagnostics, retry, or reload
 
+Native entity services use normal Home Assistant permissions. Panel confirmation
+does not intercept an automation or another caller invoking those services.
+Structured writes, secret changes and destructive operations instead require
+authenticated administrator-only HTTP routes, closed firmware-specific contracts and fresh
+requester/target-bound approvals. Approvals are short-lived and single-use;
+active authorization is checked again immediately before mutation. Writes are
+not automatically retried, and incomplete proof is not reported as success.
+
+Private settings, identifiers, contacts, call records and results use bounded
+`no-store` HTTP responses, not Home Assistant's WebSocket payload logging path.
+Opening a native administration page can automatically read its private data;
+it never automatically saves, clears or exports it. In-memory panel data is
+cleared when its view or authorization scope ends and is not copied into entity state,
+Recorder, diagnostics or persistent browser storage. Ordinary telemetry and its
+Home Assistant history are separate. After upgrades, hard-refresh the panel:
+retired private WebSocket commands reject before router work, but a stale client
+can still send its payload through core logging before rejection.
+
+Use Home Assistant HTTPS for credentials and private files. Router HTTPS does
+not secure the browser-to-Home-Assistant connection. Disable request/response
+body logging in proxies and debugging middleware. Backups, Router-Pass cards,
+phonebooks, VPN files and private system logs are sensitive downloads, not
+sanitized diagnostics. A stable integration release does not certify untested
+live writes; consult the [firmware and evidence limits](docs/MANAGEMENT.md).
+
 Local network compromise, a compromised Home Assistant instance, physical
 router access, router firmware vulnerabilities, and unsafe automations invoking
 an exposed control are outside the integration's trust boundary. Reports that

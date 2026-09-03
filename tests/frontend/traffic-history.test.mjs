@@ -6,6 +6,7 @@ import {
   renderTrafficHistory,
   refreshTrafficHistoryContent,
   trafficRateMbit,
+  trafficVolumeBytes,
   TRAFFIC_HISTORY_MAX_POINTS,
   TRAFFIC_HISTORY_STYLES,
   TRAFFIC_HISTORY_WINDOW_MS,
@@ -26,11 +27,11 @@ const deferred = () => {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return {promise, resolve, reject};
 };
-function setup(response = {}, initialTime = END) {
+function setup(response = {}, initialTime = END, metric = "rates") {
   const calls = [];
   let time = initialTime;
   let changes = 0;
-  const controller = createTrafficHistoryController({request: async (message) => {
+  const controller = createTrafficHistoryController({metric, request: async (message) => {
     calls.push(message);
     if (response instanceof Error) throw response;
     return response;
@@ -472,7 +473,7 @@ test("renderer escapes labels, rejects malformed points, and renders accessible 
   assert.match(output, /role="img" aria-label=/);
   assert.match(output, /class="sp-traffic-line sp-traffic-download" d="M/);
   assert.match(output, /Last 15 minutes/);
-  assert.match(TRAFFIC_HISTORY_STYLES, /stroke-dasharray/);
+  assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /stroke-dasharray/);
   assert.match(TRAFFIC_HISTORY_STYLES, /max-width:480px/);
 });
 
@@ -528,7 +529,7 @@ test("WAN headline typography is prominent, responsive and keyboard-focusable", 
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{[^}]*font-size:clamp\(18px,20cqi,36px\)/);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric:focus-visible\{/);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*min-width:0/);
-  assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{font-size:22px/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{display:flex;align-items:baseline;flex-wrap:nowrap/);
 });
 
 test("full-width plot uses bounded height without stretching axis labels", async () => {
@@ -1007,9 +1008,9 @@ test("one to four digit WAN values use a fixed numeric row above independently p
     assert.deepEqual(numericRows.map((match) => match[1]), [display, display]);
   }
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*align-content:start[^}]*container-type:inline-size/);
-  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{display:grid;gap:4px;min-width:0;font-size:22px;font-size:clamp\(18px,20cqi,36px\)[^}]*font-variant-numeric:tabular-nums/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{display:flex;align-items:baseline;flex-wrap:nowrap;gap:6px;min-width:0;font-size:22px;font-size:clamp\(18px,20cqi,36px\)[^}]*font-variant-numeric:tabular-nums/);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-value\{[^}]*white-space:nowrap[^}]*line-height:1.2/);
-  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong small\{display:block;[^}]*line-height:1.4/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong small\{display:inline;flex:none;white-space:nowrap;[^}]*line-height:1.4/);
   assert.equal(calls.length, 1);
 });
 
@@ -1018,4 +1019,273 @@ test("timeframe selector stays content-sized in the top-right header cell on nar
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-window\{[^}]*width:fit-content;justify-self:end;[^}]*font-size:12px/);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-history h2\{[^}]*min-width:0;[^}]*overflow-wrap:anywhere/);
   assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-history header\{[^}]*flex-wrap/);
+});
+
+const byteStates = (time, down, up = "0", unit = "B") => ({
+  [DOWN]: current(time, String(down), unit), [UP]: current(time, String(up), unit),
+});
+
+test("counter normalization accepts decimal and binary bytes without accepting rate units", () => {
+  for (const [unit, factor] of [["B", 1], ["kB", 1000], ["KB", 1000], ["MB", 1e6],
+    ["GB", 1e9], ["TB", 1e12], ["KiB", 1024], ["MiB", 1024 ** 2], ["GiB", 1024 ** 3], ["TiB", 1024 ** 4]])
+    assert.equal(trafficVolumeBytes("1.25", unit), 1.25 * factor, unit);
+  assert.equal(trafficVolumeBytes("0", "GB"), 0);
+  for (const value of ["", "unknown", "unavailable", "NaN", "Infinity", "-1", "0x10", true, {}, null, Infinity,
+    Number.MAX_SAFE_INTEGER + 1]) assert.equal(trafficVolumeBytes(value, "B"), null, String(value));
+  for (const unit of ["bit", "Mb", "GB/s", "Mbit/s", "__proto__", "constructor", null])
+    assert.equal(trafficVolumeBytes("1", unit), null, String(unit));
+  assert.throws(() => createTrafficHistoryController({request: async () => ({}), metric: "packets"}), /invalid_history_controller/);
+});
+
+test("volume mode sums counter deltas within the selected window, never lifetime totals", async () => {
+  const start = END - TRAFFIC_HISTORY_WINDOW_MS;
+  const down = Array.from({length: 16}, (_, index) => row(start + index * 60000, String(1e9 + index * 1e6), "B"));
+  const up = down.map((point, index) => row(start + index * 60000, String(2e9 + index * 1000), "B"));
+  const {controller, calls} = setup({[DOWN]: down, [UP]: up}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, 1.015e9, 2e9 + 15000)});
+  const view = controller.snapshot();
+  assert.equal(view.metric, "bytes");
+  assert.equal(view.series.download.current, 15e6);
+  assert.equal(view.series.upload.current, 15000);
+  assert.deepEqual(view.series.download.points.map(({value}) => value), Array.from({length: 16}, (_, index) => index * 1e6));
+  assert.equal(view.series.download.partial, false);
+  assert.equal(view.series.download.coverageStart, start);
+  assert.equal(view.series.download.coverageEnd, END);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].entity_ids, [DOWN, UP]);
+  assert.equal(calls[0].include_start_time_state, true);
+  assert.doesNotMatch(JSON.stringify(view), /1015000000|2000015000/);
+});
+
+test("a lone counter is unavailable, while a proven unchanged pair is real zero volume", async () => {
+  const {controller, calls, setTime} = setup({}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, 9e12)});
+  assert.equal(controller.snapshot().series.download.current, null);
+  assert.ok(controller.snapshot().series.download.points.every(({value}) => value === null));
+  let markup = renderTrafficHistory(controller.snapshot());
+  assert.match(markup, /Waiting for two usable counter observations/);
+  assert.doesNotMatch(markup, /sp-traffic-line sp-traffic-download|>9<\/span>/);
+  setTime(END + 1000);
+  controller.update({...SCOPE, states: byteStates(END, 9e12), sampledAt: END + 1000});
+  assert.equal(controller.snapshot().series.download.current, 0);
+  markup = renderTrafficHistory(controller.snapshot());
+  assert.match(markup, /sp-traffic-value">0<\/span><small>MB<\/small>/);
+  assert.match(markup, /Partial window/);
+  assert.equal(calls.length, 1);
+});
+
+test("historical unit changes are normalized per observation before taking differences", async () => {
+  const {controller} = setup({[DOWN]: [row(END - 2000, "1", "GB"), row(END - 1000, "1001", "MB")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "1002000", "0", "kB")});
+  assert.equal(controller.snapshot().series.download.current, 2e6);
+  assert.deepEqual(controller.snapshot().series.download.points.map(({value}) => value), [0, 1e6, 2e6]);
+});
+
+test("detected counter resets exclude the reset interval and resume from a new baseline", async () => {
+  const {controller} = setup({[DOWN]: [row(END - 4000, "1000", "B"), row(END - 3000, "1100", "B"),
+    row(END - 2000, "10", "B"), row(END - 1000, "50", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "80")});
+  const view = controller.snapshot();
+  assert.equal(view.series.download.current, 170);
+  assert.equal(view.series.download.partial, true);
+  assert.ok(view.series.download.points.every(({value}) => value === null || value >= 0 && value <= 170));
+  assert.equal((renderTrafficHistory(view).match(/class="sp-traffic-line sp-traffic-download"/g) ?? []).length, 2);
+});
+
+test("resets inside a display bucket cannot erase valid deltas or invent a spike", async () => {
+  const {controller} = setup({[DOWN]: [row(END - 10000, "0", "B"), row(END - 5000, "100", "B"),
+    row(END - 4900, "10", "B"), row(END - 4800, "120", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, windowMinutes: 60, states: byteStates(END, "150")});
+  assert.equal(controller.snapshot().series.download.current, 240);
+  assert.equal(controller.snapshot().series.download.partial, true);
+  assert.ok(controller.snapshot().series.download.points.length <= TRAFFIC_HISTORY_MAX_POINTS);
+});
+
+test("unavailable observations exclude unknown transfer while sparse valid endpoints retain their delta", async () => {
+  for (const interrupted of [row(END - 3000, "unavailable", "B"), row(END - 3000, "999999", "unknown-unit")]) {
+    const {controller} = setup({[DOWN]: [row(END - 5000, "100", "B"), row(END - 4000, "150", "B"),
+      interrupted, row(END - 2000, "10000", "B")]}, END, "bytes");
+    await controller.open({...SCOPE, states: byteStates(END, "10020")});
+    assert.equal(controller.snapshot().series.download.current, 70);
+    assert.equal(controller.snapshot().series.download.partial, true);
+  }
+  const {controller} = setup({[DOWN]: [row(END - 500000, "100", "B"), row(END - 499000, "150", "B"),
+    row(END - 1000, "10000", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "10020")});
+  assert.equal(controller.snapshot().series.download.current, 9920);
+  assert.equal(controller.snapshot().series.download.partial, true, "the selected window still lacks a start baseline");
+  const fixture = inspectionFixture(controller.snapshot());
+  fixture.at(END - 200000);
+  assert.match(fixture.dom().tooltip.textContent, /Download: No sample/);
+  fixture.bind();
+});
+
+test("a sparse monotonic delta is counted but marks an otherwise complete window partial", async () => {
+  const start = END - TRAFFIC_HISTORY_WINDOW_MS;
+  const {controller} = setup({[DOWN]: [row(start, "100", "B"), row(END - 1000, "1000", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "1020")});
+  assert.equal(controller.snapshot().series.download.current, 920);
+  assert.equal(controller.snapshot().series.download.partial, true);
+});
+
+test("stale or missing live counters retain only an explicitly partial observed subtotal", async () => {
+  const {controller, setTime} = setup({[DOWN]: [row(END - 1000, "100", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "200")});
+  setTime(END + 1000);
+  controller.update({...SCOPE, states: byteStates(END + 1000, "999999"), stale: true});
+  assert.equal(controller.snapshot().series.download.current, 100);
+  assert.equal(controller.snapshot().series.download.stale, true);
+  assert.equal(controller.snapshot().series.download.partial, true);
+  assert.match(renderTrafficHistory(controller.snapshot()), /Partial window/);
+  setTime(END + 2000);
+  controller.update({...SCOPE, states: byteStates(END + 2000, "10000")});
+  assert.equal(controller.snapshot().series.download.current, 100, "recovery does not cross the stale interval");
+  setTime(END + 3000);
+  controller.update({...SCOPE, states: byteStates(END + 3000, "10050")});
+  assert.equal(controller.snapshot().series.download.current, 150);
+  controller.update({...SCOPE, states: {}});
+  assert.equal(controller.snapshot().series.download.current, 150);
+  assert.equal(controller.snapshot().series.download.stale, true);
+});
+
+test("history failures expose only real live counter intervals and never retry", async () => {
+  const {controller, calls, setTime} = setup(new Error("PRIVATE-COUNTER-ERROR"), END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "1000")});
+  assert.equal(controller.snapshot().series.download.current, null);
+  setTime(END + 1000);
+  controller.update({...SCOPE, states: byteStates(END + 1000, "1500")});
+  assert.equal(controller.snapshot().series.download.current, 500);
+  const markup = renderTrafficHistory(controller.snapshot());
+  assert.match(markup, /History unavailable.*Partial window/s);
+  assert.doesNotMatch(markup, /PRIVATE-COUNTER/);
+  assert.equal(calls.length, 1);
+});
+
+test("volume windows recompute from their own observations and support one initial selected-window read", async () => {
+  const {controller, calls, setTime} = setup({}, END, "bytes");
+  await controller.open({...SCOPE, windowMinutes: 60, states: byteStates(END, "1000")});
+  assert.equal(controller.snapshot().windowMinutes, 60);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].start_time, iso(END - 60 * 60000));
+  await controller.open({...SCOPE, windowMinutes: 5, states: byteStates(END, "1000")});
+  assert.equal(controller.snapshot().windowMinutes, 60, "same scope only changes windows explicitly");
+  setTime(END + 1000);
+  controller.update({...SCOPE, states: byteStates(END + 1000, "1100")});
+  assert.equal(controller.snapshot().series.download.current, 100);
+  for (const minutes of [5, 15, 30, 60]) {
+    await controller.setWindowMinutes(minutes);
+    assert.equal(controller.snapshot().windowMinutes, minutes);
+    assert.equal(controller.snapshot().series.download.current, null, "a fresh window cannot reuse an old subtotal");
+  }
+  assert.equal(calls.length, 5);
+  assert.throws(() => controller.open({...SCOPE, windowMinutes: 10}), /invalid_history_scope/);
+  assert.equal(controller.snapshot(), null);
+});
+
+test("rolling volume windows retain a fresh boundary baseline but drop fully expired intervals", async () => {
+  const start = END - TRAFFIC_HISTORY_WINDOW_MS;
+  const history = Array.from({length: 16}, (_, index) => row(start + index * 60000, String(1000 + index * 100), "B"));
+  const {controller, setTime} = setup({[DOWN]: history}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "2500")});
+  assert.equal(controller.snapshot().series.download.current, 1500);
+  setTime(END + 1);
+  assert.equal(controller.snapshot().series.download.current, 1500);
+  assert.equal(controller.snapshot().series.download.partial, false);
+  setTime(END + TRAFFIC_HISTORY_WINDOW_MS + 1);
+  assert.equal(controller.snapshot().series.download.current, null);
+  assert.equal(controller.snapshot().series.download.points.length, 0);
+});
+
+test("byte history retains resets before bounded one-hour display sampling", async () => {
+  const start = END - 60 * 60000;
+  const history = Array.from({length: 3601}, (_, index) => row(start + index * 1000,
+    String(index < 1801 ? 1e9 + index * 1000 : (index - 1801) * 1000), "B"));
+  const {controller} = setup({[DOWN]: history}, END, "bytes");
+  await controller.open({...SCOPE, windowMinutes: 60, states: byteStates(END, "1799000")});
+  const view = controller.snapshot();
+  assert.equal(view.series.download.current, 3599000);
+  assert.ok(view.series.download.points.length <= TRAFFIC_HISTORY_MAX_POINTS);
+  assert.ok(view.series.download.points[0].time < start + 5000);
+  assert.equal(view.series.download.partial, true);
+  assert.ok(view.series.download.points.some((point) => point.breakBefore && point.time >= start + 1801000));
+});
+
+test("volume rendering auto-scales decimal MB GB TB with clickable counters and separate tooltip IDs", async () => {
+  for (const [amount, value, unit] of [[1, "0.000001", "MB"], [1e6, "1", "MB"], [1.25e9, "1.25", "GB"], [2e12, "2", "TB"]]) {
+    const {controller, calls} = setup({[DOWN]: [row(END - 1000, "0", "B")]}, END, "bytes");
+    await controller.open({...SCOPE, states: byteStates(END, amount)});
+    const markup = renderTrafficHistory(controller.snapshot());
+    assert.match(markup, /<h2>Transferred data<\/h2>/);
+    assert.ok(markup.includes(`<span class="sp-traffic-value">${value}</span><small>${unit}</small>`));
+    assert.ok(markup.includes(`aria-label="Downloaded: ${value} ${unit}. Partial window. Open entity details"`));
+    assert.match(markup, new RegExp(`data-more-info="${DOWN}"`));
+    assert.match(markup, /aria-describedby="sp-traffic-inspection-bytes"/);
+    assert.match(markup, /id="sp-traffic-inspection-bytes"/);
+    assert.doesNotMatch(markup, /Mbit\/s/);
+    assert.ok(markup.includes(`${unit}</span>`), "axis unit matches its scale");
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("volume headings units warnings and inspection are localized without changing rate defaults", async () => {
+  const {controller} = setup({[DOWN]: [row(END - 1000, "0", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "1250000")});
+  const markup = renderTrafficHistory(controller.snapshot(), {language: "de-DE", hideRangeSelector: true});
+  assert.match(markup, /Übertragene Daten|Heruntergeladen/);
+  assert.match(markup, /sp-traffic-value">1,25<\/span><small>MB/);
+  assert.match(markup, /Unvollständiger Zeitraum/);
+  assert.doesNotMatch(markup, /<select|data-traffic-window/);
+  const fixture = inspectionFixture(controller.snapshot());
+  fixture.dom().plot.dataset.trafficLanguage = "de";
+  fixture.at(END);
+  assert.match(fixture.dom().tooltip.textContent, /Beobachtete Datenmenge/);
+  assert.match(fixture.dom().tooltip.textContent, /Download: 1,25 MB/);
+  fixture.bind();
+  const rates = setup();
+  await rates.controller.open({...SCOPE, states: states(END, "1250")});
+  assert.equal(rates.controller.snapshot().metric, "rates");
+  assert.match(renderTrafficHistory(rates.controller.snapshot()), /sp-traffic-value">1,250<\/span><small>Mbit\/s/);
+});
+
+test("download and upload use different colors but both graph lines stay solid", () => {
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-download\{[^}]*stroke:/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-upload\{[^}]*stroke:/);
+  assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /stroke-dasharray/);
+});
+
+test("include-start baseline completes a moving window without requiring exact end-clock equality", async () => {
+  const start = END - TRAFFIC_HISTORY_WINDOW_MS;
+  const history = Array.from({length: 16}, (_, index) =>
+    row(start + index * 60000, String(1000 + index * 100), "B"));
+  const {controller, setTime} = setup({[DOWN]: history}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END, "2500")});
+  assert.equal(controller.snapshot().series.download.current, 1500);
+  assert.equal(controller.snapshot().series.download.partial, false);
+  setTime(END + 400);
+  assert.equal(controller.snapshot().series.download.current, 1500);
+  assert.equal(controller.snapshot().series.download.partial, false);
+});
+
+test("byte hover reports cumulative observed volume at exact times without interpolating or querying", () => {
+  const time = END - 30000;
+  const view = {...inspectionView([point(time, 1.25e9), point(END, 2e12)], [point(time, 1000), point(END, 2e6)]), metric: "bytes"};
+  const fixture = inspectionFixture(view);
+  fixture.at(time + 10000);
+  assert.match(fixture.dom().tooltip.textContent, /Download: 1.25 GB/);
+  assert.match(fixture.dom().tooltip.textContent, /Upload: 0.001 MB/);
+  fixture.event("keydown", {key: "End"});
+  assert.match(fixture.dom().tooltip.textContent, /Download: 2 TB/);
+  assert.match(fixture.dom().tooltip.textContent, /Upload: 2 MB/);
+  fixture.setView({...view, metric: "rates"});
+  fixture.bind.refresh();
+  assert.equal(fixture.dom().tooltip.hidden, true, "metric changes clear an old selection");
+  fixture.bind();
+});
+
+test("byte samples ahead of the browser clock are retained but never counted early", async () => {
+  const {controller, setTime} = setup({[DOWN]: [row(END - 1000, "1000", "B")]}, END, "bytes");
+  await controller.open({...SCOPE, states: byteStates(END + 1000, "2000")});
+  assert.equal(controller.snapshot().series.download.current, null);
+  setTime(END + 1000);
+  assert.equal(controller.snapshot().series.download.current, 1000);
 });

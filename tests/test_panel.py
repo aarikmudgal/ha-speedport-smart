@@ -267,12 +267,12 @@ async def test_panel_registration_uses_current_schema_cache_key() -> None:
     ):
         await panel_module.async_register_panel(hass)
 
-    assert panel_module.PANEL_SCHEMA_VERSION == 32
+    assert panel_module.PANEL_SCHEMA_VERSION == 33
     register_panel.assert_awaited_once()
     assert register_panel.await_args.kwargs["module_url"] == (
-        "/speedport_smart_frontend/speedport-smart-panel.js?schema=32"
+        "/speedport_smart_frontend/speedport-smart-panel.js?schema=33"
     )
-    assert register_panel.await_args.kwargs["config"] == {"schema_version": 32}
+    assert register_panel.await_args.kwargs["config"] == {"schema_version": 33}
 
 
 def test_powerline_child_entities_use_the_lan_section() -> None:

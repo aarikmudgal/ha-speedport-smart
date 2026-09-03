@@ -15,23 +15,39 @@ The stable version must match in:
 - **pyproject.toml**
 - the matching section in **CHANGELOG.md**
 
+Each stable version also requires **docs/releases/X.Y.Z.md**. This is the
+human-written release summary, upgrade guidance and known limitations attached
+to the GitHub release before its generated change list. The stable validator
+requires a nonempty UTF-8 regular file and rejects symlinks in this path.
+Beta publication does not require or publish these stable notes.
+Release titles contain only the version tag, such as **v0.3.0** or
+**v0.3.0-beta.RUN.ATTEMPT**; feature descriptions belong in the release body.
+
 Use a three-part Semantic Version such as **1.2.3** in source. Do not put a
 beta suffix in either source version; the feature-branch workflow applies that
 suffix only to its staged package.
 
-CI tests both the minimum supported Home Assistant fixture and the newest
-stable fixture pinned in
+CI tests both the minimum supported Home Assistant fixture and a separately
+pinned current fixture in
 **requirements/current-home-assistant/requirements.txt**. Dependabot maintains
 the current fixture separately so it cannot change the minimum pin. Confirm
 which stable Home Assistant release a proposed fixture represents before
 merging it because the fixture project also publishes versions for Home
 Assistant betas.
 
+The pinned fixtures target Home Assistant **2025.12.0** and **2026.8.3**.
+These are the versions covered by the configured CI jobs, not a claim about
+the newest upstream release. When updating a fixture, inspect its declared
+Home Assistant dependency, choose a stable release, and run CI again before
+claiming compatibility with that version.
+
 ## Stable release from main
 
 1. Choose the next Semantic Version.
 2. Update both source version files to the exact same value.
-3. Move the relevant changelog entries under that version and add the date.
+3. Move the relevant changelog entries under that version and add the date and
+   comparison link. Write **docs/releases/X.Y.Z.md**, including upgrade steps,
+   entity retirements, recovery guidance and any unverified behavior.
 4. Open a pull request and wait for CI, Hassfest, HACS validation, and tests.
 5. Merge the reviewed pull request to **main**.
 6. Let the release workflow create:
@@ -40,6 +56,10 @@ Assistant betas.
    - asset **speedport_smart.zip**
 7. Inspect the release page and install the asset through a HACS custom
    repository before announcing it.
+
+For 0.3.0, use the [release checklist](releases/0.3.0-checklist.md). Preparing a
+PR is not publication. A reviewed merge and successful **push** CI on main
+trigger the stable release; pull-request CI alone never publishes.
 
 A published version is immutable. If **vX.Y.Z** already exists, do not replace
 or move it. A later **main** push that still declares that version and builds
@@ -97,6 +117,9 @@ Before publishing, verify:
 - stable or beta version parity, as applicable
 - exactly one integration domain
 - no credentials, local diagnostics, or generated cache files
+
+The release summary is a repository document, not a runtime archive asset.
+The dashboard modules and both themes' brand assets must remain in the archive.
 
 ## Release permissions and recovery
 

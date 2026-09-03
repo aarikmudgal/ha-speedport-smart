@@ -1252,7 +1252,7 @@ test("management availability and generation changes invalidate target tokens", 
     truncated: false,
   };
   panel._hass.connection.sendMessagePromise = async () => ({
-    schema_version: 32,
+    schema_version: 33,
     routers: [
       {
         ...router([actionMetadata("voip_line_set_active")]),
@@ -1277,7 +1277,7 @@ test("management availability and generation changes invalidate target tokens", 
   panel._adminActionState.voipLineTargets.expiresAt = Date.now() + 60_000;
   panel._adminActionState.voipLineTargets.generation = 2;
   panel._hass.connection.sendMessagePromise = async () => ({
-    schema_version: 32,
+    schema_version: 33,
     routers: [
       {
         ...router([

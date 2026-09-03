@@ -8,17 +8,53 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
+Release preparation; stable publication and final owner testing remain pending.
+
+### Upgrade notes
+
+- Update the existing integration through HACS, restart Home Assistant, then
+  reload the dashboard browser page. Do not delete and recreate the integration.
+  The domain remains `speedport_smart`; retained entity identifiers, configured
+  options and their existing Recorder history are preserved.
+- Obsolete beta control and router-global NAS placeholders are removed during
+  upgrade. Adjust automations that referenced them; supported replacements live
+  in Administration. The removed router event stream is not restored.
+- The expanded Administration editors are English-only and exact-firmware
+  gated. A stable integration release does not certify untested live router
+  writes. Their warnings, explicit confirmations and verification limits remain
+  in force. Review the [0.3.0 release notes](docs/releases/0.3.0.md) before using
+  network, credential, firmware or reset operations.
+
 ### Added
 
-- A compact Dashboard with a 15-minute download/upload history graph, live
+- A compact Dashboard with a download/upload history graph offering 5-, 15-,
+  30- and 60-minute windows, defaulting to 15 minutes, live
   sample values, paired Wi-Fi band summaries, DSL sync/capacity, mobile receiver
   signal/details and an explicitly identified wired-device list. Graph history
   comes from Home Assistant Recorder; it adds no router polling and preserves
   existing entity history and statistics.
+  Explicit timeframe changes read the selected Home Assistant history; plotted
+  points keep actual observed values and timestamps rather than invented data.
+- A separate downloaded/uploaded volume graph adds valid nonnegative differences
+  between recorded cumulative-byte observations and the existing live stream.
+  It shares the rate graph's 5-, 15-, 30- and 60-minute window selection and
+  chooses decimal MB, GB or TB units automatically. Resets, stale/unavailable
+  samples and long gaps break a segment and mark valid subtotals partial. It
+  does not integrate rate estimates, interpolate the window boundary, change
+  Recorder configuration or add router requests.
 - Automatic selected-page settings recovery after management-session changes
   or restored access, with stale-read cancellation and no automatic writes.
 - Mouse, touch and keyboard inspection of WAN history samples, showing observed
   speeds and timestamps without filling gaps with invented values.
+- Larger download/upload readouts that open the corresponding Home Assistant
+  entity details, including when a live rate is temporarily unavailable. Both
+  readouts remain side by side on mobile, with each value and its unit kept on
+  one stable line and numeric space for four integer digits plus two decimals. The redundant
+  "Latest sample" subtitle is removed; missing-sample warnings remain.
+- Separate reported LTE signal strength and LTE band in the Mobile receiver
+  overview, linked to their actual Home Assistant entities.
 - Actual per-device LAN link rates in the overview, with directional rates
   when reported and an explicit missing-speed state.
 
@@ -36,7 +72,7 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Two exact `LAN.json` IPv6 firmware flags in the administrator-only technical
   view. Their undocumented semantics are not guessed, and they do not create
   native entities or controls.
-- Four guarded beta Administration actions for DECT handset and repeater
+- Four guarded Administration actions for DECT handset and repeater
   enrollment, per-handset paging, and VoIP line activation, plus seven typed
   destructive actions for DECT handset/repeater disconnect and VoIP provider,
   VoIP number, IP-PBX client, phonebook entry, or NAS share deletion.
@@ -73,6 +109,11 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   router's exact bounded total and remaining-entry counts. Private results never
   enter entities, Recorder, coordinator data, diagnostics, URLs, or browser
   storage.
+- A private IP address information screen with the native IPv4/IPv6 addresses,
+  gateways, DNS servers and reported IPv6 prefixes. Opening the page performs
+  a bounded, authenticated read for the exact reviewed firmware; missing values
+  remain explicitly unreported. These results add no entities or background
+  polling and stay out of Recorder, diagnostics and browser storage.
 - A responsive Administration view organized into the six router tabs Overview,
   Status, Internet, Telephony, Network and System, with contextual left
   navigation and a mobile page menu. Its 69 content pages and 13 navigation
@@ -120,8 +161,73 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   their reviewed safe rows reach the existing normalized administrator view
   while names, numbers, usernames, and credentials remain excluded.
 
+### Changed
+
+- Auto WAN polling starts at 5 seconds and steps through 4, 3, 2 and 1 second
+  after five consecutive successful WAN reads at each cadence. The final
+  1-second cadence also requires five successes before being marked Stable.
+  Any polling failure for a supported WAN source resets the success count and
+  enters a fixed 60-second Cooldown before retrying the same cadence. Repeated
+  failures restart the same cooldown, without incremental backoff or a sticky
+  slower floor. Manual mode never polls faster than requested and uses the
+  same failure cooldown. Other groups retain their configured cadences and
+  data scopes, subject to the panel priority described below.
+- A visible, focused panel claims an expiring priority lease: Dashboard
+  prioritizes WAN samples, while Administration prioritizes explicit settings
+  operations. Automatic Normal and Slow reads wait without refreshing cached
+  timestamps. Hiding or leaving the panel, losing focus or disconnecting
+  releases the lease; a 45-second expiry covers lost clients. Existing router
+  transactions remain atomic, and missed background updates are not replayed.
+
 ### Fixed
 
+- WAN scheduling uses anchored polling slots instead of response completion
+  plus another interval, avoiding skipped one-second reads caused by coordinator
+  phase rounding. Requests remain serialized; missed slots are skipped rather
+  than queued or replayed. The dashboard distinguishes target and observed
+  sample intervals. Rates use the latest two valid counter observations and
+  their actual monotonic elapsed time, without a rolling average. Repeated
+  totals do not establish a guaranteed router refresh interval. Recorder
+  history remains enabled.
+- WAN reads remain exclusively in the Fast sequence. Normal and Slow no longer
+  insert a WAN read immediately after a protected web session, preventing a
+  transient session-handoff rejection from repeatedly restarting WAN Cooldown.
+  Normal DSL reads retain bounded busy retries. Poll diagnostics separate
+  lock-wait and work duration; long active operations can still delay samples.
+- Concurrent coordinator refreshes share in-flight work, including timer calls
+  waiting behind Home Assistant's refresh debounce lock. Deferred work is not
+  replayed as duplicate router reads, failures are handled by their owning
+  refresh, and cancellation of a waiting caller does not cancel that owner.
+- Supported Administration settings now use one styled editor instead of
+  duplicate editor and legacy entity controls. An offline audit covers all
+  110 advertised settings contracts and 454 fields, checking input types,
+  disabled editing before a valid read, secret non-prefill and no automatic
+  saves. Read-only information no longer carries an inappropriate write warning.
+- Receiver LED and bonding settings can obtain missing serial/model identity
+  from a fresh, fixed receiver-information read while preserving the original
+  mode values. Missing or conflicting identity still rejects the read.
+- The typed receiver LED editor now accepts the firmware's symbolic `On`,
+  `Timer` and `Off` values as well as numeric codes. This fixes a separate
+  parser mismatch that rejected valid current settings before editing.
+- Confirmed EasySupport, USB, receiver, Mesh, firmware, VPN, Smart Home and
+  call-list prerequisites now have specific, privacy-safe loading messages.
+  Missing target inventories remain unavailable rather than being treated as
+  empty. Failed reads still provide no editing revision, and absent firmware
+  offers are not labelled as proof that firmware is up to date.
+- A newly available inline section now loads even when another form is open,
+  without discarding its draft or revision. Reads wait for an in-flight save,
+  preserve its result, and are cancelled on page or identity changes. Repeated
+  metadata and WAN updates do not retry failed sections or repeat writes.
+  Final candidate owner validation remains pending.
+- Dashboard summary cards now fill each row after the full-width Wi-Fi section,
+  including partial rows on tablets, without reserving empty desktop columns.
+- WAN graph freshness now prefers the newest valid successful sample timestamp
+  instead of the minute-rounded diagnostic sensor. Live observations tolerate
+  a Home Assistant clock up to five seconds ahead of the browser without
+  rewriting timestamps; larger clock leads, genuinely stale values and
+  unavailable samples still produce gaps. This chart fix does not change the
+  WAN polling policy described above. The combined release candidate still
+  requires owner confirmation before the release PR can be merged.
 - Native call-list pages load their own category automatically. Concurrent
   settings saves blocked before dispatch now explicitly report that nothing
   was sent; session recovery preserves the outcome of an active save.
@@ -254,10 +360,11 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   unload, or shutdown, and never published when final session cleanup fails.
   Exact-ACK actions treat missing or malformed acknowledgement as an unknown
   outcome even when a later read happens to match.
-- The new administrator actions are beta implementations based on exact
-  downloaded firmware contracts and automated tests. No live router mutation or
-  change/readback/rollback roundtrip was performed during development, so they
-  are not promoted as stable proof.
+- The expanded administrator actions are based on exact downloaded firmware
+  contracts and automated tests. No live router mutation or
+  change/readback/rollback roundtrip was performed during development. Their
+  inclusion in 0.3.0 does not change that evidence level or certify successful
+  changes on a physical router.
 
 ## [0.2.0] - 2026-09-01
 
@@ -352,7 +459,8 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 - Diagnostics redact credentials and sensitive network, telephony, client,
   mobile, and VPN data.
 
-[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/aarikmudgal/ha-speedport-smart/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/aarikmudgal/ha-speedport-smart/releases/tag/v0.1.0
