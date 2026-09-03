@@ -3731,7 +3731,7 @@ class SpeedportClient:
             )
         # The firmware mandates SHA-256(challenge:password) as its transient
         # login proof. This is protocol compatibility, not password storage.
-        # codeql[py/weak-sensitive-data-hashing]  # noqa: ERA001
+        # codeql[py/weak-sensitive-data-hashing]: Firmware-mandated login proof.
         login_proof = sha256(f"{challenge}:{self._password}".encode()).hexdigest()
         # A proof request may be accepted even when its response cannot be
         # decoded or the connection drops. Retain only this router-issued key
