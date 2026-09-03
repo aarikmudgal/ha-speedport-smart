@@ -1,0 +1,859 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+class TestElement {
+  constructor() { this.isConnected = true; }
+  attachShadow() {
+    this.shadowRoot = {innerHTML: "", activeElement: undefined, listeners: new Map(),
+      addEventListener(name, handler) {this.listeners.set(name, handler);}, querySelector() {}, querySelectorAll() { return []; }};
+    return this.shadowRoot;
+  }
+  dispatchEvent() {}
+  toggleAttribute() {}
+}
+globalThis.HTMLElement = TestElement;
+globalThis.customElements = {define() {}, get() {}};
+const {SpeedportSmartPanel, liveWanSourceFromEntityStates, wanTelemetryPresentation} = await import("../../custom_components/speedport_smart/frontend/speedport-smart-panel.js?test=dashboard-integration");
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+function deferred() { let resolve; const promise = new Promise((done) => {resolve = done;}); return {promise, resolve}; }
+function rate(direction, suffix = "a") {
+  return {entity_id: `sensor.${suffix}_${direction}`, domain: "sensor", translation_key: `wan_${direction}_rate`, section: "bandwidth", access_source: "wan_counters", control: false, control_supported: false};
+}
+function counter(direction, suffix = "a") {
+  return {...rate(direction, suffix), entity_id: `sensor.${suffix}_${direction}_bytes`,
+    translation_key: direction === "download" ? "wan_bytes_received" : "wan_bytes_sent"};
+}
+function router(id = "entry-a", suffix = "a") {
+  return {entry_id: id, entry_state: "loaded", title: `Router ${suffix}`, model: "Observed model", capabilities: [], access_sources: [], management: {state: "available"},
+    entities: [rate("download", suffix), rate("upload", suffix),
+      {entity_id: `sensor.${suffix}_wifi`, domain: "sensor", translation_key: "wifi_5_clients", section: "wireless", control: false},
+      {entity_id: `switch.${suffix}_wifi`, domain: "switch", translation_key: "wifi", section: "controls", management_feature: "network_wifi_main", control: true, control_supported: true}]};
+}
+function fixture(options = {}) {
+  const panel = new SpeedportSmartPanel();
+  const calls = [];
+  const first = router(); const second = router("entry-b", "b");
+  if (options.volume) {
+    first.entities.push(counter("download"), counter("upload"));
+    second.entities.push(counter("download", "b"), counter("upload", "b"));
+  }
+  panel._metadata = {schema_version: 33, routers: [first, second]};
+  panel._selectedEntry = first.entry_id;
+  panel._platformIcons = {}; panel._componentIcons = {};
+  panel._scheduleRender = () => {}; panel._render = () => {};
+  const timestamp = new Date(Date.now() - 2000).toISOString();
+  panel._hass = {user: {id: "user-a", is_admin: false}, language: "en", locale: {language: "en-US"}, entities: {}, states: {}, connection: {
+    sendMessagePromise(message) { calls.push(message); return options.request ? options.request(message) : Promise.resolve({}); },
+  }};
+  for (const selected of [first, second]) for (const meta of selected.entities) {
+    const bytes = meta.translation_key.startsWith("wan_bytes_");
+    panel._hass.states[meta.entity_id] = {state: meta.domain === "switch" ? "on" : bytes ? "1000000" : "6", last_updated: timestamp,
+      attributes: {unit_of_measurement: bytes ? "B" : meta.translation_key.startsWith("wan_") ? "Mbit/s" : undefined}};
+  }
+  return {panel, calls, first, second};
+}
+
+function recoverySource(overrides = {}) {
+  return {id: "wan_counters", available: true, state: "cooldown", mode: "auto",
+    effective_interval_seconds: 3, cooldown_seconds: 60,
+    retry_in_seconds: 45, retrying: true, success_streak: 0,
+    success_samples_required: 5, ...overrides};
+}
+
+test("dashboard shows fixed sixty-second cooldown without changing cadence or requesting data", () => {
+  const {panel, first, calls} = fixture();
+  for (const [remaining, text] of [[60, "1 min"], [45, "45 s"], [0.2, "1 s"]]) {
+    const html = panel._renderDashboard(first, first.entities.filter((item) => !item.control),
+      {wan_counters: recoverySource({retry_in_seconds: remaining})});
+    assert.ok(html.includes("WAN cadence 3 s · Cooldown"));
+    assert.ok(html.includes(`Retry in ~${text}`));
+    assert.ok(!html.includes("5 min cooldown"));
+    assert.ok(!html.includes("will start"));
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(panel._trafficHistory.snapshot(), null);
+});
+
+test("WAN cadence distinguishes configured cadence from the last achieved sample interval", () => {
+  const {panel, first, calls} = fixture();
+  for (const [observed, display] of [[2.34, "2.34"], [1, "1"], [60.1234, "60.12"]]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), state: "stable", retrying: false, effective_interval_seconds: 1,
+      observed_interval_seconds: observed,
+    }});
+    assert.ok(html.includes("WAN cadence 1 s · Stable"));
+    assert.ok(html.includes(`Last sample interval ${display} s`));
+    assert.ok(!html.includes("WAN samples every"));
+  }
+  for (const observed of [null, undefined, 0, -1, "2.3", NaN, Infinity, {}, []]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), observed_interval_seconds: observed,
+    }});
+    assert.ok(!html.includes("Last sample interval"));
+    assert.ok(html.includes("Cooldown"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("consecutive-sample rates never display a moving average, even with cached window metadata", () => {
+  const {panel, first, calls} = fixture();
+  for (const span of [1, 1.25, 5, 10]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), state: "stable", retrying: false, effective_interval_seconds: 1,
+      rate_method: "consecutive_samples", rate_window_seconds: 5, rate_sample_span_seconds: span,
+    }});
+    assert.ok(html.includes("WAN cadence 1 s · Stable"));
+    assert.ok(html.includes("Per-sample rate"));
+    assert.ok(html.includes(`Rate sample span ${span} s`));
+    assert.ok(!html.includes("average"));
+  }
+  for (const method of [undefined, null, "moving_average", "5", 0, true, {}, []]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), rate_method: method, rate_window_seconds: 5, rate_sample_span_seconds: 10,
+    }});
+    assert.ok(!html.includes("Per-sample rate"));
+    assert.ok(!html.includes("Rate sample span"));
+  }
+  for (const unavailable of [{state: "cooldown", retrying: true}, {available: false}, {supported: false}]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), state: "stable", retrying: false, ...unavailable,
+      rate_method: "consecutive_samples", rate_sample_span_seconds: 10,
+    }});
+    assert.ok(html.includes("Per-sample rate"));
+    assert.ok(!html.includes("Rate sample span"));
+  }
+  const observed = panel._renderDashboard(first, first.entities, {wan_counters: {
+    ...recoverySource(), state: "stable", retrying: false, rate_method: "consecutive_samples",
+    observed_interval_seconds: 1.1, rate_sample_span_seconds: 1.1,
+  }});
+  assert.ok(observed.includes("Last sample interval 1.1 s"));
+  assert.ok(!observed.includes("Rate sample span"), "do not duplicate the same elapsed interval");
+  assert.equal(calls.length, 0);
+});
+
+test("live method and focus telemetry replace cached values without coercion", () => {
+  const entity = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = {...recoverySource(), state: "stable", retrying: false, rate_window_seconds: 10, rate_sample_span_seconds: 10,
+    polling_focus: "background", background_refresh_deferred: false};
+  const healthy = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+    state: "stable", attributes: {rate_method: "consecutive_samples", rate_sample_span_seconds: 2,
+      polling_focus: "dashboard", background_refresh_deferred: true},
+  }});
+  assert.equal(healthy.rate_method, "consecutive_samples");
+  assert.equal(healthy.rate_window_seconds, undefined);
+  assert.equal(healthy.rate_sample_span_seconds, 2);
+  assert.equal(healthy.polling_focus, "dashboard");
+  assert.equal(healthy.background_refresh_deferred, true);
+  for (const value of [null, undefined, "5", 0, -1, NaN, Infinity, false, {}]) {
+    const live = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+      state: "stable", attributes: {rate_method: value, rate_sample_span_seconds: value, polling_focus: value},
+    }});
+    assert.equal(live.rate_method, undefined);
+    assert.equal(live.rate_sample_span_seconds, undefined);
+    assert.equal(live.polling_focus, undefined);
+  }
+  const cooldown = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+    state: "cooldown", attributes: {rate_method: "consecutive_samples", rate_sample_span_seconds: 10,
+      polling_focus: "administration", background_refresh_deferred: false},
+  }});
+  assert.equal(cooldown.rate_method, "consecutive_samples");
+  assert.equal(cooldown.rate_sample_span_seconds, undefined);
+  assert.equal(cooldown.polling_focus, "administration");
+  assert.equal(cooldown.background_refresh_deferred, false);
+  const malformed = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+    state: "stable", attributes: {background_refresh_deferred: "false"},
+  }});
+  assert.equal(malformed.background_refresh_deferred, undefined);
+});
+
+test("page footer exposes authoritative focus priority and deferred background work", () => {
+  const {panel, first} = fixture();
+  for (const [polling_focus, text] of [["dashboard", "Dashboard priority: WAN polling"], ["administration", "Administration priority: settings"], ["background", "Background polling"]]) {
+    first.access_sources = [{id: "wan_counters", polling_focus, background_refresh_deferred: polling_focus === "dashboard"}];
+    SpeedportSmartPanel.prototype._render.call(panel);
+    const footer = panel.shadowRoot.innerHTML.match(/<footer>[\s\S]*?<\/footer>/)?.[0];
+    assert.ok(footer.includes(text));
+    assert.equal(footer.includes("Background refresh deferred"), polling_focus === "dashboard");
+  }
+  assert.equal(panel._pollingFocusDetails({polling_focus: "unknown", background_refresh_deferred: true}), "");
+  assert.ok(!panel._pollingFocusDetails({polling_focus: "dashboard", background_refresh_deferred: "true"}).includes("deferred"));
+});
+
+for (const [source, text] of [
+  [recoverySource({retry_in_seconds: 0}), "Waiting for next poll"],
+  [recoverySource({available: false}), "Retry in ~45 s"],
+  [recoverySource({polling_available: false}), "Retry in ~45 s"],
+  [recoverySource({state: "learning", retrying: false}), "Successful polls 0/5"],
+  [recoverySource({state: "learning", retrying: false, success_streak: 4}), "Successful polls 4/5"],
+  [recoverySource({state: "learning", retrying: false, success_streak: 5}), "Successful polls 5/5"],
+]) {
+  test(`dashboard cadence distinguishes ${source.state}/${source.retry_in_seconds}/${source.success_streak}/${source.available}/${source.polling_available}`, () => {
+    const {panel, first, calls} = fixture();
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: source});
+    assert.ok(html.includes(text));
+    assert.ok(!html.includes("Retry in ~0 s"));
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("missing, malformed, settled and obsolete metadata do not invent progress or retry timing", () => {
+  const {panel, first, calls} = fixture();
+  for (const source of [
+    {id: "wan_counters", effective_interval_seconds: 5, state: "limited"},
+    {id: "wan_counters", effective_interval_seconds: 5, state: "limited", recovery_cooldown_seconds: 300,
+      next_probe_in_seconds: 270, recovery_success_samples: 6, recovery_required_success_samples: 12},
+    ...["stable", "manual", "unknown", "retrying", "limited"].map((state) => recoverySource({state})),
+    ...[undefined, null, "45", -1, 61, NaN, Infinity, false, []].map((retry_in_seconds) => recoverySource({retry_in_seconds})),
+    ...[undefined, null, 300, "60"].map((cooldown_seconds) => recoverySource({cooldown_seconds})),
+    ...[undefined, null, "4", -1, 6, 0.5].map((success_streak) => recoverySource({state: "learning", retrying: false, success_streak})),
+    ...[undefined, null, "5", 0, 12, 0.5].map((success_samples_required) => recoverySource({state: "learning", retrying: false, success_samples_required})),
+  ]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: source});
+    assert.ok(!html.includes("Faster trial"));
+    assert.ok(!html.includes("Retry in ~"));
+    assert.ok(!html.includes("Successful polls"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("live Cooldown sensor overrides cached Learning state and remains degraded", () => {
+  const source = liveWanSourceFromEntityStates(recoverySource({state: "learning", retrying: false}),
+    [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}],
+    {"sensor.poll_state": {state: "cooldown", attributes: {source_available: false, retry_in_seconds: 30,
+      cooldown_seconds: 60, success_samples_required: 5, success_streak: 0}}});
+  assert.equal(source.state, "cooldown");
+  assert.equal(source.retrying, true);
+  assert.equal(source.retry_in_seconds, 30);
+  const presentation = wanTelemetryPresentation(undefined, undefined, source);
+  assert.equal(presentation.schedulerState, "cooldown");
+  assert.equal(presentation.retrying, true);
+  assert.equal(presentation.degraded, true);
+});
+
+test("fresh Learning attributes override stale counters while malformed values stay unknown", () => {
+  const {panel, first, calls} = fixture();
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = liveWanSourceFromEntityStates(recoverySource(), entities,
+    {"sensor.poll_state": {state: "learning", attributes: {source_available: true, retry_in_seconds: 0,
+      success_streak: 2, success_samples_required: 5, cooldown_seconds: 60}}});
+  assert.equal(source.retrying, false);
+  assert.equal(source.success_streak, 2);
+  assert.ok(panel._renderDashboard(first, first.entities, {wan_counters: source}).includes("Successful polls 2/5"));
+  for (const invalid of [null, false, "2", NaN, Infinity, -1]) {
+    const malformed = liveWanSourceFromEntityStates(source, entities,
+      {"sensor.poll_state": {state: "learning", attributes: {success_streak: invalid}}});
+    assert.equal(malformed.success_streak, undefined);
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: malformed}).includes("Successful polls"));
+    const cooldown = liveWanSourceFromEntityStates(recoverySource(), entities,
+      {"sensor.poll_state": {state: "cooldown", attributes: {retry_in_seconds: invalid}}});
+    assert.equal(cooldown.retry_in_seconds, undefined);
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: cooldown}).includes("Retry in ~"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("only genuinely newer healthy scheduler evidence overrides cached failed polling metadata", (t) => {
+  const now = Date.parse("2026-09-03T12:00:10Z");
+  t.mock.method(Date, "now", () => now);
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = {...recoverySource(), supported: true, available: false, polling_available: false,
+    availability_checked_at: new Date(now - 5000).toISOString()};
+  const fresh = {state: "stable", last_updated: new Date(now - 1000).toISOString(), attributes: {source_available: true}};
+  const merged = liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": fresh});
+  assert.equal(merged.available, true);
+  assert.equal(merged.retrying, false);
+  assert.equal(source.available, false);
+  for (const candidate of [
+    {...fresh, state: "unknown"}, {...fresh, state: "unavailable"}, {...fresh, state: "cooldown"},
+    {...fresh, state: "retrying"}, {...fresh, state: "arbitrary"}, {...fresh, last_updated: undefined},
+    {...fresh, last_updated: "invalid"}, {...fresh, last_updated: new Date(now - 5000).toISOString()},
+    {...fresh, last_updated: new Date(now - 10000).toISOString()},
+    {...fresh, last_updated: new Date(now + 5001).toISOString()},
+    {...fresh, attributes: {source_available: false}}, {...fresh, attributes: {source_available: "true"}},
+  ]) {
+    assert.equal(liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": candidate}).available, false);
+  }
+  for (const changed of [
+    {...source, availability_checked_at: undefined}, {...source, availability_checked_at: "invalid"},
+    {...source, availability_checked_at: new Date(now + 5001).toISOString()}, {...source, supported: false},
+  ]) assert.equal(liveWanSourceFromEntityStates(changed, entities, {"sensor.poll_state": fresh}).available, false);
+  const old = {...source, availability_checked_at: new Date(now - 60000).toISOString()};
+  assert.equal(liveWanSourceFromEntityStates(old, entities, {"sensor.poll_state": {...fresh, last_updated: new Date(now - 31000).toISOString()}}).available, false);
+  const newerFailure = {...source, polling_available: true, availability_checked_at: new Date(now).toISOString()};
+  assert.equal(liveWanSourceFromEntityStates(newerFailure, entities, {"sensor.poll_state": fresh}).available, false);
+});
+
+test("retained healthy attributes cannot revive an unavailable or unsupported WAN scheduler", () => {
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  for (const state of ["unknown", "unavailable", "cooldown", "retrying"]) {
+    const source = liveWanSourceFromEntityStates({...recoverySource(), available: true, polling_available: true}, entities,
+      {"sensor.poll_state": {state, attributes: {source_available: true}}});
+    assert.equal(source.available, false);
+  }
+});
+
+test("live achieved interval attributes override metadata without coercing missing data to zero", () => {
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = {...recoverySource(), state: "stable", retrying: false, observed_interval_seconds: 4};
+  for (const value of [1, 2.35, 59.2]) {
+    assert.equal(liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": {
+      state: "stable", attributes: {observed_interval_seconds: value},
+    }}).observed_interval_seconds, value);
+  }
+  for (const value of [null, undefined, -1, 0, Infinity, NaN, "2", {}, []]) {
+    assert.equal(liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": {
+      state: "stable", attributes: {observed_interval_seconds: value},
+    }}).observed_interval_seconds, undefined);
+  }
+});
+
+test("retained measured intervals disappear immediately on live failure and stay hidden during recovery warmup", () => {
+  const {panel, first} = fixture();
+  const source = {...recoverySource(), available: true, state: "stable", retrying: false, observed_interval_seconds: 1};
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  for (const state of ["cooldown", "retrying", "unavailable", "unknown"]) {
+    const live = liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": {
+      state, attributes: {source_available: true, observed_interval_seconds: 1},
+    }});
+    assert.equal(live.observed_interval_seconds, undefined);
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: live}).includes("Last sample interval"));
+  }
+  for (const changed of [{available: false}, {supported: false}, {retrying: true}, {state: "cooldown"},
+    {state: "learning", observed_interval_seconds: null}]) {
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: {...source, ...changed}}).includes("Last sample interval"));
+  }
+});
+
+for (const [language, label] of [["en", "Cooldown"], ["de", "Abkühlphase"]]) {
+  test(`detailed ${language} WAN cooldown labels never claim the router is busy`, () => {
+    const {panel, first, calls} = fixture();
+    panel._hass.language = language; panel._hass.locale.language = language;
+    const source = recoverySource({retrying: false});
+    const meta = first.entities[0];
+    assert.equal(wanTelemetryPresentation(meta, panel._hass.states[meta.entity_id], source).rateStatusKey, "status.rate_cooldown");
+    for (const html of [panel._renderSource(source),
+      panel._renderSection("bandwidth", [meta], first, {wan_counters: source}),
+      panel._renderEntity(meta, {hero: true, sourceState: source})]) {
+      assert.ok(html.toLowerCase().includes(label.toLowerCase()));
+      assert.doesNotMatch(html, /telemetry busy|Telemetrie belegt|recent aggregate WAN rate|aktuelle gesamte WAN-Rate/);
+    }
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("explicit Cooldown keeps cached graph samples non-live even without a retry flag", async () => {
+  const {panel, first, calls} = fixture();
+  first.access_sources = [recoverySource({retrying: false})];
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, null);
+  assert.equal(panel._trafficHistory.snapshot().series.upload.current, null);
+  assert.equal(calls.length, 1);
+});
+
+test("dashboard history reads exactly the two selected router WAN entities once", async () => {
+  const {panel, calls} = fixture();
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, "history/history_during_period");
+  assert.deepEqual(calls[0].entity_ids, ["sensor.a_download", "sensor.a_upload"]);
+  assert.equal(Date.parse(calls[0].end_time) - Date.parse(calls[0].start_time), 15 * 60 * 1000);
+  assert.equal(calls[0].no_attributes, false);
+  assert.equal(calls[0].significant_changes_only, false);
+  panel._syncTrafficHistory(); panel._syncTrafficHistory(); await settle();
+  assert.equal(calls.length, 1);
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, 6);
+});
+
+test("disabled, child, control and wrong-domain lookalikes cannot become WAN history scope", async () => {
+  const {panel, calls, first} = fixture();
+  first.entities.unshift(
+    {...rate("download"), entity_id: "sensor.disabled", disabled_by: "user"},
+    {...rate("download"), entity_id: "sensor.child", child_device: {kind: "client", device_id: "child"}},
+    {...rate("download"), entity_id: "sensor.control", control_supported: true},
+    {...rate("download"), entity_id: "sensor.writable", control: true},
+    {...rate("download"), entity_id: "binary_sensor.wrong", domain: "binary_sensor"},
+  );
+  panel._syncTrafficHistory(); await settle();
+  assert.deepEqual(calls[0].entity_ids, ["sensor.a_download", "sensor.a_upload"]);
+});
+
+test("normal Home Assistant WAN updates append current samples without history rereads", async () => {
+  const {panel, calls} = fixture(); panel._syncTrafficHistory(); await settle();
+  for (let index = 0; index < 5; index++) {
+    panel.hass = {...panel._hass, states: {...panel._hass.states, "sensor.a_download": {
+      state: String(20 + index), last_updated: new Date(Date.now() - 1000 + index).toISOString(), attributes: {unit_of_measurement: "Mbit/s"},
+    }}};
+  }
+  await settle();
+  assert.equal(calls.length, 1);
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, 24);
+});
+
+test("live 0 to 80 to 0 rates update immediately and old Recorder history never overwrites them", async (t) => {
+  let now = Date.parse("2026-09-03T15:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const gate = deferred();
+  const {panel, first, calls} = fixture({request: () => gate.promise});
+  first.access_sources = [{id: "wan_counters", state: "stable", available: true, supported: true,
+    rate_method: "consecutive_samples", effective_interval_seconds: 1,
+    last_sampled_at: new Date(now - 10000).toISOString()}];
+  panel._syncTrafficHistory();
+  for (const value of [0, 80, 0]) {
+    now += 1000;
+    panel.hass = {...panel._hass, states: {...panel._hass.states, "sensor.a_download": {
+      state: String(value), last_updated: new Date(now).toISOString(), attributes: {unit_of_measurement: "Mbit/s"},
+    }}};
+    assert.equal(panel._trafficHistory.snapshot().series.download.current, value);
+  }
+  gate.resolve({"sensor.a_download": [{s: "999", lu: (now - 10000) / 1000, a: {unit_of_measurement: "Mbit/s"}}]});
+  await settle();
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, 0);
+  assert.deepEqual(panel._trafficHistory.snapshot().series.download.points.slice(-3).map(({value}) => value), [0, 80, 0]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, "history/history_during_period");
+});
+
+test("switching away drops graph scope and does not read history in Administration", async () => {
+  const {panel, calls} = fixture(); panel._syncTrafficHistory(); await settle();
+  panel._selectView("administration");
+  assert.equal(panel._trafficHistory.snapshot(), null);
+  panel._syncTrafficHistory(); await settle(); assert.equal(calls.length, 1);
+  panel._selectView("dashboard"); await settle();
+  assert.equal(calls.length, 2);
+  assert.equal(panel._trafficHistory.snapshot().entryId, "entry-a");
+});
+
+test("router switch drops old points before scoped replacement history completes", async () => {
+  const pending = deferred();
+  const {panel, calls} = fixture({request: () => pending.promise});
+  panel._syncTrafficHistory();
+  panel._selectRouter("entry-b");
+  const snapshot = panel._trafficHistory.snapshot();
+  assert.equal(snapshot.entryId, "entry-b"); assert.equal(snapshot.historyStatus, "loading");
+  assert.deepEqual(calls.map((item) => item.entity_ids), [["sensor.a_download", "sensor.a_upload"], ["sensor.b_download", "sensor.b_upload"]]);
+  pending.resolve({"sensor.a_download": [{s: "777", lu: Date.now() / 1000 - 4, a: {unit_of_measurement: "Mbit/s"}}]});
+  await settle();
+  assert.equal(panel._trafficHistory.snapshot().entryId, "entry-b");
+  assert.ok(panel._trafficHistory.snapshot().series.download.points.every((point) => point.value !== 777));
+});
+
+test("user change discards old history and binds the next read to the new user", async () => {
+  const {panel, calls} = fixture(); panel._syncTrafficHistory(); await settle();
+  panel.hass = {...panel._hass, user: {id: "user-b", is_admin: false}};
+  assert.equal(panel._trafficHistory.snapshot().userId, "user-b");
+  await settle(); assert.equal(calls.length, 2);
+  panel.hass = {...panel._hass, user: {is_admin: false}};
+  assert.equal(panel._trafficHistory.snapshot(), null);
+  assert.equal(calls.length, 2);
+});
+
+test("unload clears graph memory and ignores a late history response", async () => {
+  const pending = deferred(); const {panel, calls} = fixture({request: () => pending.promise});
+  panel._syncTrafficHistory(); panel.isConnected = false; panel.disconnectedCallback();
+  assert.equal(panel._trafficHistory.snapshot(), null); assert.equal(panel.shadowRoot.innerHTML, "");
+  pending.resolve({"sensor.a_download": [{s: "888", lu: Date.now() / 1000 - 4, a: {unit_of_measurement: "Mbit/s"}}]});
+  await settle(); assert.equal(panel._trafficHistory.snapshot(), null);
+  panel.hass = {...panel._hass, states: {...panel._hass.states, "sensor.a_download": {...panel._hass.states["sensor.a_download"], state: "32"}}};
+  await settle(); assert.equal(calls.length, 1); assert.equal(panel._trafficHistory.snapshot(), null);
+});
+
+test("metadata removal drops inaccessible series and requests only still advertised entity", async () => {
+  const {panel, calls, first} = fixture(); panel._syncTrafficHistory(); await settle();
+  first.entities = first.entities.filter((meta) => meta.translation_key !== "wan_download_rate");
+  panel._syncTrafficHistory(); await settle();
+  assert.deepEqual(calls[1].entity_ids, ["sensor.a_upload"]);
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, null);
+  assert.deepEqual(panel._trafficHistory.snapshot().series.download.points, []);
+});
+
+test("missing, unloaded router or unavailable connection cannot start history", () => {
+  for (const alter of [
+    (panel) => {panel._metadata = {routers: []};},
+    (_panel, first) => {first.entry_state = "setup_error";},
+    (panel) => {panel._hass.connection = {};},
+  ]) {
+    const {panel, calls, first} = fixture(); alter(panel, first); panel._syncTrafficHistory();
+    assert.equal(calls.length, 0); assert.equal(panel._trafficHistory.snapshot(), null);
+  }
+});
+
+test("history rejection leaves live samples usable and does not retry on normal updates", async () => {
+  const {panel, calls} = fixture({request: () => Promise.reject(new Error("unavailable"))});
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._trafficHistory.snapshot().historyStatus, "unavailable");
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, 6);
+  panel._syncTrafficHistory(); await settle(); assert.equal(calls.length, 1);
+});
+
+test("current degraded WAN source makes graph stale rather than presenting frozen rates as live", async () => {
+  const {panel, first} = fixture(); first.access_sources = [{id: "wan_counters", available: false, retrying: true}];
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, null);
+  assert.equal(panel._trafficHistory.snapshot().series.download.stale, true);
+});
+
+test("actual panel render is read-only and contains graph plus headlines without admin data", async () => {
+  const {panel, calls, first} = fixture(); panel._syncTrafficHistory(); await settle();
+  panel._adminRead = {sections: [{id: "clients", rows: [{name: "Private admin result"}]}]};
+  panel._adminReadEntry = first.entry_id;
+  const before = calls.length;
+  for (let count = 0; count < 3; count++) SpeedportSmartPanel.prototype._render.call(panel);
+  const html = panel.shadowRoot.innerHTML.split("</style>").at(-1);
+  assert.ok(html.includes('class="dashboard-overview"'));
+  assert.ok(html.includes('class="sp-traffic-history"'));
+  assert.ok(html.includes('data-more-info="sensor.a_wifi"'));
+  assert.doesNotMatch(html, /data-control=|data-open-setting=|Private admin result|data-admin-feature=/);
+  assert.equal(calls.length, before);
+});
+
+test("WAN readouts delegate more-info to their actual HA entities without router I/O", async () => {
+  const {panel, calls} = fixture();
+  panel._hass.states["sensor.a_upload"].state = "unavailable";
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const html = panel.shadowRoot.innerHTML.split("</style>").at(-1);
+  const targets = [...html.matchAll(/<button\b[^>]*class="sp-traffic-metric[^>]*data-more-info="([^"]+)"/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(targets, ["sensor.a_download", "sensor.a_upload"]);
+  const sent = calls.length;
+  const events = [];
+  panel.dispatchEvent = (event) => {events.push(event); return true;};
+  for (const moreInfo of targets) panel._handleClick({target: {closest: () => ({dataset: {moreInfo}})}});
+  assert.deepEqual(events.map((event) => [event.type, event.detail.entityId, event.bubbles, event.composed]),
+    [["hass-more-info", "sensor.a_download", true, true], ["hass-more-info", "sensor.a_upload", true, true]]);
+  assert.equal(calls.length, sent);
+});
+
+test("focused native timeframe selection survives WAN rerenders and drains once on blur", async () => {
+  const {panel, calls} = fixture({volume: true});
+  panel._syncTrafficHistory(); await settle();
+  const selector = {matches: (value) => value === "[data-traffic-window]"};
+  const parts = [".sp-traffic-metrics", ".sp-traffic-chart", ".sp-traffic-note"];
+  let latestMarkup; let refreshed = 0; const replacements = [];
+  const nodes = Object.fromEntries(parts.map((part) => [part, {replaceWith(node) {replacements.push([part, node]);}}]));
+  panel._trafficHost = {querySelector: (value) => value === "[data-traffic-window]" ? selector : nodes[value],
+    ownerDocument: {createElement: () => ({set innerHTML(value) {latestMarkup = value;},
+      content: {querySelector: (value) => ({part: value})}})}};
+  panel._trafficBinding = Object.assign(() => {}, {refresh: () => {refreshed++;}});
+  let volumeMarkup; let volumeRefreshed = 0;
+  panel._volumeHost = {querySelector: () => ({replaceWith() {}}),
+    ownerDocument: {createElement: () => ({set innerHTML(value) {volumeMarkup = value;},
+      content: {querySelector: (value) => ({part: value})}})}};
+  panel._volumeBinding = Object.assign(() => {}, {refresh: () => {volumeRefreshed++;}});
+  panel.shadowRoot.activeElement = selector;
+  panel.shadowRoot.innerHTML = "native selector stays connected";
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(panel.shadowRoot.innerHTML, "native selector stays connected");
+  assert.equal(panel._trafficWindowRenderPending, true);
+  assert.equal(refreshed, 1);
+  assert.equal(volumeRefreshed, 1);
+  assert.deepEqual(replacements.map(([part]) => part), parts);
+  await panel._trafficHistory.setWindowMinutes(60);
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(calls.length, 4);
+  assert.equal(panel._trafficHistory.snapshot().windowMinutes, 60);
+  assert.equal(panel._volumeHistory.snapshot().windowMinutes, 60);
+  assert.equal(panel.shadowRoot.innerHTML, "native selector stays connected");
+  assert.match(latestMarkup, /60 min ago/);
+  assert.match(volumeMarkup, /60 min ago/);
+  assert.equal(refreshed, 2);
+  assert.equal(volumeRefreshed, 2);
+  panel._trafficHistory.update({entryId: "entry-a", userId: "user-a", stale: true, states: panel._hass.states});
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.match(latestMarkup, /No recent sample/);
+  assert.equal(refreshed, 3);
+  assert.equal(volumeRefreshed, 3);
+  let renders = 0;
+  panel._scheduleRender = () => {renders++;};
+  panel.shadowRoot.activeElement = undefined;
+  panel.shadowRoot.listeners.get("focusout")({target: selector});
+  panel.shadowRoot.listeners.get("focusout")({target: selector});
+  assert.equal(renders, 1);
+  assert.equal(panel._trafficWindowRenderPending, false);
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.ok(panel.shadowRoot.innerHTML.includes('<option value="60" selected>'));
+  assert.equal(calls.length, 4);
+});
+
+test("timeframe focus cannot delay clearing another user, router, view or unloaded scope", async () => {
+  for (const change of [
+    (panel) => {panel._hass = {...panel._hass, user: {id: "user-b"}};},
+    (panel) => {panel._selectedEntry = "entry-b";},
+    (panel) => {panel._activeView = "connection";},
+    (panel) => {panel.isConnected = false;},
+  ]) {
+    const {panel} = fixture(); panel._syncTrafficHistory(); await settle();
+    const selector = {};
+    panel._trafficHost = {querySelector: () => selector, innerHTML: "private old data"};
+    panel.shadowRoot.activeElement = selector;
+    SpeedportSmartPanel.prototype._render.call(panel);
+    assert.equal(panel._trafficWindowRenderPending, true);
+    change(panel); panel._syncTrafficHistory();
+    assert.equal(panel._trafficWindowRenderPending, false);
+    assert.equal(panel._trafficHost, undefined);
+  }
+});
+
+test("actual panel keeps one graph binding on a stable host and disposes it on every scope exit", async () => {
+  const {panel, calls} = fixture();
+  const shadow = panel.shadowRoot;
+  let currentHost;
+  Object.defineProperty(shadow, "innerHTML", {
+    set(value) {
+      this.html = value;
+      if (!value.includes("data-traffic-history-host")) {currentHost = undefined; return;}
+      currentHost = {
+        innerHTML: value, listeners: new Map(),
+        addEventListener(name, handler) {this.listeners.set(name, handler);},
+        removeEventListener(name, handler) {if (this.listeners.get(name) === handler) this.listeners.delete(name);},
+        querySelector() {},
+        replaceWith(host) {currentHost = host;},
+      };
+    },
+    get() {return this.html ?? "";},
+  });
+  shadow.querySelector = (selector) => selector === "[data-traffic-history-host]" ? currentHost : undefined;
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const first = panel._trafficHost;
+  const binding = panel._trafficBinding;
+  assert.equal(first.listeners.size, 9);
+  const listeners = [...first.listeners];
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(panel._trafficHost, first);
+  assert.equal(panel._trafficBinding, binding);
+  assert.deepEqual([...first.listeners], listeners);
+  assert.equal(calls.length, 1);
+  panel._selectRouter("entry-b");
+  assert.equal(first.listeners.size, 0);
+  assert.equal(first.innerHTML, "");
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const second = panel._trafficHost;
+  assert.notEqual(second, first);
+  assert.equal(second.listeners.size, 9);
+  panel.hass = {...panel._hass, user: {id: "user-b", is_admin: false}};
+  assert.equal(second.listeners.size, 0);
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const third = panel._trafficHost;
+  panel._selectView("administration");
+  assert.equal(third.listeners.size, 0);
+  assert.equal(panel._trafficHost, undefined);
+  panel._selectView("dashboard");
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const fourth = panel._trafficHost;
+  panel.isConnected = false; panel.disconnectedCallback();
+  assert.equal(fourth.listeners.size, 0);
+  assert.equal(panel._trafficHost, undefined);
+});
+
+test("volume history reads only advertised selected-router cumulative WAN sensors", async () => {
+  const {panel, first, calls} = fixture({volume: true});
+  first.entities.unshift(
+    {...counter("download"), entity_id: "sensor.disabled_bytes", disabled_by: "user"},
+    {...counter("download"), entity_id: "sensor.child_bytes", child_device: {kind: "client", device_id: "child"}},
+    {...counter("download"), entity_id: "sensor.control_bytes", control_supported: true},
+    {...counter("download"), entity_id: "sensor.writable_bytes", control: true},
+    {...counter("download"), entity_id: "binary_sensor.wrong_bytes", domain: "binary_sensor"},
+  );
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._volumeHistory.snapshot().metric, "bytes");
+  assert.deepEqual(calls.map(({entity_ids}) => entity_ids), [
+    ["sensor.a_download", "sensor.a_upload"], ["sensor.a_download_bytes", "sensor.a_upload_bytes"],
+  ]);
+  assert.ok(calls.every(({type, no_attributes, significant_changes_only}) =>
+    type === "history/history_during_period" && no_attributes === false && significant_changes_only === false));
+  panel._syncTrafficHistory(); panel._syncTrafficHistory(); await settle();
+  assert.equal(calls.length, 2);
+  assert.equal(panel._volumeHistory.snapshot().series.download.current, null, "one lifetime counter is not a transfer total");
+});
+
+test("transferred volume uses observed counter deltas and never rate integration", async (t) => {
+  let now = Date.parse("2026-09-03T15:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const {panel, first, calls} = fixture({volume: true});
+  const start = now - 2000;
+  first.access_sources = [{id: "wan_counters", available: true, supported: true, state: "stable",
+    last_sampled_at: new Date(start).toISOString(), effective_interval_seconds: 1}];
+  panel._syncTrafficHistory(); await settle();
+  for (const [download, upload] of [[4000000, 2000000], [6000000, 2000000]]) {
+    now += 1000;
+    first.access_sources[0].last_sampled_at = new Date(now).toISOString();
+    panel.hass = {...panel._hass, states: {...panel._hass.states,
+      "sensor.a_download": {...panel._hass.states["sensor.a_download"], state: "999"},
+      "sensor.a_download_bytes": {state: String(download), last_updated: new Date(now).toISOString(), attributes: {unit_of_measurement: "B"}},
+      "sensor.a_upload_bytes": {state: String(upload), last_updated: new Date(now).toISOString(), attributes: {unit_of_measurement: "B"}},
+    }};
+  }
+  const snapshot = panel._volumeHistory.snapshot();
+  assert.equal(snapshot.series.download.current, 5000000);
+  assert.equal(snapshot.series.upload.current, 1000000);
+  assert.equal(snapshot.series.download.partial, true);
+  assert.equal(snapshot.series.download.coverageStart, start);
+  assert.equal(snapshot.series.download.lastSampleAt, now);
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, 999);
+  assert.equal(calls.length, 2);
+});
+
+test("both graphs share successful sample time and cooldown without fabricated byte deltas", async (t) => {
+  let now = Date.parse("2026-09-03T15:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const {panel, first, calls} = fixture({volume: true});
+  first.access_sources = [{id: "wan_counters", available: true, state: "stable", last_sampled_at: new Date(now).toISOString()}];
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._volumeHistory.snapshot().series.download.lastSampleAt, now);
+  now += 1000;
+  first.access_sources[0] = recoverySource({last_sampled_at: new Date(now).toISOString()});
+  panel._hass.states["sensor.a_download_bytes"] = {state: "9000000", last_updated: new Date(now).toISOString(), attributes: {unit_of_measurement: "B"}};
+  panel._syncTrafficHistory();
+  assert.equal(panel._trafficHistory.snapshot().series.download.stale, true);
+  assert.equal(panel._volumeHistory.snapshot().series.download.stale, true);
+  assert.equal(panel._volumeHistory.snapshot().series.download.current, null);
+  assert.equal(calls.length, 2);
+});
+
+test("one timeframe selector controls both graphs with exactly one read per graph", async () => {
+  const {panel, calls} = fixture({volume: true});
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const html = panel.shadowRoot.innerHTML.split("</style>").at(-1);
+  assert.equal((html.match(/data-traffic-window\s/g) ?? []).length, 1);
+  assert.ok(html.indexOf("data-traffic-history-host") < html.indexOf("data-volume-history-host"));
+  assert.ok(html.includes("WAN data transferred"));
+  await panel._trafficGraphs()[0].controller.setWindowMinutes(60);
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._trafficHistory.snapshot().windowMinutes, 60);
+  assert.equal(panel._volumeHistory.snapshot().windowMinutes, 60);
+  assert.equal(calls.length, 4);
+  assert.ok(calls.slice(2).every(({start_time, end_time}) => Date.parse(end_time) - Date.parse(start_time) === 3600000));
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal((panel.shadowRoot.innerHTML.match(/<option value="60" selected>/g) ?? []).length, 1);
+});
+
+test("new volume metadata inherits selected timeframe without a redundant default-window query", async () => {
+  const {panel, first, calls} = fixture();
+  panel._syncTrafficHistory(); await settle();
+  await panel._setTrafficWindowMinutes(60);
+  const before = calls.length;
+  first.entities.push(counter("download"));
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(calls.length, before + 1);
+  assert.deepEqual(calls.at(-1).entity_ids, ["sensor.a_download_bytes"]);
+  assert.equal(Date.parse(calls.at(-1).end_time) - Date.parse(calls.at(-1).start_time), 3600000);
+  assert.equal(panel._volumeHistory.snapshot().windowMinutes, 60);
+});
+
+test("volume metadata removal drops inaccessible counters immediately", async () => {
+  const {panel, first, calls} = fixture({volume: true});
+  panel._syncTrafficHistory(); await settle();
+  first.entities = first.entities.filter((meta) => meta.translation_key !== "wan_bytes_received");
+  panel._syncTrafficHistory(); await settle();
+  assert.deepEqual(calls.at(-1).entity_ids, ["sensor.a_upload_bytes"]);
+  assert.equal(panel._volumeHistory.snapshot().series.download.entityId, null);
+  assert.equal(panel._volumeHistory.snapshot().series.download.current, null);
+  assert.deepEqual(panel._volumeHistory.snapshot().series.download.points, []);
+  assert.equal(calls.length, 3, "unaffected rate history is retained");
+});
+
+test("volume readouts open their cumulative HA entities without router I/O", async () => {
+  const {panel, calls} = fixture({volume: true});
+  panel._syncTrafficHistory(); await settle();
+  const before = calls.length;
+  const events = [];
+  panel.dispatchEvent = (event) => {events.push(event); return true;};
+  for (const moreInfo of ["sensor.a_download_bytes", "sensor.a_upload_bytes"]) {
+    panel._handleClick({target: {closest: () => ({dataset: {moreInfo}})}});
+  }
+  assert.deepEqual(events.map((event) => event.detail.entityId),
+    ["sensor.a_download_bytes", "sensor.a_upload_bytes"]);
+  assert.equal(calls.length, before);
+});
+
+for (const exit of ["router", "user", "connection", "view", "unload"]) {
+  test(`late byte history cannot cross a ${exit} scope change`, async () => {
+    const pending = deferred();
+    let requests = 0;
+    const {panel, calls} = fixture({volume: true, request: () => requests++ < 2 ? pending.promise : Promise.resolve({})});
+    panel._syncTrafficHistory();
+    if (exit === "router") panel._selectRouter("entry-b");
+    if (exit === "user") panel.hass = {...panel._hass, user: {id: "user-b", is_admin: false}};
+    if (exit === "connection") panel.hass = {...panel._hass, connection: {
+      sendMessagePromise(message) {calls.push(message); return Promise.resolve({});},
+    }};
+    if (exit === "view") panel._selectView("administration");
+    if (exit === "unload") {panel.isConnected = false; panel.disconnectedCallback();}
+    pending.resolve({"sensor.a_download_bytes": [
+      {s: "0", lu: Date.now() / 1000 - 5, a: {unit_of_measurement: "B"}},
+      {s: "777000000", lu: Date.now() / 1000 - 4, a: {unit_of_measurement: "B"}},
+    ]});
+    await settle();
+    const snapshot = panel._volumeHistory.snapshot();
+    if (["view", "unload"].includes(exit)) {
+      assert.equal(snapshot, null);
+      assert.equal(panel._trafficHistory.snapshot(), null);
+      assert.equal(calls.length, 2);
+    } else {
+      assert.equal(snapshot.entryId, exit === "router" ? "entry-b" : "entry-a");
+      assert.equal(snapshot.userId, exit === "user" ? "user-b" : "user-a");
+      assert.equal(snapshot.series.download.current, null);
+      if (exit === "router") assert.equal(snapshot.series.download.entityId, "sensor.b_download_bytes");
+      assert.equal(calls.length, 4);
+    }
+  });
+}
+
+test("rate and volume graph hosts retain separate bindings and clear together", async () => {
+  const {panel, calls} = fixture({volume: true});
+  const hosts = new Map();
+  const selectors = ["[data-traffic-history-host]", "[data-volume-history-host]"];
+  Object.defineProperty(panel.shadowRoot, "innerHTML", {
+    set(value) {
+      this.html = value;
+      for (const selector of selectors) {
+        if (!value.includes(selector.slice(1, -1))) {hosts.delete(selector); continue;}
+        const host = {innerHTML: value, listeners: new Map(),
+          addEventListener(name, handler) {this.listeners.set(name, handler);},
+          removeEventListener(name, handler) {if (this.listeners.get(name) === handler) this.listeners.delete(name);},
+          querySelector() {}, replaceWith(next) {hosts.set(selector, next);}};
+        hosts.set(selector, host);
+      }
+    },
+    get() {return this.html ?? "";},
+  });
+  panel.shadowRoot.querySelector = (selector) => hosts.get(selector);
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const rateHost = panel._trafficHost, volumeHost = panel._volumeHost;
+  const rateBinding = panel._trafficBinding, volumeBinding = panel._volumeBinding;
+  assert.notEqual(rateHost, volumeHost);
+  assert.equal(rateHost.listeners.size, 9);
+  assert.equal(volumeHost.listeners.size, 9);
+  const selector = {matches: (value) => value === "[data-traffic-window]", value: "30"};
+  rateHost.querySelector = (value) => value === "[data-traffic-window]" ? selector : undefined;
+  rateHost.listeners.get("change")({target: selector});
+  await settle();
+  assert.equal(panel._trafficHistory.snapshot().windowMinutes, 30);
+  assert.equal(panel._volumeHistory.snapshot().windowMinutes, 30);
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(panel._trafficHost, rateHost);
+  assert.equal(panel._volumeHost, volumeHost);
+  assert.equal(panel._trafficBinding, rateBinding);
+  assert.equal(panel._volumeBinding, volumeBinding);
+  assert.equal(calls.length, 4);
+  panel._selectRouter("entry-b");
+  for (const host of [rateHost, volumeHost]) {
+    assert.equal(host.listeners.size, 0);
+    assert.equal(host.innerHTML, "");
+  }
+  assert.equal(panel._trafficHost, undefined);
+  assert.equal(panel._volumeHost, undefined);
+  assert.equal(panel._trafficHistory.snapshot().windowMinutes, 15);
+  assert.equal(panel._volumeHistory.snapshot().windowMinutes, 15);
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const nextHosts = [panel._trafficHost, panel._volumeHost];
+  panel.isConnected = false; panel.disconnectedCallback();
+  for (const host of nextHosts) assert.equal(host.listeners.size, 0);
+  assert.equal(panel._trafficHistory.snapshot(), null);
+  assert.equal(panel._volumeHistory.snapshot(), null);
+});

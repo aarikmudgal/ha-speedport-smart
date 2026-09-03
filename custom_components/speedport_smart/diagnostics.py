@@ -31,7 +31,9 @@ _IPV6_PATTERN = re.compile(
 _SECRET_KEY_PARTS = frozenset(
     {
         "credential",
+        "dect_pin",
         "password",
+        "pin_code",
         "private_key",
         "public_key",
         "preshared",
@@ -58,15 +60,27 @@ _IDENTIFIER_KEY_PARTS = frozenset(
     }
 )
 _IDENTIFIER_KEYS = frozenset(
-    {"device_id", "id", "router_id", "source_row_id", "uid", "uuid"}
+    {
+        "device_id",
+        "id",
+        "provider_id",
+        "router_id",
+        "source_row_id",
+        "uid",
+        "uuid",
+    }
 )
 _CHILD_LABEL_KEYS = frozenset(
     {
         "access_point",
         "label",
+        "mesh_parent",
         "mesh_node",
         "name",
+        "parent",
         "parental_profile",
+        "ssid",
+        "target",
         "title",
     }
 )
@@ -87,6 +101,10 @@ _ADDRESS_KEYS = frozenset(
     {
         "address",
         "dns",
+        "ddns_domain",
+        "ddns_update_server",
+        "domain",
+        "domain_name",
         "external_ip",
         "gateway",
         "host",
@@ -99,8 +117,10 @@ _ADDRESS_KEYS = frozenset(
         "ipv4_prefix",
         "ipv6",
         "ipv6_address",
+        "ipv6_gua",
         "ipv6_network",
         "ipv6_prefix",
+        "ipv6_ula",
         "network",
         "network_address",
         "owner_ip_address",
@@ -110,20 +130,54 @@ _ADDRESS_KEYS = frozenset(
         "public_ipv6",
         "subnet",
         "subnet_mask",
+        "ula_address",
+        "update_server",
+        "usable_ipv6_range",
         "wan_ip",
     }
 )
 _PHONE_KEY_PARTS = frozenset(
     {
+        "assigned_number",
         "called_number",
         "caller",
         "calling_number",
+        "contact_address",
+        "contact_name",
+        "contact_number",
+        "incoming_number",
+        "number_assignment",
+        "outgoing_number",
         "phone_number",
         "telephone_number",
     }
 )
 _PHONE_KEYS = frozenset({"callee", "destination", "number", "phone", "telephone"})
 _RAW_LOG_KEYS = frozenset({"event_log", "logs", "security_log", "system_log"})
+_UNTRUSTED_TEXT_KEYS = frozenset(
+    {
+        "error_code",
+        "error_reason",
+        "failure_reason",
+        "message",
+        "reason",
+        "status_message",
+    }
+)
+_ERROR_CLASS_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def safe_error_class_name(error: object) -> str:
+    """Return one bounded ASCII exception class without its message."""
+    if isinstance(error, BaseException):
+        candidate = type(error).__name__
+    elif isinstance(error, str):
+        candidate = error.partition(":")[0]
+    else:
+        return "UnknownError"
+    if _ERROR_CLASS_PATTERN.fullmatch(candidate):
+        return candidate
+    return "UnknownError"
 
 
 async def async_get_config_entry_diagnostics(
@@ -148,7 +202,7 @@ async def async_get_config_entry_diagnostics(
 def _redact(value: Any, *, key: str = "") -> Any:
     """Recursively redact credentials and subscriber-identifying information."""
     normalized_key = key.casefold()
-    if normalized_key in _RAW_LOG_KEYS:
+    if normalized_key in _RAW_LOG_KEYS or normalized_key in _UNTRUSTED_TEXT_KEYS:
         return REDACTED
     if any(part in normalized_key for part in _SECRET_KEY_PARTS):
         return REDACTED

@@ -62,8 +62,10 @@ def test_supported_and_value_transform() -> None:
     """Capability and path both gate entity creation."""
     hub = FakeHub()
     assert supported(hub, "wifi", "wifi.channel")
+    assert supported(hub, ("dsl", "wifi"), "wifi.channel")
     assert supported(hub, "wifi", None)
     assert not supported(hub, "dsl", "wifi.channel")
+    assert not supported(hub, ("dsl", "mesh"), "wifi.channel")
     assert not supported(hub, "wifi", "wifi.missing")
     assert value(hub, "wifi.channel", as_int) == 11
     assert value(hub, "wifi.channel") == 11
@@ -154,6 +156,18 @@ def test_telephone_line_child_rejects_phone_number_identity() -> None:
         )
         is None
     )
+
+
+def test_dect_repeater_child_uses_safe_default_name() -> None:
+    """An exact repeater row creates a stable child without a private label."""
+    device = speedport_child_device(
+        "dect_repeater",
+        {"id": "repeater-1", "registered": True},
+    )
+
+    assert device is not None
+    assert device.identifier == "repeater-1"
+    assert device.name == "DECT repeater"
 
 
 def test_collection_rejects_scalar_root() -> None:

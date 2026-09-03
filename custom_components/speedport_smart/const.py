@@ -30,7 +30,6 @@ DEFAULT_FAST_INTERVAL: Final = timedelta(seconds=5)
 DEFAULT_WAN_INTERVAL: Final = 0
 DEFAULT_NORMAL_INTERVAL: Final = timedelta(seconds=30)
 DEFAULT_SLOW_INTERVAL: Final = timedelta(minutes=5)
-RATE_WINDOW_SECONDS: Final = 10.0
 DEVICE_NAME_MAX_LENGTH: Final = 28
 DEVICE_NAME_PATTERN: Final = r"^[A-Za-z0-9-]{1,28}$"
 
@@ -83,6 +82,19 @@ MANAGED_DEVICE_FORM_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
         - frozenset({"mdevice_wifi", "mdevice_upspeed", "mdevice_rssi"}),
         "addmwlandevice": _MANAGED_DEVICE_FIELDS,
         "addmwlan5device": _MANAGED_DEVICE_FIELDS,
+    }
+)
+
+# LTE.json returns these exact symbolic values on Smart 4R firmware, while the
+# matching page submits the equivalent decimal strings when the mode changes.
+RECEIVER_LED_MODE_CODES: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "0": 0,
+        "1": 1,
+        "2": 2,
+        "On": 0,
+        "Timer": 1,
+        "Off": 2,
     }
 )
 

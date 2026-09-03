@@ -24,6 +24,7 @@ from homeassistant.const import (
 from homeassistant.core import callback
 
 from .coordinator import PollGroup
+from .diagnostics import safe_error_class_name
 from .entity import SpeedportDevice, SpeedportEntity
 from .platform_helpers import (
     as_datetime,
@@ -57,7 +58,7 @@ class SpeedportSensorEntityDescription(SensorEntityDescription):
     """Describe a normalized Speedport sensor."""
 
     data_path: str
-    capability: str
+    capability: str | tuple[str, ...]
     coordinator_group: PollGroup
     transform: Callable[[Any], Any] | None = None
 
@@ -74,6 +75,7 @@ class SpeedportChildSensorDescription:
     native_unit_of_measurement: Any = None
     state_class: SensorStateClass | None = None
     suggested_display_precision: int | None = None
+    attribute_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +120,7 @@ WAN_TELEMETRY_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         key="wan_polling_state",
         translation_key="wan_polling_state",
         device_class=SensorDeviceClass.ENUM,
-        options=["learning", "stable", "retrying", "limited"],
+        options=["learning", "stable", "cooldown", "retrying", "limited"],
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
@@ -136,6 +138,25 @@ WAN_TELEMETRY_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+)
+
+_POLLING_HEALTH_GROUP_BY_KEY = {
+    f"{group.value}_polling_health": group for group in PollGroup
+}
+POLLING_HEALTH_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = tuple(
+    SensorEntityDescription(
+        key=key,
+        translation_key=key,
+        device_class=SensorDeviceClass.ENUM,
+        options=["healthy", "failed", "initializing"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    )
+    for key in _POLLING_HEALTH_GROUP_BY_KEY
+)
+ENDPOINT_FAILURE_SENSOR_DESCRIPTION = SensorEntityDescription(
+    key="endpoint_failures",
+    translation_key="endpoint_failures",
+    entity_category=EntityCategory.DIAGNOSTIC,
 )
 
 
@@ -157,6 +178,16 @@ _WIFI_WPS_STATES = {
     1: "in_progress",
 }
 _WIFI_SCHEDULE_MODES = {0: "disabled", 1: "daily", 2: "weekly"}
+_DDNS_STATES = {0: "not_registered", 1: "error", 2: "registered"}
+_WIFI_SCHEDULE_DAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
 _RECEIVER_LED_MODES = {
     0: "use_leds",
     1: "off_after_timeout",
@@ -204,6 +235,32 @@ _UPLOAD_RATE = SpeedportChildSensorDescription(
     state_class=SensorStateClass.MEASUREMENT,
     suggested_display_precision=2,
 )
+_DOWNLOAD_LINK_SPEED = SpeedportChildSensorDescription(
+    key="download_link_speed",
+    name="Download link speed",
+    field="download_link_speed_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+)
+_UPLOAD_LINK_SPEED = SpeedportChildSensorDescription(
+    key="upload_link_speed",
+    name="Upload link speed",
+    field="upload_link_speed_bps",
+    transform=as_mbit_per_second,
+    device_class=SensorDeviceClass.DATA_RATE,
+    native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+    state_class=SensorStateClass.MEASUREMENT,
+    suggested_display_precision=1,
+)
+_WIFI_GENERATION = SpeedportChildSensorDescription(
+    key="wifi_generation",
+    name="Wi-Fi generation",
+    field="wifi_generation",
+    transform=as_int,
+)
 _BYTES_RECEIVED = SpeedportChildSensorDescription(
     key="bytes_received",
     name="Data received",
@@ -237,7 +294,20 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
         fields=(
             _SIGNAL_DBM,
             _LINK_SPEED,
+            _DOWNLOAD_LINK_SPEED,
+            _UPLOAD_LINK_SPEED,
             *_TRAFFIC_FIELDS,
+            _WIFI_GENERATION,
+            SpeedportChildSensorDescription(
+                key="wifi_standard",
+                name="Wi-Fi standard",
+                field="wifi_standard",
+            ),
+            SpeedportChildSensorDescription(
+                key="connection_medium",
+                name="Connection medium",
+                field="medium",
+            ),
             SpeedportChildSensorDescription(
                 key="radio_band",
                 name="Radio band",
@@ -261,10 +331,12 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
     SpeedportChildSensorCollection(
         kind="mesh_node",
         data_paths=("mesh.nodes",),
-        coordinator_group=SLOW,
+        coordinator_group=NORMAL,
         fields=(
             _SIGNAL_DBM,
             _LINK_SPEED,
+            _DOWNLOAD_LINK_SPEED,
+            _UPLOAD_LINK_SPEED,
             *_TRAFFIC_FIELDS,
             SpeedportChildSensorDescription(
                 key="radio_band",
@@ -285,6 +357,48 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
                 state_class=SensorStateClass.MEASUREMENT,
             ),
             SpeedportChildSensorDescription(
+                key="mesh_parent",
+                name="Mesh parent",
+                field="parent",
+                attribute_fields=("ipv4",),
+            ),
+            SpeedportChildSensorDescription(
+                key="mesh_device_type",
+                name="Mesh device type",
+                field="device_type",
+                transform=as_int,
+            ),
+            SpeedportChildSensorDescription(
+                key="mesh_linked_lan_ports",
+                name="Linked LAN ports",
+                field="linked_lan_port_count",
+                transform=as_int,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="connection_medium",
+                name="Connection medium",
+                field="medium",
+            ),
+            SpeedportChildSensorDescription(
+                key="lan_port_1_speed",
+                name="LAN port 1 link speed",
+                field="lan_port_1_speed_bps",
+                transform=as_mbit_per_second,
+                device_class=SensorDeviceClass.DATA_RATE,
+                native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
+                key="lan_port_2_speed",
+                name="LAN port 2 link speed",
+                field="lan_port_2_speed_bps",
+                transform=as_mbit_per_second,
+                device_class=SensorDeviceClass.DATA_RATE,
+                native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+                state_class=SensorStateClass.MEASUREMENT,
+            ),
+            SpeedportChildSensorDescription(
                 key="role",
                 name="Mesh role",
                 field="role",
@@ -302,6 +416,20 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
                 device_class=SensorDeviceClass.DURATION,
                 native_unit_of_measurement=UnitOfTime.SECONDS,
                 state_class=SensorStateClass.TOTAL,
+            ),
+        ),
+    ),
+    SpeedportChildSensorCollection(
+        kind="powerline_node",
+        data_paths=("powerline.nodes",),
+        coordinator_group=NORMAL,
+        fields=(
+            _DOWNLOAD_LINK_SPEED,
+            _UPLOAD_LINK_SPEED,
+            SpeedportChildSensorDescription(
+                key="powerline_mode",
+                name="Powerline mode",
+                field="mode",
             ),
         ),
     ),
@@ -488,6 +616,7 @@ CHILD_SENSOR_COLLECTIONS: tuple[SpeedportChildSensorCollection, ...] = (
                 name="Cell ID",
                 field="cell_id",
             ),
+            _LINK_SPEED,
             *_TRAFFIC_FIELDS,
             SpeedportChildSensorDescription(
                 key="temperature",
@@ -672,6 +801,16 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
+        key="internet_connected_since",
+        translation_key="internet_connected_since",
+        data_path="internet.connected_since",
+        capability="internet",
+        coordinator_group=NORMAL,
+        transform=as_datetime,
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
         key="wan_interface",
         translation_key="wan_interface",
         data_path="wan.interface.name",
@@ -729,6 +868,32 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         transform=_code_enum(_INTERNET_PRIVACY_LEVELS),
         device_class=SensorDeviceClass.ENUM,
         options=["off", "level_1", "level_2"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="internet_provisioning_code",
+        translation_key="internet_provisioning_code",
+        data_path="internet.provisioning_code",
+        capability="internet",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="internet_provider_family",
+        translation_key="internet_provider_family",
+        data_path="internet.provider_family",
+        capability="internet",
+        coordinator_group=NORMAL,
+        device_class=SensorDeviceClass.ENUM,
+        options=["telekom", "other"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="internet_error_code",
+        translation_key="internet_error_code",
+        data_path="internet.error_code",
+        capability="internet",
+        coordinator_group=NORMAL,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     # DSL/VDSL.
@@ -864,6 +1029,14 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         coordinator_group=SLOW,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    SpeedportSensorEntityDescription(
+        key="dsl_error_code",
+        translation_key="dsl_error_code",
+        data_path="dsl.error_code",
+        capability="dsl",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Hybrid and mobile receiver.
     SpeedportSensorEntityDescription(
         key="mobile_network_type",
@@ -871,6 +1044,55 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         data_path="mobile.network_type",
         capability="mobile",
         coordinator_group=NORMAL,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_status_code",
+        translation_key="mobile_status_code",
+        data_path="mobile.status_code",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_nr_signal",
+        translation_key="mobile_nr_signal",
+        data_path="mobile.nr.signal_dbm",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_nr_band",
+        translation_key="mobile_nr_band",
+        data_path="mobile.nr.band_code",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_lte_signal",
+        translation_key="mobile_lte_signal",
+        data_path="mobile.lte.signal_dbm",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        transform=as_float,
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    SpeedportSensorEntityDescription(
+        key="mobile_lte_band",
+        translation_key="mobile_lte_band",
+        data_path="mobile.lte.band_code",
+        capability="mobile",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
         key="mobile_operator",
@@ -961,6 +1183,14 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
+        key="receiver_model",
+        translation_key="receiver_model",
+        data_path="receiver.model",
+        capability="receiver",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
         key="receiver_led_mode",
         translation_key="receiver_led_mode",
         data_path="receiver.led_mode",
@@ -1048,6 +1278,59 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SpeedportSensorEntityDescription(
+        key="wifi_guest_2_4_clients",
+        translation_key="wifi_guest_2_4_clients",
+        data_path="wifi.guest.radio_2_4_client_count",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_guest_5_clients",
+        translation_key="wifi_guest_5_clients",
+        data_path="wifi.guest.radio_5_client_count",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    *(
+        SpeedportSensorEntityDescription(
+            key=f"wifi_guest_wifi_{generation}_clients",
+            translation_key=f"wifi_guest_wifi_{generation}_clients",
+            data_path=f"wifi.guest.wifi_{generation}_client_count",
+            capability="wifi",
+            coordinator_group=NORMAL,
+            transform=as_int,
+            state_class=SensorStateClass.MEASUREMENT,
+            entity_category=EntityCategory.DIAGNOSTIC,
+        )
+        for generation in (4, 5, 6)
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_office_clients",
+        translation_key="wifi_office_clients",
+        data_path="wifi.office.client_count",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_guest_remaining_time",
+        translation_key="wifi_guest_remaining_time",
+        data_path="wifi.guest.remaining_minutes",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
         key="wifi_2_4_channel",
         translation_key="wifi_2_4_channel",
         data_path="wifi.radio_2_4.channel",
@@ -1062,6 +1345,16 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         capability="wifi",
         coordinator_group=NORMAL,
         transform=as_int,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_5_channel_width",
+        translation_key="wifi_5_channel_width",
+        data_path="wifi.radio_5.channel_width_mode",
+        capability="wifi",
+        coordinator_group=NORMAL,
+        device_class=SensorDeviceClass.ENUM,
+        options=["single_channel", "40_mhz", "80_mhz", "160_mhz"],
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
         key="wifi_band_mode",
@@ -1089,6 +1382,15 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         key="wifi_2_4_encryption_mode",
         translation_key="wifi_2_4_encryption_mode",
         data_path="wifi.radio_2_4.encryption_mode",
+        capability="wifi",
+        coordinator_group=SLOW,
+        transform=as_int,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="wifi_5_encryption_mode",
+        translation_key="wifi_5_encryption_mode",
+        data_path="wifi.radio_5.encryption_mode",
         capability="wifi",
         coordinator_group=SLOW,
         transform=as_int,
@@ -1140,11 +1442,21 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
+        key="wifi_schedule_weekly",
+        translation_key="wifi_schedule_weekly",
+        data_path="wifi.schedule.weekly_day_count",
+        capability="wifi",
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
         key="mesh_nodes",
         translation_key="mesh_nodes",
         data_path="mesh.nodes",
-        capability="mesh",
-        coordinator_group=SLOW,
+        capability=("mesh", "mesh_topology"),
+        coordinator_group=NORMAL,
         transform=count_items,
         state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -1153,7 +1465,7 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         translation_key="mesh_clients",
         data_path="mesh.client_count",
         capability="mesh",
-        coordinator_group=NORMAL,
+        coordinator_group=SLOW,
         transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -1184,6 +1496,73 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+    *(
+        SpeedportSensorEntityDescription(
+            key=f"lan_port_{port}_speed",
+            translation_key=f"lan_port_{port}_speed",
+            data_path=f"lan.ports.port_{port}.speed_bps",
+            capability="lan",
+            coordinator_group=NORMAL,
+            transform=as_mbit_per_second,
+            device_class=SensorDeviceClass.DATA_RATE,
+            native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+            state_class=SensorStateClass.MEASUREMENT,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            suggested_display_precision=0,
+        )
+        for port in range(1, 5)
+    ),
+    SpeedportSensorEntityDescription(
+        key="lan_ipv4_address",
+        translation_key="lan_ipv4_address",
+        data_path="lan.ipv4_address",
+        capability="lan",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lan_subnet_mask",
+        translation_key="lan_subnet_mask",
+        data_path="lan.subnet_mask",
+        capability="lan",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lan_ula_address",
+        translation_key="lan_ula_address",
+        data_path="lan.ula_address",
+        capability="lan",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="lan_usable_ipv6_range",
+        translation_key="lan_usable_ipv6_range",
+        data_path="lan.usable_ipv6_range",
+        capability="lan",
+        coordinator_group=SLOW,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dhcp_pool_size",
+        translation_key="dhcp_pool_size",
+        data_path="dhcp.pool_size",
+        capability="dhcp",
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dhcp_lease_duration_code",
+        translation_key="dhcp_lease_duration_code",
+        data_path="dhcp.lease_duration_code",
+        capability="dhcp",
+        coordinator_group=SLOW,
+        transform=as_int,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Network services and access policy.
     SpeedportSensorEntityDescription(
         key="port_forward_rules",
@@ -1209,6 +1588,36 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         data_path="ddns.provider",
         capability="ddns",
         coordinator_group=SLOW,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ddns_update_protocol",
+        translation_key="ddns_update_protocol",
+        data_path="ddns.update_protocol",
+        capability="ddns",
+        coordinator_group=SLOW,
+        device_class=SensorDeviceClass.ENUM,
+        options=["http", "https"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ddns_update_port",
+        translation_key="ddns_update_port",
+        data_path="ddns.update_port",
+        capability="ddns",
+        coordinator_group=SLOW,
+        transform=as_int,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="ddns_status",
+        translation_key="ddns_status",
+        data_path="ddns.status_code",
+        capability="ddns",
+        coordinator_group=SLOW,
+        transform=_code_enum(_DDNS_STATES),
+        device_class=SensorDeviceClass.ENUM,
+        options=["not_registered", "error", "registered"],
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
         key="ddns_last_update",
@@ -1258,7 +1667,7 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         translation_key="parental_blocked_clients",
         data_path="parental.blocked_client_count",
         capability="parental",
-        coordinator_group=NORMAL,
+        coordinator_group=SLOW,
         transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -1324,6 +1733,24 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
+        key="telephony_provisioning_code",
+        translation_key="telephony_provisioning_code",
+        data_path="telephony.provisioning_code",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="telephony_provider_family",
+        translation_key="telephony_provider_family",
+        data_path="telephony.provider_family",
+        capability="telephony",
+        coordinator_group=NORMAL,
+        device_class=SensorDeviceClass.ENUM,
+        options=["telekom", "other"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
         key="telephony_providers",
         translation_key="telephony_providers",
         data_path="telephony.provider_count",
@@ -1369,6 +1796,16 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         data_path="telephony.warning_voip_number_count",
         capability="telephony",
         coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="telephony_failed_lines",
+        translation_key="telephony_failed_lines",
+        data_path="telephony.failed_line_count",
+        capability="telephony",
+        coordinator_group=NORMAL,
         transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -1442,10 +1879,10 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
     SpeedportSensorEntityDescription(
         key="dect_handsets",
         translation_key="dect_handsets",
-        data_path="dect.handsets",
+        data_path="dect.handset_count",
         capability="dect",
         coordinator_group=SLOW,
-        transform=count_items,
+        transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SpeedportSensorEntityDescription(
@@ -1466,6 +1903,16 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         coordinator_group=SLOW,
         transform=count_items,
     ),
+    SpeedportSensorEntityDescription(
+        key="phonebook_entries",
+        translation_key="phonebook_entries",
+        data_path="dect.phonebook_entry_count",
+        capability="dect",
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # USB, system, firmware and diagnostics.
     SpeedportSensorEntityDescription(
         key="usb_devices",
@@ -1475,6 +1922,16 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         coordinator_group=SLOW,
         transform=count_items,
         state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SpeedportSensorEntityDescription(
+        key="dect_paging_handsets",
+        translation_key="dect_paging_handsets",
+        data_path="dect.paging_handset_count",
+        capability="dect",
+        coordinator_group=NORMAL,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
         key="usb_tethering_status",
@@ -1490,6 +1947,26 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         translation_key="usb_storage_devices",
         data_path="usb.storage_device_count",
         capability="usb",
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="media_server_folders",
+        translation_key="media_server_folders",
+        data_path="usb.media_share_count",
+        capability=("usb", "media_server"),
+        coordinator_group=SLOW,
+        transform=as_int,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SpeedportSensorEntityDescription(
+        key="media_server_active_folders",
+        translation_key="media_server_active_folders",
+        data_path="usb.active_media_share_count",
+        capability=("usb", "media_server"),
         coordinator_group=SLOW,
         transform=as_int,
         state_class=SensorStateClass.MEASUREMENT,
@@ -1541,6 +2018,25 @@ SENSOR_DESCRIPTIONS: tuple[SpeedportSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         state_class=SensorStateClass.TOTAL,
+    ),
+    SpeedportSensorEntityDescription(
+        key="system_operating_mode",
+        translation_key="system_operating_mode",
+        data_path="system.operating_mode",
+        capability="system",
+        coordinator_group=NORMAL,
+        device_class=SensorDeviceClass.ENUM,
+        options=[
+            "normal",
+            "thrown",
+            "modem",
+            "tr64",
+            "tr69",
+            "emergency_call",
+            "dect_update",
+            "botnet_protection",
+        ],
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SpeedportSensorEntityDescription(
         key="system_temperature",
@@ -1690,7 +2186,16 @@ async def async_setup_entry(
     )
 
     if hub.has_capability("diagnostics"):
-        async_add_entities([SpeedportManagementAccessSensor(hub)])
+        async_add_entities(
+            [
+                SpeedportManagementAccessSensor(hub),
+                SpeedportEndpointFailureSensor(hub),
+                *(
+                    SpeedportPollingHealthSensor(hub, description)
+                    for description in POLLING_HEALTH_SENSOR_DESCRIPTIONS
+                ),
+            ]
+        )
 
     known: set[tuple[str, str, str]] = set()
 
@@ -1742,6 +2247,7 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
     """Sensor backed by normalized hub data."""
 
     _attr_entity_registry_enabled_default = True
+    _unrecorded_attributes = frozenset({"rate_sample_span_seconds"})
     entity_description: SpeedportSensorEntityDescription
 
     def __init__(
@@ -1771,6 +2277,8 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Fail closed when a firmware enum code is outside its contract."""
+        if self.entity_description.key == "update_failures":
+            return self.native_value is not None
         if not super().available:
             return False
         description = self.entity_description
@@ -1785,19 +2293,87 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
-        """Return stable metadata for the selected WAN interface."""
-        if self.entity_description.key != "wan_interface":
-            return None
-        attributes = {
-            key: self.hub.get(("wan", "interface", key)) for key in ("index", "alias")
-        }
-        return {key: item for key, item in attributes.items() if item is not None}
+        """Return bounded metadata for compound read-only sensors."""
+        if self.entity_description.key in {"wan_download_rate", "wan_upload_rate"}:
+            telemetry = self.hub.wan_counter_telemetry
+            return {
+                "rate_method": telemetry.get("rate_method"),
+                "rate_sample_span_seconds": telemetry.get("rate_sample_span_seconds"),
+            }
+        if self.entity_description.key == "wan_interface":
+            interface_attributes = {
+                key: self.hub.get(("wan", "interface", key))
+                for key in ("index", "alias")
+            }
+            return {
+                key: item
+                for key, item in interface_attributes.items()
+                if item is not None
+            }
+        if self.entity_description.key == "wifi_schedule_weekly":
+            weekly = self.hub.get("wifi.schedule.weekly")
+            if not isinstance(weekly, Mapping):
+                return None
+            schedule_attributes: dict[str, str] = {}
+            for day in _WIFI_SCHEDULE_DAYS:
+                window = weekly.get(day)
+                if not isinstance(window, Mapping):
+                    continue
+                for boundary in ("from", "to"):
+                    clock_time = window.get(boundary)
+                    if isinstance(clock_time, str):
+                        schedule_attributes[f"{day}_{boundary}"] = clock_time
+            return schedule_attributes
+        if self.entity_description.key == "dhcp_pool_size":
+            pool_attributes = {
+                "start_ipv4": self.hub.get("dhcp.pool_start_ipv4"),
+                "end_ipv4": self.hub.get("dhcp.pool_end_ipv4"),
+            }
+            return {
+                key: item for key, item in pool_attributes.items() if item is not None
+            }
+        if self.entity_description.key == "update_failures":
+            failure_attributes: dict[str, Any] = {}
+            if failed_group := self.hub.get("diagnostics.failed_group"):
+                failure_attributes["last_failed_group"] = failed_group
+            if last_error := self.hub.get("diagnostics.last_error"):
+                failure_attributes["last_error_class"] = safe_error_class_name(
+                    last_error
+                )
+            return {
+                key: item
+                for key, item in failure_attributes.items()
+                if item is not None
+            }
+        return None
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh the cross-group failure aggregate after every poll group."""
+        await super().async_added_to_hass()
+        if self.entity_description.key != "update_failures":
+            return
+        for group in (PollGroup.FAST, PollGroup.SLOW):
+            self.async_on_remove(
+                coordinator(self.hub, group).async_add_listener(
+                    self.async_write_ha_state
+                )
+            )
 
 
 class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
     """Expose the adaptive WAN scheduler as read-only diagnostic state."""
 
     _attr_entity_registry_enabled_default = True
+    _unrecorded_attributes = frozenset(
+        {
+            "retry_in_seconds",
+            "success_streak",
+            "observed_interval_seconds",
+            "rate_sample_span_seconds",
+            "polling_focus",
+            "background_refresh_deferred",
+        }
+    )
     entity_description: SensorEntityDescription
 
     def __init__(
@@ -1824,7 +2400,12 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
         value_key = _WAN_TELEMETRY_KEY_BY_ENTITY[key]
         raw = self._telemetry.get(value_key)
         if key == "wan_last_sample":
-            return as_datetime(raw) if raw is not None else None
+            sampled_at = as_datetime(raw) if raw is not None else None
+            return (
+                sampled_at.replace(second=0, microsecond=0)
+                if sampled_at is not None
+                else None
+            )
         if key in {"wan_polling_interval", "wan_fastest_proven_interval"}:
             return as_float(raw) if raw is not None else None
         return str(raw) if raw is not None else None
@@ -1861,11 +2442,110 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
                 "last_stable_interval_seconds",
                 "retry_in_seconds",
                 "success_streak",
+                "success_samples_required",
+                "cooldown_seconds",
+                "rate_method",
+                "polling_focus",
+                "background_refresh_deferred",
             )
             if telemetry.get(key) is not None
         }
         attributes["source_available"] = not self.hub.has_endpoint_error("wan_counters")
+        attributes["observed_interval_seconds"] = telemetry.get(
+            "observed_interval_seconds"
+        )
+        attributes["rate_sample_span_seconds"] = telemetry.get(
+            "rate_sample_span_seconds"
+        )
         return attributes
+
+
+class SpeedportPollingHealthSensor(SpeedportEntity, SensorEntity):
+    """Expose one coordinator's health without hiding its failure state."""
+
+    _attr_entity_registry_enabled_default = True
+    entity_description: SensorEntityDescription
+
+    def __init__(
+        self,
+        hub: SpeedportHub,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Initialize polling-group health."""
+        group = _POLLING_HEALTH_GROUP_BY_KEY[description.key]
+        super().__init__(hub, coordinator(hub, group), description.key)
+        self._group = group
+        self.entity_description = description
+
+    @property
+    def native_value(self) -> str:
+        """Return a bounded health state."""
+        return str(self.hub.poll_group_health(self._group)["state"])
+
+    @property
+    def available(self) -> bool:
+        """Remain visible specifically so a failed coordinator can be explained."""
+        return True
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any]:
+        """Return bounded scheduling and failure metadata."""
+        attributes: dict[str, Any] = {}
+        if self.coordinator.update_interval is not None:
+            attributes["update_interval_seconds"] = (
+                self.coordinator.update_interval.total_seconds()
+            )
+        health = self.hub.poll_group_health(self._group)
+        if health["state"] == "failed":
+            if last_success := health["last_successful_update"]:
+                attributes["last_successful_update"] = last_success
+            if last_error := health["last_error_class"]:
+                attributes["last_error_class"] = safe_error_class_name(last_error)
+        return attributes
+
+
+class SpeedportEndpointFailureSensor(SpeedportEntity, SensorEntity):
+    """Expose bounded endpoint failure metadata without raw exception text."""
+
+    _attr_entity_registry_enabled_default = True
+    entity_description = ENDPOINT_FAILURE_SENSOR_DESCRIPTION
+
+    def __init__(self, hub: SpeedportHub) -> None:
+        """Initialize the endpoint failure count."""
+        super().__init__(
+            hub,
+            coordinator(hub, PollGroup.FAST),
+            self.entity_description.key,
+        )
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of currently failed semantic endpoint families."""
+        return len(self.hub.endpoint_errors)
+
+    @property
+    def available(self) -> bool:
+        """Remain visible while any polling group is unavailable."""
+        return True
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any]:
+        """Return sorted semantic family names and exception classes only."""
+        failures = {
+            family: safe_error_class_name(error_name)
+            for family, error_name in sorted(self.hub.endpoint_errors.items())
+        }
+        return {"failures": failures}
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh this aggregate when any polling group changes."""
+        await super().async_added_to_hass()
+        for group in (PollGroup.NORMAL, PollGroup.SLOW):
+            self.async_on_remove(
+                coordinator(self.hub, group).async_add_listener(
+                    self.async_write_ha_state
+                )
+            )
 
 
 class SpeedportManagementAccessSensor(SpeedportEntity, SensorEntity):
@@ -1980,3 +2660,15 @@ class SpeedportChildSensor(SpeedportEntity, SensorEntity):
             return transform(raw)
         except (TypeError, ValueError, ZeroDivisionError):
             return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Expose explicitly allowlisted child metadata."""
+        item = self._item
+        if item is None or not self._field_description.attribute_fields:
+            return None
+        return {
+            key: item[key]
+            for key in self._field_description.attribute_fields
+            if item.get(key) is not None
+        }

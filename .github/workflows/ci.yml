@@ -57,7 +57,17 @@ jobs:
       - name: Check frontend syntax
         run: |
           node --check custom_components/speedport_smart/frontend/accessibility.js
+          node --check custom_components/speedport_smart/frontend/admin-navigation.js
+          node --check custom_components/speedport_smart/frontend/dashboard-overview.js
+          node --check custom_components/speedport_smart/frontend/traffic-history.js
+          node --check custom_components/speedport_smart/frontend/polling-focus.js
           node --check custom_components/speedport_smart/frontend/controls.js
+          node --check custom_components/speedport_smart/frontend/configuration-editor.js
+          node --check custom_components/speedport_smart/frontend/maintenance-editor.js
+          node --check custom_components/speedport_smart/frontend/file-transfer-editor.js
+          node --check custom_components/speedport_smart/frontend/file-digest.js
+          node --check custom_components/speedport_smart/frontend/call-history-view.js
+          node --check custom_components/speedport_smart/frontend/private-api.js
           node --check custom_components/speedport_smart/frontend/entity-state.js
           node --check custom_components/speedport_smart/frontend/render-state.js
           node --check custom_components/speedport_smart/frontend/speedport-smart-panel.js

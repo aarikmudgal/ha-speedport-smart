@@ -42,7 +42,15 @@ test("dashboard fallback hierarchy keeps related router features together", () =
     ["wireless", "wifi_wps_active", "wireless_wps"],
     ["wireless", "wifi_mac_filter_enabled", "wireless_access"],
     ["wireless", "wifi_schedule_enabled", "wireless_schedule"],
+    ["wireless", "wifi_office_clients", "wireless_office"],
     ["telephony", "pbx_enabled", "telephony_pbx"],
+    ["dsl", "dsl_error_code", "dsl_errors"],
+    ["mobile", "mobile_nr_signal", "mobile_signal"],
+    ["mobile", "mobile_lte_signal", "mobile_signal"],
+    ["mobile", "mobile_nr_band", "mobile_radio"],
+    ["mobile", "mobile_lte_band", "mobile_radio"],
+    ["connection", "internet_connected_since", "connection_internet"],
+    ["system", "router_https_enabled", "system_security"],
   ];
 
   for (const [section, translationKey, expectedGroup] of cases) {
@@ -67,6 +75,51 @@ test("explicit backend capability groups remain authoritative", () => {
       domain: "sensor",
     }),
     "wireless_radios",
+  );
+});
+
+test("removed controls cannot regain obsolete dashboard groups", () => {
+  for (const translationKey of [
+    "restart_dsl",
+    "optimize_mesh",
+    "ddns",
+    "update_ddns",
+    "vpn",
+    "restart_vpn",
+    "parental_controls",
+    "media_server",
+  ]) {
+    assert.equal(
+      capabilityGroupFor({
+        section: "controls",
+        translation_key: translationKey,
+        domain: "button",
+      }),
+      "controls_other",
+      translationKey,
+    );
+  }
+
+  for (const groupId of [
+    "controls_mesh",
+    "controls_ddns",
+    "controls_vpn",
+    "controls_parental",
+    "controls_media",
+  ]) {
+    assert.equal(panelSource.includes(groupId), false, groupId);
+  }
+});
+
+test("Powerline child entities stay in the LAN hierarchy", () => {
+  assert.equal(
+    capabilityGroupFor({
+      section: "clients",
+      translation_key: "powerline_download_link_speed",
+      child_device: { kind: "powerline_node" },
+      domain: "sensor",
+    }),
+    "clients_lan",
   );
 });
 
@@ -224,6 +277,29 @@ test("native WAN diagnostics override stale metadata between refreshes", () => {
   assert.equal(live.last_stable_interval_seconds, 5);
   assert.equal(live.retry_in_seconds, 3);
   assert.equal(live.last_sampled_at, "2026-09-01T10:00:00+00:00");
+});
+
+test("exact WAN source timestamp wins over the Recorder-safe native fallback", () => {
+  const source = {
+    id: "wan_counters",
+    last_sampled_at: "2026-09-01T10:00:05.875Z",
+  };
+  const entities = [
+    {
+      translation_key: "wan_last_sample",
+      entity_id: "sensor.router_wan_last_sample",
+    },
+  ];
+  const states = {
+    "sensor.router_wan_last_sample": {
+      state: "2026-09-01T10:00:00+00:00",
+      attributes: {},
+    },
+  };
+
+  const live = liveWanSourceFromEntityStates(source, entities, states);
+
+  assert.equal(live.last_sampled_at, "2026-09-01T10:00:05.875Z");
 });
 
 test("WAN metadata refresh and stale styling meet the freshness contract", () => {

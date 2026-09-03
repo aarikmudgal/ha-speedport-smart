@@ -6,22 +6,31 @@ import asyncio
 import ipaddress
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Protocol, cast
 from urllib.parse import urlencode, urlsplit
 
 import aiohttp
 
+from ..admin_actions import get_admin_action_contract
+from ..configuration import ConfigurationError, settings_contracts
+from ..configuration_targets import (
+    resolve_settings_contract,
+    target_settings_read_pairs,
+)
 from ..const import (
     MANAGED_DEVICE_FORM_FIELDS,
+    RECEIVER_LED_MODE_CODES,
 )
 from ..identity import port_forward_rule_fingerprint, valid_device_name
+from ..maintenance import MaintenanceError, maintenance_payload
 from ..models import (
+    CandidateInventoryResult,
     CapabilityReport,
     DslMetrics,
     EndpointCapability,
@@ -33,6 +42,7 @@ from ..models import (
     normalize_status,
     select_active_wan_interface,
 )
+from ..private_authorization import check_private_authorization
 from .codec import DEFAULT_KEY, decode_payload, encode_payload, is_encrypted_payload
 from .exceptions import (
     SpeedportAuthenticationError,
@@ -42,6 +52,7 @@ from .exceptions import (
     SpeedportError,
     SpeedportInvalidCredentialsError,
     SpeedportLoginLockedError,
+    SpeedportMutationOutcomeUnknownError,
     SpeedportProtocolError,
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
@@ -67,6 +78,7 @@ _LOGOUT_SETTLE_SECONDS: Final = 0.5
 _LOGOUT_REJECTED_STATES: Final = frozenset(
     {"denied", "error", "failed", "failure", "false", "invalid", "0"}
 )
+_LOGOUT_ACCEPTED_STATES: Final = frozenset({"1", "ok", "success", "true"})
 _WAN_BYTE_COUNTER_SUFFIXES: Final = (
     "BytesReceived",
     "BytesSent",
@@ -117,8 +129,339 @@ _INTERNET_PRIVACY_ENDPOINT: Final = "data/IPPrivacy.json"
 _INTERNET_PRIVACY_REFERER: Final = "html/content/internet/con_privacy.html"
 _LTE_MODE_ENDPOINT: Final = "data/LTE.json"
 _LTE_MODE_REFERER: Final = "html/content/internet/lte_mode.html"
+_LTE_FIRMWARE_REFERER: Final = "html/content/internet/lte_firmware.html"
+_IP_INFORMATION_MAX_RESPONSE_BYTES: Final = 128 * 1024
+_WPS_ENDPOINT: Final = "data/WLANAccess.json"
+_WPS_STATUS_ENDPOINT: Final = "data/WPSStatus.json"
+_WPS_REFERER: Final = "html/content/network/wlan_wps.html"
+_WIFI_ACCESS_REFERER: Final = "html/content/network/wlan_access.html"
+_QUERY_TOKEN_VALUE = re.compile(r"^[0-9]{1,32}$")
+_QUERY_TOKEN_READS: Final = frozenset(
+    {
+        (_INTERNET_PRIVACY_ENDPOINT, _INTERNET_PRIVACY_REFERER),
+        (_LTE_MODE_ENDPOINT, _LTE_MODE_REFERER),
+        (_LTE_MODE_ENDPOINT, _LTE_FIRMWARE_REFERER),
+        ("data/IPData.json", "html/content/internet/con_ipdata.html"),
+        (_WPS_ENDPOINT, _WPS_REFERER),
+        (_WPS_ENDPOINT, _WIFI_ACCESS_REFERER),
+        ("data/NASFolder.json", "html/content/network/nas_share.html"),
+        ("data/NASFileCount.json", "html/content/network/nas_mediareplay.html"),
+        ("data/PhoneOnlbuch.json", "html/content/phone/phone_book_basic.html"),
+        ("data/FwCheckForUpdate.json", "html/content/config/check_for_updates.html"),
+        (
+            "data/FwCheckForUpdateMesh.json",
+            "html/content/config/check_for_updates_mesh.html",
+        ),
+    }
+)
+_IP_PBX_CLIENTS_ENDPOINT: Final = "data/IPClients.json"
+_IP_PBX_CLIENTS_REFERER: Final = "html/content/phone/phone_ippbx.html"
+_PHONEBOOK_ENDPOINT: Final = "data/PhoneBook.json"
+_PHONEBOOK_ENTRY_ENDPOINT: Final = "data/PhoneBookEntry.json"
+_PHONEBOOK_REFERER: Final = "html/content/phone/phone_book_entries.html"
+_DECT_ACTION_ENDPOINT: Final = "data/DECT.json"
+_DECT_STATION_ENDPOINT: Final = "data/DECTStation.json"
+_DECT_STATUS_ENDPOINT: Final = "data/DECTInfo.json"
+_DECT_REPEATER_ENDPOINT: Final = "data/DECTRepeater.json"
+_DECT_MOBILES_REFERER: Final = "html/content/phone/phone_dect_mobiles.html"
+_DECT_REPEATER_REFERER: Final = "html/content/phone/phone_dect_repeater.html"
+_VOIP_PROVIDERS_ENDPOINT: Final = "data/IPPhone.json"
+_VOIP_LINES_ENDPOINT: Final = "data/IPPhoneNumbers.json"
+_VOIP_LINES_REFERER: Final = "html/content/phone/phone_internet.html"
+_NAS_FOLDERS_ENDPOINT: Final = "data/NASFolder.json"
+_NAS_FOLDERS_REFERER: Final = "html/content/network/nas_share.html"
 _THREE_STATE_VALUES: Final = frozenset({"0", "1", "2"})
 _BINARY_STATE_VALUES: Final = frozenset({"0", "1"})
+_WPS_STATE_VALUES: Final = frozenset({"-2", "-1", "0", "1"})
+_IP_PBX_STATUS_VALUES: Final = {0: "disconnected", 1: "registered", 2: "locked"}
+_PHONEBOOK_IDS: Final = frozenset(range(6))
+_PRIVATE_QUERY_MAX_ROWS: Final = 256
+_PRIVATE_PHONEBOOK_MAX_ROWS: Final = 1000
+_SETTINGS_TARGET_MAX_ROWS: Final = 64
+_PHONEBOOK_SETTINGS_MAX_TARGETS: Final = 5000
+_PRIVATE_QUERY_MAX_TEXT_LENGTH: Final = 256
+_PRIVATE_QUERY_MAX_PHONE_LENGTH: Final = 64
+_PRIVATE_QUERY_MAX_DECT_TARGETS: Final = 16
+_PRIVATE_QUERY_MAX_VOIP_TARGETS: Final = 32
+_PRIVATE_QUERY_MAX_DISPLAY_NAME_LENGTH: Final = 64
+_MASKED_PHONE_SUFFIX_DIGITS: Final = 4
+_MAX_VOIP_PROVIDER_CODE: Final = 9_999
+_PRIVATE_QUERY_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+_PHONEBOOK_SEARCH_PREFIX = re.compile(r"^[A-Za-z]?$")
+_PHONEBOOK_NUMBER = re.compile(r"^\+?[0-9/\-*# ]*$")
+_PHONEBOOK_BIRTHDAY = re.compile(r"^(?:|\d{2}\.\d{2}\.\d{4})$")
+_OBSERVED_SCHEMA_MAX_DEPTH: Final = 6
+_OBSERVED_SCHEMA_MAX_FIELDS: Final = 128
+_OBSERVED_SCHEMA_MAX_FAMILIES: Final = 96
+_OBSERVED_SCHEMA_MAX_CANDIDATES: Final = 128
+_OBSERVED_SCHEMA_MAX_CANDIDATES_PER_FAMILY: Final = 8
+_OBSERVED_SCHEMA_MAX_ARRAY_ITEMS: Final = 8
+_OBSERVED_SCHEMA_MAX_MAPPING_ITEMS: Final = 256
+_OBSERVED_SCHEMA_MAX_NAME_LENGTH: Final = 64
+_OBSERVED_SCHEMA_SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]*(?:\[\])?$")
+_OBSERVED_SCHEMA_ENDPOINT = re.compile(
+    r"^data/(?P<name>[A-Za-z][A-Za-z0-9_-]{0,63})\.json$"
+)
+_OBSERVED_SCHEMA_REFERER = re.compile(
+    r"^html/content/(?P<path>[a-z0-9_-]+(?:/[a-z0-9_-]+){0,4})\.html$"
+)
+_OBSERVED_SCHEMA_ARRAY_INDEX = re.compile(r"\[\d+\]")
+_OBSERVED_SCHEMA_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+$")
+_OBSERVED_SCHEMA_MAC = re.compile(r"(?i)^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$")
+_OBSERVED_SCHEMA_SEPARATED_MAC = re.compile(
+    r"(?i)(?:^|_)(?:[0-9a-f]{2}_){5}[0-9a-f]{2}(?:_|$)"
+)
+_OBSERVED_SCHEMA_COMPACT_IDENTIFIER = re.compile(r"(?i)^[0-9a-f]{12,}$")
+_OBSERVED_SCHEMA_IP_TOKENS = re.compile(r"(?:^|_)(?:\d{1,3}_){3}\d{1,3}(?:_|$)")
+_OBSERVED_SCHEMA_LONG_NUMBER = re.compile(r"\d{6,}")
+_OBSERVED_SCHEMA_DYNAMIC_KEY = re.compile(
+    r"^(?:client|device|entry|host|peer|row|rule|user)_"
+    r"(?:\d+|[0-9a-f]{8,}|[a-z0-9]{16,})$"
+)
+_OBSERVED_SCHEMA_BLOCKED_TOKENS: Final = frozenset(
+    {
+        "authorization",
+        "auth",
+        "authentication",
+        "challenge",
+        "cookie",
+        "credential",
+        "csrf",
+        "endpoint",
+        "fingerprint",
+        "host",
+        "hostname",
+        "httoken",
+        "id",
+        "key",
+        "login",
+        "nonce",
+        "origin",
+        "passphrase",
+        "password",
+        "payload",
+        "pin",
+        "puk",
+        "raw",
+        "referer",
+        "referrer",
+        "secret",
+        "session",
+        "token",
+        "uid",
+        "url",
+        "username",
+        "uuid",
+    }
+)
+
+
+class _PrivateQueryParser(Protocol):
+    """One bounded scalar parser for private query projections."""
+
+    def __call__(self, value: Any, *, max_length: int) -> str | None:
+        """Return one safe scalar or reject it."""
+
+
+_OBSERVED_SCHEMA_SAFE_SINGLE_FIELDS: Final = frozenset(
+    {
+        "active",
+        "available",
+        "bond",
+        "call",
+        "calls",
+        "channel",
+        "client",
+        "clients",
+        "connected",
+        "count",
+        "deep",
+        "device",
+        "devices",
+        "dsl",
+        "empty",
+        "enabled",
+        "energy",
+        "errors",
+        "firewall",
+        "firmware",
+        "frequency",
+        "guest",
+        "hybrid",
+        "internet",
+        "ip",
+        "item",
+        "items",
+        "lan",
+        "lte",
+        "matrix",
+        "mesh",
+        "mobile",
+        "mode",
+        "nas",
+        "node",
+        "nodes",
+        "office",
+        "online",
+        "packets",
+        "pbx",
+        "phone",
+        "phonebook",
+        "port",
+        "ports",
+        "qos",
+        "receiver",
+        "result",
+        "router",
+        "rows",
+        "safe",
+        "service",
+        "services",
+        "speedport",
+        "state",
+        "status",
+        "system",
+        "telephony",
+        "type",
+        "upnp",
+        "usb",
+        "values",
+        "version",
+        "vpn",
+        "wan",
+        "wide",
+        "wifi",
+        "wireguard",
+        "wlan",
+        "wps",
+    }
+)
+_OBSERVED_SCHEMA_SAFE_FIELDS: Final = _OBSERVED_SCHEMA_SAFE_SINGLE_FIELDS | frozenset(
+    {
+        "addipclient",
+        "addipnumber",
+        "addipphoneprovider",
+        "addrepeater",
+        "adddnsexcept",
+        "addmdevice",
+        "addmpriodevice",
+        "addmwlan5device",
+        "addmwlandevice",
+        "addnasdevice",
+        "addnasmediareplay",
+        "addpwlinedevice",
+        "addvpn",
+        "addwgdevice",
+        "auto_external_modem",
+        "auto_update",
+        "br_active",
+        "dns_rebind_active",
+        "dect_detect_status",
+        "dect_real_count",
+        "dsl_errnr",
+        "dsl_link_status",
+        "dyndns_active",
+        "dyndns_domain",
+        "dyndns_updport",
+        "dyndns_updprot",
+        "dyndns_updsrv",
+        "easy_support_deactive",
+        "ex5g_eid",
+        "ex5g_freq_5g",
+        "ex5g_freq_lte",
+        "ex5g_fw_version",
+        "ex5g_fwupd_avail",
+        "ex5g_fwupd_planned",
+        "ex5g_fwupd_time",
+        "ex5g_fwupd_version",
+        "ex5g_led_mode",
+        "ex5g_model_name",
+        "ex5g_signal_5g",
+        "ex5g_signal_lte",
+        "extwan_status",
+        "extwan_typ",
+        "fail_reason",
+        "hdvoice",
+        "inet_errnr",
+        "inet_isp",
+        "internet_extrule_active",
+        "internet_timerule_active",
+        "ipclient_status",
+        "isp_selection",
+        "lan1_device",
+        "lan2_device",
+        "lan3_device",
+        "lan4_device",
+        "lan4_link_status",
+        "lan_dhcp_validtime",
+        "lan_ip_v6",
+        "lan_ip_v6_arec",
+        "lan_ip_v6_pext",
+        "lan_ip_v6_range",
+        "lan_ip_v6_used",
+        "lte_status",
+        "mdevice_connected",
+        "mdevice_gua_ipv6",
+        "mdevice_hasui",
+        "mdevice_standards",
+        "mdevice_type",
+        "mdevice_ula_ipv6",
+        "mesh_lan1",
+        "mesh_lan2",
+        "mesh_type",
+        "nas_active",
+        "nas_device_connection",
+        "nas_device_total",
+        "nas_device_type",
+        "nas_device_used",
+        "nas_folder_nur_lesen",
+        "nas_folder_name",
+        "nas_secure",
+        "number_status",
+        "num_entries",
+        "onlinestatus",
+        "privacy_policy",
+        "provis_inet",
+        "provis_voip",
+        "pwline_connect_to",
+        "pwline_downspeed",
+        "pwline_firmware",
+        "pwline_mac",
+        "pwline_manufacturer",
+        "pwline_mode",
+        "pwline_upspeed",
+        "qos_pc",
+        "router_firewall_active",
+        "router_state",
+        "save_fails",
+        "smarthome_status",
+        "source_kind",
+        "use_bonding",
+        "use_https",
+        "use_lte",
+        "use_wlan",
+        "varid",
+        "varvalue",
+        "vpn_status",
+        "wlan0_num",
+        "wlan1_num",
+        "wlan_5ghz_speed_act",
+        "wlan_active",
+        "wlan_band",
+        "wlan_finished",
+        "wlan_guest_active",
+        "wlan_guest_display_key",
+        "wlan_guest_ssid",
+        "wlan_guest_timeleft",
+        "wlan_office_active",
+        "wlan_office_ssid",
+        "wlan_office_wps",
+        "wlan_ssid",
+        "wlan_5ghz_ssid",
+        "wlan_visible",
+        "wlanfinished",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,8 +500,19 @@ def _endpoint(
     authenticated: bool = False,
     referer: str | None = None,
     evidence_keys: tuple[str, ...] = (),
+    automatic_probe: bool = True,
+    inventory_safe: bool = True,
 ) -> EndpointCapability:
-    return EndpointCapability(family, path, authenticated, referer, evidence_keys)
+    """Build one statically reviewed built-in read endpoint contract."""
+    return EndpointCapability(
+        family=family,
+        endpoint=path,
+        authenticated=authenticated,
+        referer=referer,
+        evidence_keys=evidence_keys,
+        automatic_probe=automatic_probe,
+        inventory_safe=inventory_safe,
+    )
 
 
 DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] = (
@@ -228,6 +582,26 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("wlan", "wifi"),
                 ),
             ),
+            "wifi_schedule": (
+                _endpoint(
+                    "wifi_schedule",
+                    "data/WLANBasic.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_basic.html",
+                    evidence_keys=(
+                        "wlan_timerule",
+                        "wlan_dfrom",
+                        "wlan_dto",
+                        "wlan_time_mo_",
+                        "wlan_time_di_",
+                        "wlan_time_mi_",
+                        "wlan_time_do_",
+                        "wlan_time_fr_",
+                        "wlan_time_sa_",
+                        "wlan_time_so_",
+                    ),
+                ),
+            ),
             "lan": (
                 _endpoint(
                     "lan",
@@ -276,13 +650,36 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("public_ip", "gateway", "dns", "ipv"),
                 ),
             ),
+            "internet_configuration": (
+                _endpoint(
+                    "internet_configuration",
+                    "data/InternetConnection.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                    evidence_keys=(
+                        "onlinestatus",
+                        "auto_external_modem",
+                        "extwan_status",
+                        "lte_status",
+                    ),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "internet_configuration",
+                    "data/INetIP.json",
+                    authenticated=True,
+                    referer="html/content/internet/connection.html",
+                    evidence_keys=("inet_isp", "isp_selection", "internet"),
+                    automatic_probe=False,
+                ),
+            ),
             "connection_privacy": (
                 _endpoint(
                     "connection_privacy",
                     "data/IPPrivacy.json",
                     authenticated=True,
                     referer="html/content/internet/con_privacy.html",
-                    evidence_keys=("privacy", "lan_privacy_policy"),
+                    evidence_keys=("lan_privacy_policy",),
                 ),
             ),
             "telephony": (
@@ -312,21 +709,74 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("ip_phone", "ipphone", "sip"),
                 ),
             ),
+            "telephony_configuration": (
+                _endpoint(
+                    "telephony_configuration",
+                    "data/IPPhone.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                    evidence_keys=("addipphoneprovider", "isp_selection", "phone"),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "telephony_configuration",
+                    "data/IPPhoneNumbers.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                    evidence_keys=("addipnumber", "number_status", "phone"),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "telephony_configuration",
+                    "data/PhoneNumberAssignment.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_number.html",
+                    evidence_keys=("phone", "number", "assignment"),
+                    automatic_probe=False,
+                ),
+            ),
+            "voip_lines": (
+                _endpoint(
+                    "voip_lines",
+                    _VOIP_LINES_ENDPOINT,
+                    authenticated=True,
+                    referer=_VOIP_LINES_REFERER,
+                    evidence_keys=("addipnumber", "number_status"),
+                ),
+            ),
+            "voip_providers": (
+                _endpoint(
+                    "voip_providers",
+                    _VOIP_PROVIDERS_ENDPOINT,
+                    authenticated=True,
+                    referer=_VOIP_LINES_REFERER,
+                    evidence_keys=("addipphoneprovider", "isp_selection"),
+                ),
+            ),
             "wps": (
                 _endpoint(
                     "wps",
-                    "data/WPSStatus.json",
+                    _WPS_ENDPOINT,
                     authenticated=True,
-                    referer="html/content/network/wlan_wps.html",
-                    evidence_keys=("wps",),
+                    referer=_WPS_REFERER,
+                    evidence_keys=("use_wps",),
+                ),
+            ),
+            "wps_status": (
+                _endpoint(
+                    "wps_status",
+                    _WPS_STATUS_ENDPOINT,
+                    authenticated=True,
+                    referer=_WPS_REFERER,
+                    evidence_keys=("wlan_wps_state",),
                 ),
             ),
             "wifi_access": (
                 _endpoint(
                     "wifi_access",
-                    "data/WLANAccess.json",
+                    _WPS_ENDPOINT,
                     authenticated=True,
-                    referer="html/content/network/wlan_access.html",
+                    referer=_WIFI_ACCESS_REFERER,
                     evidence_keys=("wlan", "wps", "access"),
                 ),
             ),
@@ -337,6 +787,8 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/network/wlan_environ.html",
                     evidence_keys=("wlan", "ssid", "channel", "environment"),
+                    automatic_probe=False,
+                    inventory_safe=False,
                 ),
             ),
             "port_forwarding": (
@@ -401,6 +853,16 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("lte", "webnwalk"),
                 ),
             ),
+            "lte_log": (
+                _endpoint(
+                    "lte_log",
+                    "data/LTElog.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("addmessage", "message", "log"),
+                    automatic_probe=False,
+                ),
+            ),
             "5g": (
                 _endpoint(
                     "5g",
@@ -430,14 +892,37 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/LTE.json",
                     authenticated=True,
                     referer="html/content/internet/lte_mode.html",
-                    evidence_keys=("receiver", "ex5g", "external_5g"),
+                    evidence_keys=(
+                        "receiver",
+                        "ex5g",
+                        "external_5g",
+                        "auto_external_modem",
+                        "extwan_typ",
+                        "use_lte",
+                    ),
                 ),
                 _endpoint(
                     "receiver",
                     "data/SecureStatus.json",
                     authenticated=True,
                     referer="html/content/overview/index.html",
-                    evidence_keys=("receiver", "ex5g", "external_5g"),
+                    evidence_keys=(
+                        "receiver",
+                        "ex5g",
+                        "external_5g",
+                        "auto_external_modem",
+                        "extwan_typ",
+                        "use_lte",
+                    ),
+                ),
+            ),
+            "receiver_led": (
+                _endpoint(
+                    "receiver_led",
+                    "data/LTE.json",
+                    authenticated=True,
+                    referer="html/content/internet/lte_mode.html",
+                    evidence_keys=("ex5g_led_mode",),
                 ),
             ),
             "mesh": (
@@ -456,6 +941,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("mesh",),
                 ),
             ),
+            "mesh_topology": (
+                _endpoint(
+                    "mesh_topology",
+                    "data/DeviceList.json",
+                    authenticated=True,
+                    referer="html/content/network/devices.html",
+                    evidence_keys=(
+                        "addmeshdevice",
+                        "mesh_connect_to",
+                        "mesh_downspeed",
+                        "mesh_ipv4",
+                    ),
+                ),
+            ),
             "mesh_firmware": (
                 _endpoint(
                     "mesh_firmware",
@@ -463,6 +962,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/check_for_updates_mesh.html",
                     evidence_keys=("mesh", "firmware", "fwupd", "update"),
+                    automatic_probe=False,
                 ),
             ),
             "mesh_update": (
@@ -472,6 +972,8 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/overview/index.html",
                     evidence_keys=("mesh", "firmware", "fwupd", "update"),
+                    automatic_probe=False,
+                    inventory_safe=False,
                 ),
             ),
             "mesh_reboot_status": (
@@ -481,6 +983,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/problem_handling_mesh.html",
                     evidence_keys=("mesh", "reboot", "reset", "device"),
+                    automatic_probe=False,
                 ),
             ),
             "dhcp": (
@@ -598,6 +1101,29 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("wireguard", "vpn", "peer"),
                 ),
             ),
+            "vpn_details": (
+                _endpoint(
+                    "vpn_details",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+                _endpoint(
+                    "vpn_details",
+                    "data/WireGuard.json",
+                    authenticated=True,
+                    referer="html/content/internet/wireguard.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+                _endpoint(
+                    "vpn_details",
+                    "data/Wireguard.json",
+                    authenticated=True,
+                    referer="html/content/internet/wireguard.html",
+                    evidence_keys=("wireguard", "vpn", "peer"),
+                ),
+            ),
             "parental": (
                 _endpoint(
                     "parental",
@@ -655,6 +1181,15 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("pbx", "sip", "ip_phone", "ipphone"),
                 ),
             ),
+            "pbx_clients": (
+                _endpoint(
+                    "pbx_clients",
+                    "data/IPClients.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_ippbx.html",
+                    evidence_keys=("addipclient", "ipclient_status"),
+                ),
+            ),
             "dect": (
                 _endpoint(
                     "dect",
@@ -685,6 +1220,19 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("dect", "handset"),
                 ),
             ),
+            "dect_status": (
+                _endpoint(
+                    "dect_status",
+                    "data/DECTInfo.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_mobiles.html",
+                    evidence_keys=(
+                        "dect_real_count",
+                        "dect_detect_status",
+                        "pagingstat",
+                    ),
+                ),
+            ),
             "dect_settings": (
                 _endpoint(
                     "dect_settings",
@@ -692,6 +1240,16 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/problem_handling_dect.html",
                     evidence_keys=("dect", "handset", "base"),
+                    automatic_probe=False,
+                ),
+            ),
+            "dect_repeater": (
+                _endpoint(
+                    "dect_repeater",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                    evidence_keys=("addrepeater", "dect_repeaters"),
                 ),
             ),
             "analog": (
@@ -699,8 +1257,17 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "analog",
                     "data/PhonePlugs.json",
                     authenticated=True,
+                    referer="html/content/phone/phone_devices.html",
+                    evidence_keys=("analog", "tae", "phone_plug", "phoneplug"),
+                    automatic_probe=False,
+                ),
+                _endpoint(
+                    "analog",
+                    "data/PhonePlugs.json",
+                    authenticated=True,
                     referer="html/content/phone/phone_analog.html",
                     evidence_keys=("analog", "tae", "phone_plug", "phoneplug"),
+                    automatic_probe=False,
                 ),
             ),
             "phonebook": (
@@ -709,7 +1276,13 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     "data/PhoneBook.json",
                     authenticated=True,
                     referer="html/content/phone/phone_book.html",
-                    evidence_keys=("phonebook", "contact", "directory"),
+                    evidence_keys=(
+                        "addbookentry",
+                        "num_entries",
+                        "phonebook",
+                        "contact",
+                        "directory",
+                    ),
                 ),
             ),
             "security": (
@@ -776,6 +1349,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("media", "nas", "usb", "storage"),
                 ),
             ),
+            "media_server": (
+                _endpoint(
+                    "media_server",
+                    "data/NASMediacenter.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_mediacenter.html",
+                    evidence_keys=(
+                        "addnasmediareplay",
+                        "nas_media_shares",
+                        "media_server_enabled",
+                        "use_media_server",
+                    ),
+                ),
+            ),
             "usb_tethering": (
                 _endpoint(
                     "usb_tethering",
@@ -794,6 +1381,20 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     evidence_keys=("nas", "usb", "storage", "folder", "share"),
                 ),
             ),
+            "nas_folders": (
+                _endpoint(
+                    "nas_folders",
+                    _NAS_FOLDERS_ENDPOINT,
+                    authenticated=True,
+                    referer=_NAS_FOLDERS_REFERER,
+                    evidence_keys=(
+                        "nas_active",
+                        "nas_folder_name",
+                        "nas_secure",
+                    ),
+                    inventory_safe=False,
+                ),
+            ),
             "logs": (
                 _endpoint(
                     "logs",
@@ -801,6 +1402,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/system_messages.html",
                     evidence_keys=("message", "log", "error", "warning"),
+                    automatic_probe=False,
                 ),
             ),
             "diagnostics": (
@@ -819,6 +1421,7 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/system_services.html",
                     evidence_keys=("service", "active_service"),
+                    automatic_probe=False,
                 ),
             ),
             "energy": (
@@ -828,6 +1431,17 @@ DEFAULT_FEATURE_CANDIDATES: Final[Mapping[str, tuple[EndpointCapability, ...]]] 
                     authenticated=True,
                     referer="html/content/config/energy.html",
                     evidence_keys=("energy", "power", "eco", "led"),
+                    automatic_probe=False,
+                ),
+            ),
+            "backup_restore": (
+                _endpoint(
+                    "backup_restore",
+                    "data/BackupRestore.json",
+                    authenticated=True,
+                    referer="html/content/config/save_settings.html",
+                    evidence_keys=("br_active", "backup", "restore"),
+                    automatic_probe=False,
                 ),
             ),
             "easy_support": (
@@ -924,6 +1538,11 @@ class SpeedportClient:
             for family, candidates in endpoint_candidates.items()
         }
         self._selected_endpoints: dict[str, EndpointCapability] = {}
+        self._observed_feature_schema: dict[str, tuple[tuple[str, str], ...]] = {}
+        self._observed_candidate_schema: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ] = {}
         self._wan_interface: WanInterface | None = None
         self._wan_optional_counter_faults: set[int] = set()
         self._dsl_parameter_names: tuple[str, ...] | None = None
@@ -935,6 +1554,11 @@ class SpeedportClient:
         self._base_url = _base_url(scheme, self._host, selected_json_port)
         tr064_port = tr064_https_port if self._use_https else tr064_http_port
         self._tr064_url = _base_url(scheme, self._host, tr064_port) + "/"
+
+    @property
+    def configuration_url(self) -> str:
+        """Return the normalized local router web-interface URL."""
+        return self._base_url
 
     @property
     def capabilities(self) -> CapabilityReport:
@@ -958,6 +1582,46 @@ class SpeedportClient:
         """Return the latest typed management gate without logging owner details."""
         return self._last_management_error
 
+    @property
+    def observed_feature_schema(
+        self,
+    ) -> Mapping[str, tuple[Mapping[str, str], ...]]:
+        """Return an immutable value-free snapshot for runtime diagnostics."""
+        return MappingProxyType(
+            {
+                family: tuple(
+                    MappingProxyType({"path": path, "shape": shape})
+                    for path, shape in fields
+                )
+                for family, fields in self._observed_feature_schema.items()
+            }
+        )
+
+    @property
+    def observed_candidate_schema(
+        self,
+    ) -> Mapping[str, tuple[Mapping[str, object], ...]]:
+        """Return immutable value-free schemas for successful probe candidates."""
+        return MappingProxyType(
+            {
+                family: tuple(
+                    MappingProxyType(
+                        {
+                            "endpoint": endpoint,
+                            "authenticated": authenticated,
+                            "referer": referer,
+                            "schema": tuple(
+                                MappingProxyType({"path": path, "shape": shape})
+                                for path, shape in fields
+                            ),
+                        }
+                    )
+                    for (endpoint, authenticated, referer), fields in candidates.items()
+                )
+                for family, candidates in self._observed_candidate_schema.items()
+            }
+        )
+
     async def setup(
         self, *, allow_protected_degraded: bool = False
     ) -> CapabilityReport:
@@ -965,6 +1629,124 @@ class SpeedportClient:
         await self.get_status()
         return await self.probe_capabilities(
             allow_protected_degraded=allow_protected_degraded
+        )
+
+    async def capture_candidate_inventory(self) -> CandidateInventoryResult:
+        """Capture every safe candidate schema without changing capabilities."""
+        observed_candidate_schema: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ] = {}
+        endpoint_results: dict[
+            tuple[str, bool, str | None],
+            tuple[dict[str, Any] | None, SpeedportError | None],
+        ] = {}
+        attempted = 0
+        succeeded = 0
+        unsupported = 0
+        failed = 0
+        all_contracts = {
+            (candidate.endpoint, candidate.authenticated, candidate.referer)
+            for candidates in self._endpoint_candidates.values()
+            for candidate in candidates
+        }
+
+        def inventory_candidate_is_safe(
+            family: str, candidate: EndpointCapability
+        ) -> bool:
+            return candidate.inventory_safe and (
+                _safe_observed_candidate_metadata(family, candidate) is not None
+            )
+
+        safe_contracts = {
+            (candidate.endpoint, candidate.authenticated, candidate.referer)
+            for family, candidates in self._endpoint_candidates.items()
+            for candidate in candidates
+            if inventory_candidate_is_safe(family, candidate)
+        }
+        excluded_contracts = all_contracts - safe_contracts
+
+        async def capture_phase(*, authenticated: bool) -> None:
+            nonlocal attempted, failed, succeeded, unsupported
+            for family, candidates in self._endpoint_candidates.items():
+                for candidate in candidates:
+                    if candidate.authenticated is not authenticated:
+                        continue
+                    if not inventory_candidate_is_safe(family, candidate):
+                        continue
+                    cache_key = (
+                        candidate.endpoint,
+                        candidate.authenticated,
+                        candidate.referer,
+                    )
+                    if cache_key not in endpoint_results:
+                        attempted += 1
+                        try:
+                            fetched_data = await self.get_json(
+                                candidate.endpoint,
+                                authenticated=candidate.authenticated,
+                                referer=candidate.referer,
+                            )
+                        except SpeedportUnsupportedError as exc:
+                            unsupported += 1
+                            endpoint_results[cache_key] = (None, exc)
+                        except SpeedportError as exc:
+                            if isinstance(
+                                exc,
+                                (
+                                    SpeedportAuthenticationError,
+                                    SpeedportConnectionError,
+                                    SpeedportDecodeError,
+                                    SpeedportSessionBusyError,
+                                ),
+                            ):
+                                raise
+                            failed += 1
+                            endpoint_results[cache_key] = (None, exc)
+                        else:
+                            succeeded += 1
+                            endpoint_results[cache_key] = (fetched_data, None)
+
+                    endpoint_data, error = endpoint_results[cache_key]
+                    if error is not None or endpoint_data is None:
+                        continue
+                    self._observe_candidate_data(
+                        family,
+                        candidate,
+                        endpoint_data,
+                        inventory=observed_candidate_schema,
+                    )
+
+        try:
+            await self.logout()
+            await capture_phase(authenticated=False)
+            protected_candidates = any(
+                candidate.authenticated
+                and inventory_candidate_is_safe(family, candidate)
+                for family, candidates in self._endpoint_candidates.items()
+                for candidate in candidates
+            )
+            if protected_candidates:
+                if not self._password:
+                    raise SpeedportAuthenticationError(
+                        "Protected Speedport access requires a configured password"
+                    )
+                await self.login()
+                self._last_management_error = None
+                await capture_phase(authenticated=True)
+        finally:
+            await self.logout()
+
+        self._observed_candidate_schema = observed_candidate_schema
+        return CandidateInventoryResult(
+            attempted=attempted,
+            succeeded=succeeded,
+            unsupported=unsupported,
+            failed=failed,
+            observed=sum(
+                len(candidates) for candidates in observed_candidate_schema.values()
+            ),
+            excluded=len(excluded_contracts),
         )
 
     async def close(self) -> None:
@@ -992,6 +1774,12 @@ class SpeedportClient:
         async with self._lock:
             await self._logout_unlocked()
 
+    async def logout_ephemeral(self) -> None:
+        """Release an action session and report unconfirmed cleanup safely."""
+        self._ensure_open()
+        async with self._lock:
+            await self._logout_unlocked(require_confirmation=True)
+
     async def get_status(self) -> RouterStatus:
         """Fetch and normalize public encrypted Status.json."""
         data = await self.get_json("data/Status.json")
@@ -1006,27 +1794,495 @@ class SpeedportClient:
         *,
         authenticated: bool = False,
         referer: str | None = None,
+        preserve_compounds: bool = False,
     ) -> dict[str, Any]:
         """Fetch one JSON endpoint through serialized session owner."""
         self._ensure_open()
         async with self._lock:
-            had_authenticated_session = authenticated and self._authenticated
-            try:
-                return await self._get_json_unlocked(
-                    endpoint,
-                    authenticated=authenticated,
-                    referer=referer,
+            return await self._get_json_with_recovery_unlocked(
+                endpoint,
+                authenticated=authenticated,
+                referer=referer,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
+
+    async def read_configuration(
+        self, setting_id: str, target_id: str | None = None
+    ) -> dict[str, Any]:
+        """Read one statically reviewed form, without probing action endpoints."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phone_numbers import NUMBER_TARGET_SPECS  # noqa: PLC0415
+        from ..configuration_phone_providers import (  # noqa: PLC0415
+            PROVIDER_TARGET_SPECS,
+        )
+        from ..configuration_provider_create import (  # noqa: PLC0415
+            PROVIDER_CREATE_SETTINGS,
+        )
+        from ..configuration_telephony import (  # noqa: PLC0415
+            normalize_dect_station_payload,
+        )
+        from ..system_actions import (  # noqa: PLC0415
+            merge_system_action_offer,
+            system_action_extra_read,
+        )
+
+        contract = resolve_settings_contract(setting_id, target_id)
+        if setting_id == "system_router_password_change":
+            from ..configuration_password import (  # noqa: PLC0415
+                password_configuration_context,
+            )
+
+            return password_configuration_context(
+                await self.get_json("data/Status.json", authenticated=False)
+            )
+        if setting_id in {"telephony_phonebook_contact", "telephony_phonebook_create"}:
+            return await self._read_phonebook_configuration(setting_id, target_id)
+        raw = await self.get_json(
+            contract.read_endpoint or contract.endpoint,
+            authenticated=True,
+            referer=contract.read_referer or contract.referer,
+            **(
+                {"preserve_compounds": True}
+                if contract.field_choices is not None
+                or contract.payload_validator is not None
+                else {}
+            ),
+        )
+        normalized = normalize_configuration_payload(raw)
+        if setting_id in {"receiver_bonding", "receiver_led_mode"}:
+            from ..configuration_network_controls import (  # noqa: PLC0415
+                merge_receiver_identity,
+                receiver_identity_requires_read,
+            )
+
+            if receiver_identity_requires_read(normalized):
+                firmware = normalize_configuration_payload(
+                    await self.get_json(
+                        _LTE_MODE_ENDPOINT,
+                        authenticated=True,
+                        referer=_LTE_FIRMWARE_REFERER,
+                    )
                 )
-            except SpeedportAuthenticationError:
-                if not had_authenticated_session:
-                    raise
-                self._invalidate_authentication()
-                await self._login_unlocked()
-                return await self._get_json_unlocked(
-                    endpoint,
+                normalized = merge_receiver_identity(normalized, firmware)
+        if setting_id == "telephony_phonebook_link":
+            from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+                phonebook_account_rows,
+            )
+
+            selected_books = [
+                row
+                for row in phonebook_account_rows(normalized)
+                if row["id"] == target_id and row["onlbuch_sync"] == "0"
+            ]
+            if len(selected_books) != 1:
+                raise ConfigurationError("settings_target_unavailable")
+            normalized[
+                "local_inventory"
+            ] = await self._phonebook_configuration_inventory(
+                int(selected_books[0]["onlbuch_nr"])
+            )
+        extra_read = system_action_extra_read(setting_id, normalized)
+        if extra_read is not None:
+            offer = await self.get_json(
+                extra_read[0],
+                authenticated=True,
+                referer=extra_read[1],
+                preserve_compounds=True,
+            )
+            normalized = merge_system_action_offer(setting_id, normalized, offer)
+        if setting_id == "storage_media_reindex":
+            normalized["index"] = await self.get_json(
+                "data/NASFileCount.json",
+                authenticated=True,
+                referer="html/content/network/nas_mediareplay.html",
+                preserve_compounds=True,
+            )
+        if setting_id == "telephony_handset_phonebook":
+            normalized["phonebooks"] = await self.get_json(
+                "data/PhoneOnlbuch.json",
+                authenticated=True,
+                referer="html/content/phone/phone_book_assign.html",
+                preserve_compounds=True,
+            )
+        if (
+            setting_id == "receiver_bonding"
+            and "easy_support_deactive" not in normalized
+        ):
+            support = normalize_configuration_payload(
+                await self.get_json(
+                    "data/EasySupport.json",
                     authenticated=True,
-                    referer=referer,
+                    referer="html/content/config/easy_support.html",
                 )
+            )
+            normalized["network_prerequisites"] = {
+                key: support[key]
+                for key in ("easy_support_deactive",)
+                if key in support
+            }
+        if (
+            setting_id in PROVIDER_TARGET_SPECS
+            or setting_id in NUMBER_TARGET_SPECS
+            or setting_id in {item.id for item in PROVIDER_CREATE_SETTINGS}
+            or setting_id == "vpn_peer_create"
+        ):
+            connection = normalize_configuration_payload(
+                await self.get_json(
+                    "data/InternetConnection.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_internet.html",
+                )
+            )
+            normalized[
+                "vpn_connectivity"
+                if setting_id == "vpn_peer_create"
+                else "internet_connection"
+            ] = {
+                key: connection[key]
+                for key in (
+                    "onlinestatus",
+                    "auto_external_modem",
+                    "extwan_typ",
+                    "extwan_status",
+                    "lte_status",
+                )
+                if key in connection
+            }
+        if setting_id == "telephony_dect_settings":
+            normalized = normalize_dect_station_payload(normalized, authenticated=True)
+        if setting_id == "storage_nas_share" and target_id is not None:
+            rows = _strict_nas_share_rows(normalized)
+            matches = [row for row in rows if row["id"] == target_id]
+            if len(matches) != 1:
+                raise ConfigurationError("stale_settings")
+            row = normalize_configuration_payload(matches[0])
+            row["sid"] = target_id
+            for name in ("use_usb", "printer_connected"):
+                if name in normalized:
+                    row[name] = normalized[name]
+            return row
+        return normalized
+
+    async def query_configuration_targets(self, setting_id: str) -> dict[str, Any]:
+        """List bounded existing targets on an explicit administrator read."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_targets import (  # noqa: PLC0415
+            target_settings_limit,
+            target_settings_rows,
+            target_settings_source,
+        )
+
+        if setting_id in {"telephony_phonebook_contact", "telephony_phonebook_create"}:
+            return await self._query_phonebook_configuration_targets(setting_id)
+        source = target_settings_source(setting_id)
+        if setting_id != "storage_nas_share" and source is None:
+            raise ConfigurationError("setting_unavailable")
+        raw = await self.get_json(
+            source[0] if source else _NAS_FOLDERS_ENDPOINT,
+            authenticated=True,
+            referer=source[1] if source else _NAS_FOLDERS_REFERER,
+            **({"preserve_compounds": True} if source else {}),
+        )
+        normalized = normalize_configuration_payload(raw)
+        if setting_id == "telephony_handset_phonebook":
+            normalized["phonebooks"] = await self.get_json(
+                "data/PhoneOnlbuch.json",
+                authenticated=True,
+                referer="html/content/phone/phone_book_assign.html",
+                preserve_compounds=True,
+            )
+        if source:
+            rows = target_settings_rows(setting_id, normalized)
+        else:
+            try:
+                rows = _strict_nas_share_rows(normalized)
+            except SpeedportUnsupportedError:
+                # Missing share identity is an unavailable inventory, not proof
+                # of an empty collection or a failed management connection.
+                raise ConfigurationError("settings_inventory_unavailable") from None
+        if len(rows) > target_settings_limit(setting_id):
+            raise ConfigurationError("too_many_settings_targets")
+        targets = []
+        for row in rows:
+            target_id = row["id"]
+            resolve_settings_contract(setting_id, target_id)
+            label = row.get(source[2] if source else "nas_folder_name")
+            if source and source[2] == "phone_number":
+                digits = "".join(
+                    char for char in str(label) if char.isascii() and char.isdigit()
+                )
+                label = (
+                    f"Telephone number ••••{digits[-4:]}"
+                    if digits
+                    else "Telephone number"
+                )
+            if (
+                not isinstance(label, str)
+                or not label
+                or len(label) > _PRIVATE_QUERY_MAX_TEXT_LENGTH
+            ):
+                label = f"{source[3] if source else 'Share'} {target_id}"
+            targets.append({"id": target_id, "label": label})
+        return {"setting_id": setting_id, "targets": targets}
+
+    async def _phonebook_configuration_inventory(self, book_id: int) -> dict[str, Any]:
+        """Bind the complete contact list to a freshly identified local book."""
+        from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+            phonebook_account_rows,
+        )
+
+        safe_book_id = _require_phonebook_id(book_id)
+        inventory = await self._phonebook_transfer_inventory(safe_book_id)
+        row = next(
+            row
+            for row in phonebook_account_rows(inventory["books"])
+            if row["onlbuch_nr"] == str(safe_book_id)
+        )
+        if row["onlbuch_sync"] != "0":
+            raise ConfigurationError("phonebook_linked")
+        result: dict[str, Any] = dict(inventory["content"])
+        result["book_identity"] = {
+            key: row[key] for key in ("id", "onlbuch_nr", "onlbuch_sync")
+        }
+        return result
+
+    async def _phonebook_transfer_inventory(self, book_id: int) -> dict[str, Any]:
+        """Prove book membership and content privately under one client lock."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+            phonebook_account_rows,
+        )
+        from ..configuration_phonebook_lifecycle import (  # noqa: PLC0415
+            phonebook_inventory,
+        )
+
+        self._ensure_open()
+        safe_book_id = _require_phonebook_id(book_id)
+        async with self._lock:
+            books = normalize_configuration_payload(
+                await self._get_json_unlocked(
+                    "data/PhoneOnlbuch.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_book_basic.html",
+                    preserve_compounds=True,
+                )
+            )
+            if not any(
+                row["onlbuch_nr"] == str(safe_book_id)
+                for row in phonebook_account_rows(books)
+            ):
+                raise ConfigurationError("settings_target_unavailable")
+            response = normalize_configuration_payload(
+                await self._post_json_unlocked(
+                    _PHONEBOOK_ENDPOINT,
+                    {"obnr": safe_book_id, "search": ""},
+                    authenticated=True,
+                    referer=_PHONEBOOK_REFERER,
+                )
+            )
+        if response.get("status") != "ok":
+            raise ConfigurationError("settings_inventory_unavailable")
+        content = _project_phonebook_entries(
+            response, phonebook_id=safe_book_id, prefix=""
+        )
+        phonebook_inventory(content, phonebook_id=safe_book_id)
+        return {"books": books, "content": content}
+
+    async def _phonebook_configuration_contact(
+        self, book_id: int, contact_id: str
+    ) -> dict[str, Any]:
+        """Keep current fields private; absent values are never blank defaults."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phonebook import normalize_contact_fields  # noqa: PLC0415
+
+        self._ensure_open()
+        safe_book_id = _require_phonebook_id(book_id)
+        safe_contact_id = _require_private_query_identifier(
+            contact_id, description="Phonebook contact ID"
+        )
+        async with self._lock:
+            response = normalize_configuration_payload(
+                await self._post_json_unlocked(
+                    _PHONEBOOK_ENTRY_ENDPOINT,
+                    {"obnr": safe_book_id, "chgid": safe_contact_id},
+                    authenticated=True,
+                    referer=_PHONEBOOK_REFERER,
+                )
+            )
+        return {
+            "phonebook_id": safe_book_id,
+            "contact_id": safe_contact_id,
+            "contact": normalize_contact_fields(response),
+        }
+
+    async def _read_phonebook_configuration(
+        self, setting_id: str, target_id: str | None
+    ) -> dict[str, Any]:
+        """Resolve an exact local book or existing contact before detail reads."""
+        from ..configuration_phonebook import parse_phonebook_target  # noqa: PLC0415
+        from ..configuration_phonebook_lifecycle import (  # noqa: PLC0415
+            phonebook_create_book_id,
+            phonebook_inventory,
+        )
+
+        if target_id is None:
+            raise ConfigurationError("settings_target_required")
+        if setting_id == "telephony_phonebook_create":
+            return await self._phonebook_configuration_inventory(
+                phonebook_create_book_id(target_id)
+            )
+        book_id, contact_id = parse_phonebook_target(target_id)
+        inventory = await self._phonebook_configuration_inventory(book_id)
+        if contact_id not in phonebook_inventory(inventory, phonebook_id=book_id):
+            raise ConfigurationError("settings_target_unavailable")
+        contact = await self._phonebook_configuration_contact(book_id, contact_id)
+        contact["book_identity"] = inventory["book_identity"]
+        return contact
+
+    async def _query_phonebook_configuration_targets(
+        self, setting_id: str
+    ) -> dict[str, Any]:
+        """List proven local books or contacts, never invent an absent row."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_phonebook_accounts import (  # noqa: PLC0415
+            phonebook_account_rows,
+        )
+
+        books = phonebook_account_rows(
+            normalize_configuration_payload(
+                await self.get_json(
+                    "data/PhoneOnlbuch.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_book_basic.html",
+                    preserve_compounds=True,
+                )
+            )
+        )
+        targets = []
+        for book in books:
+            if book["onlbuch_sync"] != "0":
+                continue
+            book_id = _require_phonebook_id(int(book["onlbuch_nr"]))
+            raw = await self._phonebook_configuration_inventory(book_id)
+            if setting_id == "telephony_phonebook_create":
+                if raw["free_entries"] > 0:
+                    targets.append({"id": str(book_id), "label": book["onlbuch_name"]})
+                continue
+            for row in raw["entries"]:
+                label = " ".join(
+                    row.get(name, "") for name in ("first_name", "last_name")
+                ).strip()
+                targets.append(
+                    {
+                        "id": f"{book_id}:{row['contact_id']}",
+                        "label": f"{book['onlbuch_name']}: {label or 'Contact'}",
+                    }
+                )
+            if len(targets) > _PHONEBOOK_SETTINGS_MAX_TARGETS:
+                raise ConfigurationError("too_many_settings_targets")
+        return {"setting_id": setting_id, "targets": targets}
+
+    async def read_created_phonebook_configuration(
+        self, target_id: str, before: Mapping[str, Any], response: Any
+    ) -> dict[str, Any]:
+        """Verify a returned new ID through independent list and detail read queries."""
+        from ..configuration_phonebook_lifecycle import (  # noqa: PLC0415
+            phonebook_create_book_id,
+            phonebook_created_id,
+            phonebook_inventory,
+        )
+
+        book_id = phonebook_create_book_id(target_id)
+        if not isinstance(response, Mapping):
+            raise ConfigurationError("action_outcome_unknown")
+        assigned_id = phonebook_created_id(
+            response,
+            existing_ids=set(phonebook_inventory(before, phonebook_id=book_id)),
+        )
+        current = await self._phonebook_configuration_inventory(book_id)
+        if assigned_id not in phonebook_inventory(current, phonebook_id=book_id):
+            raise ConfigurationError("action_verification_failed")
+        current["assigned_id"] = assigned_id
+        current["created_contact"] = await self._phonebook_configuration_contact(
+            book_id, assigned_id
+        )
+        return current
+
+    async def query_ip_information(self) -> dict[str, Any]:
+        """Read native IP information only for a private administrator view."""
+        from ..ip_information import (  # noqa: PLC0415
+            IP_INFORMATION_ENDPOINT,
+            IP_INFORMATION_REFERER,
+            read_ip_information,
+        )
+
+        return read_ip_information(
+            await self.get_json(
+                IP_INFORMATION_ENDPOINT,
+                authenticated=True,
+                referer=IP_INFORMATION_REFERER,
+            )
+        )
+
+    async def query_call_history(
+        self, *, category: str, export: bool = False
+    ) -> dict[str, Any]:
+        """Read one closed private category or produce its local CSV, without writes."""
+        from ..configuration import normalize_configuration_payload  # noqa: PLC0415
+        from ..configuration_call_history import (  # noqa: PLC0415
+            call_history_private_export,
+            call_history_private_read,
+            call_history_read_source,
+        )
+
+        endpoint, referer = call_history_read_source(category)
+        if type(export) is not bool:
+            raise ConfigurationError("invalid_call_history_export")
+        raw = normalize_configuration_payload(
+            await self.get_json(endpoint, authenticated=True, referer=referer)
+        )
+        return (
+            call_history_private_export(raw, category)
+            if export
+            else call_history_private_read(raw, category)
+        )
+
+    async def read_created_ip_phone_configuration(
+        self, before: Mapping[str, Any], response: Any
+    ) -> dict[str, Any]:
+        """Bind independent row readback to the native allocation response ID."""
+        from ..configuration_ip_phone_create import ip_phone_created_id  # noqa: PLC0415
+
+        if not isinstance(response, Mapping):
+            raise ConfigurationError("action_outcome_unknown")
+        assigned_id = ip_phone_created_id(before, response)
+        current = await self.read_configuration("telephony_ip_phone_create")
+        current["_created_ip_phone_id"] = assigned_id
+        return current
+
+    async def save_configuration(
+        self,
+        setting_id: str,
+        current: Mapping[str, Any],
+        changes: Mapping[str, Any],
+        target_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build an exact reviewed form and send it once; never retry a write."""
+        if setting_id == "system_router_password_change":
+            raise ConfigurationError("password_change_isolated_flow_required")
+        contract = resolve_settings_contract(setting_id, target_id)
+        payload = contract.build(current, changes)
+        response = await self._post_ephemeral_action(
+            contract.endpoint,
+            payload,
+            referer=contract.referer,
+            require_status_ok=contract.acknowledgement == "status_ok",
+        )
+        if contract.acknowledgement == "result_ok":
+            _require_exact_result_ok(response)
+        if contract.response_validator is not None:
+            contract.response_validator(response)
+        return response
 
     async def _post_reviewed_command(
         self,
@@ -1047,6 +2303,618 @@ class SpeedportClient:
             )
             _require_command_acknowledgement(result)
             return result
+
+    async def _post_ephemeral_action(
+        self,
+        endpoint: str,
+        data: Mapping[str, str | int | bool],
+        *,
+        referer: str,
+        require_status_ok: bool = False,
+    ) -> dict[str, Any]:
+        """Send one exact action once and apply its reviewed ACK policy."""
+        self._ensure_open()
+        async with self._lock:
+            await self._ensure_authenticated_unlocked()
+            fields = dict(data)
+            if "httoken" not in fields:
+                token = await self._get_http_token_unlocked(referer)
+                if token:
+                    fields["httoken"] = token
+            try:
+                result = await self._post_json_unlocked(
+                    endpoint,
+                    fields,
+                    authenticated=True,
+                    referer=referer,
+                    ensure_auth=False,
+                    resolve_http_token=False,
+                )
+            except SpeedportError as err:
+                raise SpeedportMutationOutcomeUnknownError(
+                    "Router mutation result is indeterminate"
+                ) from err
+            if require_status_ok:
+                _require_exact_status_ok(result)
+            else:
+                _reject_explicit_action_failure(result)
+            return result
+
+    async def query_ip_pbx_client(self, *, client_id: str) -> dict[str, Any]:
+        """Refresh and return one IP-PBX registration row without changing it."""
+        safe_client_id = _require_private_query_identifier(
+            client_id,
+            description="IP-PBX client ID",
+        )
+        self._ensure_open()
+        async with self._lock:
+            response = await self._post_json_unlocked(
+                _IP_PBX_CLIENTS_ENDPOINT,
+                {"refresh": safe_client_id},
+                authenticated=True,
+                referer=_IP_PBX_CLIENTS_REFERER,
+            )
+        return _project_ip_pbx_client(response, client_id=safe_client_id)
+
+    async def query_phonebook_entries(
+        self,
+        *,
+        phonebook_id: int,
+        prefix: str,
+    ) -> dict[str, Any]:
+        """Return one bounded phonebook prefix search as ephemeral private data."""
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        safe_prefix = _require_phonebook_search_prefix(prefix)
+        self._ensure_open()
+        async with self._lock:
+            response = await self._post_json_unlocked(
+                _PHONEBOOK_ENDPOINT,
+                {"obnr": safe_phonebook_id, "search": safe_prefix},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        return _project_phonebook_entries(
+            response,
+            phonebook_id=safe_phonebook_id,
+            prefix=safe_prefix,
+        )
+
+    async def query_phonebook_contact(
+        self,
+        *,
+        phonebook_id: int,
+        contact_id: str,
+    ) -> dict[str, Any]:
+        """Return one bounded phonebook contact as ephemeral private data."""
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        safe_contact_id = _require_private_query_identifier(
+            contact_id,
+            description="Phonebook contact ID",
+        )
+        self._ensure_open()
+        async with self._lock:
+            response = await self._post_json_unlocked(
+                _PHONEBOOK_ENTRY_ENDPOINT,
+                {"obnr": safe_phonebook_id, "chgid": safe_contact_id},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        return _project_phonebook_contact(
+            response,
+            phonebook_id=safe_phonebook_id,
+            contact_id=safe_contact_id,
+        )
+
+    async def query_dect_handset_targets(self) -> dict[str, Any]:
+        """Return bounded handset targets only through the ephemeral admin API."""
+        self._ensure_open()
+        async with self._lock:
+            station = await self._get_json_with_recovery_unlocked(
+                _DECT_STATION_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+            status = await self._get_json_with_recovery_unlocked(
+                _DECT_STATUS_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+        return _project_dect_handset_targets(station, status)
+
+    async def query_voip_line_targets(self) -> dict[str, Any]:
+        """Return bounded VoIP line targets only through the ephemeral admin API."""
+        data = await self.get_json(
+            _VOIP_LINES_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        return _project_voip_line_targets(data)
+
+    async def query_dect_handset_disconnect_targets(self) -> dict[str, Any]:
+        """Return exact registered-handset deletion targets ephemerally."""
+        data = await self.get_json(
+            _DECT_STATION_ENDPOINT,
+            authenticated=True,
+            referer=_DECT_MOBILES_REFERER,
+        )
+        return _project_dect_handset_disconnect_targets(data)
+
+    async def query_dect_repeater_disconnect_targets(self) -> dict[str, Any]:
+        """Return exact registered-repeater deletion targets ephemerally."""
+        data = await self.get_json(
+            _DECT_REPEATER_ENDPOINT,
+            authenticated=True,
+            referer=_DECT_REPEATER_REFERER,
+        )
+        return _project_dect_repeater_disconnect_targets(data)
+
+    async def query_voip_provider_delete_targets(self) -> dict[str, Any]:
+        """Return exact VoIP provider deletion targets ephemerally."""
+        data = await self.get_json(
+            _VOIP_PROVIDERS_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        return _project_voip_provider_delete_targets(data)
+
+    async def query_voip_line_delete_targets(self) -> dict[str, Any]:
+        """Return exact VoIP number deletion targets ephemerally."""
+        data = await self.get_json(
+            _VOIP_LINES_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        return _project_voip_line_delete_targets(data)
+
+    async def query_ip_pbx_client_delete_targets(self) -> dict[str, Any]:
+        """Return exact IP-PBX client deletion targets ephemerally."""
+        data = await self.get_json(
+            _IP_PBX_CLIENTS_ENDPOINT,
+            authenticated=True,
+            referer=_IP_PBX_CLIENTS_REFERER,
+        )
+        return _project_ip_pbx_client_delete_targets(data)
+
+    async def query_phonebook_entry_delete_targets(
+        self,
+        *,
+        phonebook_id: int,
+    ) -> dict[str, Any]:
+        """Return one complete phonebook's exact deletion targets ephemerally."""
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        self._ensure_open()
+        async with self._lock:
+            data = await self._post_json_unlocked(
+                _PHONEBOOK_ENDPOINT,
+                {"obnr": safe_phonebook_id, "search": ""},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        return _project_phonebook_entry_delete_targets(
+            data,
+            phonebook_id=safe_phonebook_id,
+        )
+
+    async def query_nas_share_delete_targets(self) -> dict[str, Any]:
+        """Return exact NAS-share deletion targets ephemerally."""
+        data = await self.get_json(
+            _NAS_FOLDERS_ENDPOINT,
+            authenticated=True,
+            referer=_NAS_FOLDERS_REFERER,
+        )
+        return _project_nas_share_delete_targets(data)
+
+    async def get_dect_scan_active(self) -> bool:
+        """Read the exact DECT enrollment lifecycle flag."""
+        data = await self.get_json(
+            _DECT_STATUS_ENDPOINT,
+            authenticated=True,
+            referer=_DECT_MOBILES_REFERER,
+        )
+        return _require_dect_scan_active(data)
+
+    async def get_dect_repeater_scan_active(self) -> bool:
+        """Read repeater enrollment lifecycle without reading the DECT PIN."""
+        return await self.get_dect_scan_active()
+
+    async def get_dect_handset_paging(
+        self,
+        *,
+        handset_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read handset membership and its exact paging state."""
+        safe_id = _require_admin_action_identifier(
+            handset_id,
+            description="DECT handset ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        self._ensure_open()
+        async with self._lock:
+            station = await self._get_json_with_recovery_unlocked(
+                _DECT_STATION_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+            handset = _require_dect_handset(station, handset_id=safe_id)
+            if (
+                _dect_handset_fingerprint(handset, handset_id=safe_id)
+                != safe_fingerprint
+            ):
+                raise SpeedportUnsupportedError("DECT handset target identity changed")
+            status = await self._get_json_with_recovery_unlocked(
+                _DECT_STATUS_ENDPOINT,
+                authenticated=True,
+                referer=_DECT_MOBILES_REFERER,
+            )
+        return _require_dect_paging_state(status, handset_id=safe_id)
+
+    async def get_voip_line_active(
+        self,
+        *,
+        line_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read one exact VoIP line state without returning its number."""
+        safe_id = _require_admin_action_identifier(
+            line_id,
+            description="VoIP line ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        data = await self.get_json(
+            _VOIP_LINES_ENDPOINT,
+            authenticated=True,
+            referer=_VOIP_LINES_REFERER,
+        )
+        line = _require_voip_line(data, line_id=safe_id)
+        if _voip_line_fingerprint(line, line_id=safe_id) != safe_fingerprint:
+            raise SpeedportUnsupportedError("VoIP line target identity changed")
+        return _require_voip_line_active(line)
+
+    async def get_dect_handset_present(
+        self,
+        *,
+        handset_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact handset membership for destructive verification."""
+        return await self._get_target_membership(
+            endpoint=_DECT_STATION_ENDPOINT,
+            referer=_DECT_MOBILES_REFERER,
+            target_id=handset_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_dect_handset_rows,
+            fingerprint=lambda row, row_id: _dect_handset_fingerprint(
+                row,
+                handset_id=row_id,
+            ),
+        )
+
+    async def get_dect_repeater_present(
+        self,
+        *,
+        repeater_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact repeater membership for destructive verification."""
+        return await self._get_target_membership(
+            endpoint=_DECT_REPEATER_ENDPOINT,
+            referer=_DECT_REPEATER_REFERER,
+            target_id=repeater_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_dect_repeater_rows,
+            fingerprint=_dect_repeater_fingerprint,
+        )
+
+    async def get_voip_provider_present(
+        self,
+        *,
+        provider_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact VoIP provider membership."""
+        return await self._get_target_membership(
+            endpoint=_VOIP_PROVIDERS_ENDPOINT,
+            referer=_VOIP_LINES_REFERER,
+            target_id=provider_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_voip_provider_rows,
+            fingerprint=_voip_provider_fingerprint,
+        )
+
+    async def get_voip_line_present(
+        self,
+        *,
+        line_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact VoIP number membership."""
+        return await self._get_target_membership(
+            endpoint=_VOIP_LINES_ENDPOINT,
+            referer=_VOIP_LINES_REFERER,
+            target_id=line_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_voip_line_rows,
+            fingerprint=lambda row, row_id: _voip_line_fingerprint(
+                row,
+                line_id=row_id,
+            ),
+        )
+
+    async def get_ip_pbx_client_present(
+        self,
+        *,
+        client_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Fresh-read exact IP-PBX client membership."""
+        return await self._get_target_membership(
+            endpoint=_IP_PBX_CLIENTS_ENDPOINT,
+            referer=_IP_PBX_CLIENTS_REFERER,
+            target_id=client_id,
+            target_fingerprint=target_fingerprint,
+            rows=_strict_ip_pbx_client_rows,
+            fingerprint=_ip_pbx_client_fingerprint,
+        )
+
+    async def get_phonebook_entry_present(
+        self,
+        *,
+        contact_id: str,
+        target_fingerprint: str,
+        phonebook_id: int,
+    ) -> bool:
+        """Fresh-read exact contact membership from a complete phonebook list."""
+        safe_id = _require_admin_action_identifier(
+            contact_id,
+            description="Phonebook contact ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        self._ensure_open()
+        async with self._lock:
+            data = await self._post_json_unlocked(
+                _PHONEBOOK_ENDPOINT,
+                {"obnr": safe_phonebook_id, "search": ""},
+                authenticated=True,
+                referer=_PHONEBOOK_REFERER,
+            )
+        rows = _strict_phonebook_rows(data)
+        _require_complete_phonebook_result(data, rows)
+        return _target_membership(
+            rows,
+            target_id=safe_id,
+            target_fingerprint=safe_fingerprint,
+            fingerprint=lambda row, row_id: _phonebook_entry_fingerprint(
+                row,
+                contact_id=row_id,
+                phonebook_id=safe_phonebook_id,
+            ),
+        )
+
+    async def get_nas_share_present(
+        self,
+        *,
+        share_id: str,
+        target_fingerprint: str,
+    ) -> bool:
+        """Read NAS membership without using another flat row as absence proof."""
+        safe_id = _require_admin_action_identifier(
+            share_id,
+            description="NAS share ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        data = await self.get_json(
+            _NAS_FOLDERS_ENDPOINT,
+            authenticated=True,
+            referer=_NAS_FOLDERS_REFERER,
+        )
+        rows = _strict_nas_share_rows(data)
+        has_complete_collection = any(
+            _mapping_value(data, collection) is not None
+            for collection in ("addnasfolder", "nas_folders", "nasfolder")
+        )
+        if not has_complete_collection and rows and rows[0]["id"] != safe_id:
+            raise SpeedportUnsupportedError(
+                "Flat NAS share response cannot prove target absence"
+            )
+        return _target_membership(
+            rows,
+            target_id=safe_id,
+            target_fingerprint=safe_fingerprint,
+            fingerprint=_nas_share_fingerprint,
+        )
+
+    async def _get_target_membership(
+        self,
+        *,
+        endpoint: str,
+        referer: str,
+        target_id: str,
+        target_fingerprint: str,
+        rows: Callable[[Mapping[str, Any]], tuple[dict[str, Any], ...]],
+        fingerprint: Callable[[Mapping[str, Any], str], str],
+    ) -> bool:
+        """Fresh-read one complete collection and prove exact membership."""
+        safe_id = _require_admin_action_identifier(
+            target_id,
+            description="Administrator action target ID",
+        )
+        safe_fingerprint = _require_admin_target_fingerprint(target_fingerprint)
+        data = await self.get_json(
+            endpoint,
+            authenticated=True,
+            referer=referer,
+        )
+        return _target_membership(
+            rows(data),
+            target_id=safe_id,
+            target_fingerprint=safe_fingerprint,
+            fingerprint=fingerprint,
+        )
+
+    async def start_dect_handset_enrollment(self) -> dict[str, Any]:
+        """Start one DECT handset enrollment scan through its exact contract."""
+        return await self._post_ephemeral_action(
+            _DECT_ACTION_ENDPOINT,
+            {"scan_dect": "scan dect phones"},
+            referer=_DECT_MOBILES_REFERER,
+        )
+
+    async def start_dect_repeater_enrollment(self) -> dict[str, Any]:
+        """Start one DECT repeater enrollment scan through its exact contract."""
+        return await self._post_ephemeral_action(
+            _DECT_REPEATER_ENDPOINT,
+            {"scan_repeater": "scan dect repeater"},
+            referer=_DECT_REPEATER_REFERER,
+        )
+
+    async def toggle_dect_handset_paging(
+        self,
+        *,
+        handset_id: str,
+    ) -> dict[str, Any]:
+        """Toggle paging for one freshly proven handset row."""
+        safe_id = _require_admin_action_identifier(
+            handset_id,
+            description="DECT handset ID",
+        )
+        return await self._post_ephemeral_action(
+            _DECT_ACTION_ENDPOINT,
+            {"ring": "start paging", "id": safe_id},
+            referer=_DECT_MOBILES_REFERER,
+        )
+
+    async def set_voip_line_active(
+        self,
+        *,
+        line_id: str,
+        active: bool,
+    ) -> dict[str, Any]:
+        """Set one freshly proven VoIP line to the requested active state."""
+        safe_id = _require_admin_action_identifier(
+            line_id,
+            description="VoIP line ID",
+        )
+        _require_boolean(active, description="VoIP line state")
+        return await self._post_ephemeral_action(
+            _VOIP_LINES_ENDPOINT,
+            {
+                "id": safe_id,
+                "no_delete": "keep",
+                "number_status": "ok" if active else "inactive",
+            },
+            referer=_VOIP_LINES_REFERER,
+        )
+
+    async def disconnect_dect_handset(self, *, handset_id: str) -> dict[str, Any]:
+        """Disconnect one freshly proven DECT handset."""
+        safe_id = _require_admin_action_identifier(
+            handset_id,
+            description="DECT handset ID",
+        )
+        return await self._post_ephemeral_action(
+            _DECT_ACTION_ENDPOINT,
+            {"disconnect": "disconnect", "id": safe_id},
+            referer=_DECT_MOBILES_REFERER,
+        )
+
+    async def disconnect_dect_repeater(self, *, repeater_id: str) -> dict[str, Any]:
+        """Disconnect one freshly proven DECT repeater."""
+        safe_id = _require_admin_action_identifier(
+            repeater_id,
+            description="DECT repeater ID",
+        )
+        return await self._post_ephemeral_action(
+            _DECT_REPEATER_ENDPOINT,
+            {"disconnect": "disconnect", "id": safe_id},
+            referer=_DECT_REPEATER_REFERER,
+        )
+
+    async def delete_voip_provider(self, *, provider_id: str) -> dict[str, Any]:
+        """Delete one freshly proven VoIP provider."""
+        safe_id = _require_admin_action_identifier(
+            provider_id,
+            description="VoIP provider ID",
+        )
+        return await self._post_ephemeral_action(
+            _VOIP_PROVIDERS_ENDPOINT,
+            {"id": safe_id, "deleteEntry": "delete"},
+            referer=_VOIP_LINES_REFERER,
+        )
+
+    async def delete_voip_line(self, *, line_id: str) -> dict[str, Any]:
+        """Delete one freshly proven VoIP number with an exact positive ACK."""
+        safe_id = _require_admin_action_identifier(
+            line_id,
+            description="VoIP line ID",
+        )
+        return await self._post_ephemeral_action(
+            _VOIP_LINES_ENDPOINT,
+            {"id": safe_id, "deleteEntry": "delete"},
+            referer=_VOIP_LINES_REFERER,
+            require_status_ok=True,
+        )
+
+    async def delete_ip_pbx_client(self, *, client_id: str) -> dict[str, Any]:
+        """Delete one freshly proven IP-PBX client."""
+        safe_id = _require_admin_action_identifier(
+            client_id,
+            description="IP-PBX client ID",
+        )
+        return await self._post_ephemeral_action(
+            _IP_PBX_CLIENTS_ENDPOINT,
+            {"delete": "delete", "id": safe_id},
+            referer=_IP_PBX_CLIENTS_REFERER,
+        )
+
+    async def delete_phonebook_entry(
+        self,
+        *,
+        contact_id: str,
+        phonebook_id: int,
+    ) -> dict[str, Any]:
+        """Delete one freshly proven contact from one exact phonebook."""
+        safe_id = _require_admin_action_identifier(
+            contact_id,
+            description="Phonebook contact ID",
+        )
+        safe_phonebook_id = _require_phonebook_id(phonebook_id)
+        return await self._post_ephemeral_action(
+            _PHONEBOOK_ENDPOINT,
+            {
+                "id": safe_id,
+                "obnr": safe_phonebook_id,
+                "deleteEntry": "delete",
+            },
+            referer=_PHONEBOOK_REFERER,
+        )
+
+    async def delete_nas_share(self, *, share_id: str) -> dict[str, Any]:
+        """Delete one freshly proven NAS share."""
+        safe_id = _require_admin_action_identifier(
+            share_id,
+            description="NAS share ID",
+        )
+        return await self._post_ephemeral_action(
+            _NAS_FOLDERS_ENDPOINT,
+            {"sid": safe_id, "deleteEntry": "delete"},
+            referer=_NAS_FOLDERS_REFERER,
+        )
+
+    async def post_maintenance_action(
+        self, action: str, parameters: Mapping[str, object]
+    ) -> dict[str, Any]:
+        """Send one fixed maintenance payload once, after the hub's preflight."""
+        contract = get_admin_action_contract(action)
+        if contract is None or contract.execution_policy != "maintenance":
+            raise MaintenanceError
+        payload = maintenance_payload(action, parameters)
+        return await self._post_ephemeral_action(
+            contract.endpoint,
+            payload,
+            referer=contract.referer,
+        )
 
     async def reconnect(self) -> dict[str, Any]:
         """Request Internet reconnection through confirmed endpoint."""
@@ -1075,9 +2943,9 @@ class SpeedportClient:
     async def wps(self) -> dict[str, Any]:
         """Start WPS through confirmed WLANAccess endpoint."""
         return await self._post_reviewed_command(
-            "data/WLANAccess.json",
+            _WPS_ENDPOINT,
             {"wlan_add": "on", "wps_key": "connect"},
-            referer="html/content/network/wlan_wps.html",
+            referer=_WPS_REFERER,
         )
 
     async def execute_wps_start(self) -> dict[str, Any]:
@@ -1087,19 +2955,23 @@ class SpeedportClient:
     async def execute_wifi_set_enabled(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed global Wi-Fi state field."""
         _require_boolean(enabled, description="Global Wi-Fi state")
-        return await self._post_reviewed_command(
-            "data/Modules.json",
-            {"use_wlan": "1" if enabled else "0"},
+        return await self._set_guarded_scalar(
+            endpoint="data/Modules.json",
             referer="html/content/overview/index.html",
+            field="use_wlan",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
         )
 
     async def set_guest_wifi(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed guest Wi-Fi state field."""
         _require_boolean(enabled, description="Guest Wi-Fi state")
-        return await self._post_reviewed_command(
-            "data/Modules.json",
-            {"wlan_guest_active": "1" if enabled else "0"},
+        return await self._set_guarded_scalar(
+            endpoint="data/Modules.json",
             referer="html/content/overview/index.html",
+            field="wlan_guest_active",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
         )
 
     async def execute_guest_wifi_set_enabled(self, *, enabled: bool) -> dict[str, Any]:
@@ -1109,10 +2981,12 @@ class SpeedportClient:
     async def set_office_wifi(self, *, enabled: bool) -> dict[str, Any]:
         """Set confirmed office Wi-Fi state field."""
         _require_boolean(enabled, description="Office Wi-Fi state")
-        return await self._post_reviewed_command(
-            "data/Modules.json",
-            {"wlan_office_active": "1" if enabled else "0"},
+        return await self._set_guarded_scalar(
+            endpoint="data/Modules.json",
             referer="html/content/overview/index.html",
+            field="wlan_office_active",
+            desired_value="1" if enabled else "0",
+            allowed_values=_BINARY_STATE_VALUES,
         )
 
     async def set_internet_privacy_level(self, level: int) -> dict[str, Any]:
@@ -1137,6 +3011,7 @@ class SpeedportClient:
             field="ex5g_led_mode",
             desired_value=str(mode),
             allowed_values=_THREE_STATE_VALUES,
+            current_value_reader=_require_receiver_led_mode_value,
         )
 
     async def set_hybrid_bonding(self, *, enabled: bool) -> dict[str, Any]:
@@ -1158,21 +3033,26 @@ class SpeedportClient:
         field: str,
         desired_value: str,
         allowed_values: frozenset[str],
+        current_value_reader: Callable[[Mapping[str, Any]], str] | None = None,
     ) -> dict[str, Any]:
         """Fresh-read and submit one exact allowlisted scalar field."""
         if desired_value not in allowed_values:
             raise SpeedportProtocolError("Requested scalar state is not allowlisted")
         self._ensure_open()
         async with self._lock:
-            readback = await self._get_json_unlocked(
+            readback = await self._get_json_with_recovery_unlocked(
                 endpoint,
                 authenticated=True,
                 referer=referer,
             )
-            current_value = _require_guarded_scalar_value(
-                readback,
-                field=field,
-                allowed_values=allowed_values,
+            current_value = (
+                current_value_reader(readback)
+                if current_value_reader is not None
+                else _require_guarded_scalar_value(
+                    readback,
+                    field=field,
+                    allowed_values=allowed_values,
+                )
             )
             if current_value == desired_value:
                 return {"status": "unchanged"}
@@ -1184,6 +3064,55 @@ class SpeedportClient:
             )
             _require_command_acknowledgement(result)
             return result
+
+    async def _get_json_with_recovery_unlocked(
+        self,
+        endpoint: str,
+        *,
+        authenticated: bool,
+        referer: str | None,
+        preserve_compounds: bool = False,
+    ) -> dict[str, Any]:
+        """Retry one protected GET after bounded, ownership-safe recovery."""
+        try:
+            return await self._get_json_unlocked(
+                endpoint,
+                authenticated=authenticated,
+                referer=referer,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
+        except (SpeedportAuthenticationError, SpeedportDecodeError) as err:
+            if (
+                not authenticated
+                or self._password is None
+                or isinstance(
+                    err,
+                    (
+                        SpeedportInvalidCredentialsError,
+                        SpeedportLoginLockedError,
+                    ),
+                )
+            ):
+                raise
+
+            if self._session_cleanup_key is not None:
+                await self._logout_unlocked()
+            else:
+                # Status/challenge failures happen before the router supplies a
+                # proof-bound key. Forget only local preflight state: a logout
+                # without that key could terminate somebody else's session.
+                self._clear_session_state()
+                self._encrypted_mode = None
+
+            # Deliberately issue one direct retry instead of recursing through
+            # this helper. This bounds a pre-proof failure to one additional
+            # challenge and never wraps or replays a state-changing request.
+            return await self._get_json_unlocked(
+                endpoint,
+                authenticated=True,
+                referer=referer,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
 
     async def rename_client(
         self,
@@ -1325,11 +3254,88 @@ class SpeedportClient:
         if capability is None:
             msg = f"Router capability not confirmed: {family}"
             raise SpeedportUnsupportedError(msg)
-        return await self.get_json(
+        data = await self.get_json(
             capability.endpoint,
             authenticated=capability.authenticated,
             referer=capability.referer,
         )
+        self.observe_feature_data(family, data)
+        return data
+
+    def observe_feature_data(self, family: str, data: Mapping[str, Any]) -> None:
+        """Record bounded response structure without values or additional I/O."""
+        if family not in self._selected_endpoints:
+            return
+        safe_family = _safe_observed_schema_name(family)
+        if safe_family != family:
+            return
+        if (
+            safe_family not in self._observed_feature_schema
+            and len(self._observed_feature_schema) >= _OBSERVED_SCHEMA_MAX_FAMILIES
+        ):
+            return
+
+        observed = _describe_observed_schema(data)
+        current = self._observed_feature_schema.get(safe_family, ())
+        merged = list(current)
+        known = set(current)
+        for descriptor in observed:
+            if descriptor in known:
+                continue
+            if len(merged) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                break
+            merged.append(descriptor)
+            known.add(descriptor)
+        self._observed_feature_schema[safe_family] = tuple(merged)
+
+    def _observe_candidate_data(
+        self,
+        family: str,
+        candidate: EndpointCapability,
+        data: Mapping[str, Any],
+        *,
+        inventory: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ]
+        | None = None,
+    ) -> None:
+        """Record one successful capability-probe response without its values."""
+        metadata = _safe_observed_candidate_metadata(family, candidate)
+        if metadata is None:
+            return
+        observed_candidates = (
+            self._observed_candidate_schema if inventory is None else inventory
+        )
+        safe_family, endpoint, authenticated, referer = metadata
+        family_candidates = observed_candidates.get(safe_family)
+        if family_candidates is None:
+            if len(observed_candidates) >= _OBSERVED_SCHEMA_MAX_FAMILIES:
+                return
+            family_candidates = {}
+            observed_candidates[safe_family] = family_candidates
+
+        candidate_key = (endpoint, authenticated, referer)
+        if candidate_key not in family_candidates:
+            if len(family_candidates) >= _OBSERVED_SCHEMA_MAX_CANDIDATES_PER_FAMILY:
+                return
+            total_candidates = sum(
+                len(observed) for observed in observed_candidates.values()
+            )
+            if total_candidates >= _OBSERVED_SCHEMA_MAX_CANDIDATES:
+                return
+
+        current = family_candidates.get(candidate_key, ())
+        merged = list(current)
+        known = set(current)
+        for descriptor in _describe_observed_schema(data):
+            if descriptor in known:
+                continue
+            if len(merged) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                break
+            merged.append(descriptor)
+            known.add(descriptor)
+        family_candidates[candidate_key] = tuple(merged)
 
     async def get_parameter_values(
         self, names: Sequence[str]
@@ -1340,13 +3346,15 @@ class SpeedportClient:
             await self._logout_unlocked()
             return await self._get_parameter_values_unlocked(names)
 
-    async def get_dsl_metrics(self) -> DslMetrics:
-        """Read normalized DSL telemetry from exact TR-181 leaf parameters."""
+    async def get_dsl_metrics(self, *, busy_retries: int | None = None) -> DslMetrics:
+        """Read DSL telemetry with an optional per-call busy retry policy."""
         self._ensure_open()
         async with self._lock:
             await self._logout_unlocked()
             names = self._dsl_parameter_names or _DSL_PARAMETER_NAMES
-            values, supported_names = await self._read_dsl_parameters_unlocked(names)
+            values, supported_names = await self._read_dsl_parameters_unlocked(
+                names, busy_retries=busy_retries
+            )
             self._dsl_parameter_names = supported_names
             return _make_dsl_metrics(values)
 
@@ -1440,11 +3448,13 @@ class SpeedportClient:
         return _make_wan_counters(updated_interface)
 
     async def _read_dsl_parameters_unlocked(
-        self, names: Sequence[str]
+        self, names: Sequence[str], *, busy_retries: int | None = None
     ) -> tuple[dict[str, ParameterValue], tuple[str, ...]]:
         """Read DSL leaves, isolating unsupported optional parameters."""
         try:
-            values = await self._get_parameter_values_unlocked(names)
+            values = await self._get_parameter_values_unlocked(
+                names, busy_retries=busy_retries
+            )
         except SpeedportSessionBusyError:
             raise
         except SpeedportUnsupportedError:
@@ -1452,7 +3462,9 @@ class SpeedportClient:
             supported_names: list[str] = []
             for name in names:
                 try:
-                    parameter = await self._get_parameter_values_unlocked((name,))
+                    parameter = await self._get_parameter_values_unlocked(
+                        (name,), busy_retries=busy_retries
+                    )
                 except SpeedportSessionBusyError:
                     raise
                 except SpeedportUnsupportedError:
@@ -1476,9 +3488,15 @@ class SpeedportClient:
         return values, tuple(supported_names)
 
     async def probe_capabilities(
-        self, *, allow_protected_degraded: bool = False
+        self,
+        *,
+        allow_protected_degraded: bool = False,
     ) -> CapabilityReport:
         """Probe only read endpoints and record independent failures."""
+        observed_candidate_schema: dict[
+            str,
+            dict[tuple[str, bool, str | None], tuple[tuple[str, str], ...]],
+        ] = {}
         failures: dict[str, str] = {}
         selected: dict[str, EndpointCapability] = {}
         status_ok = False
@@ -1501,6 +3519,7 @@ class SpeedportClient:
                     candidate
                     for candidate in candidates
                     if candidate.authenticated is authenticated
+                    and candidate.automatic_probe
                 ]
                 for candidate in phase_candidates:
                     cache_key = (
@@ -1515,6 +3534,23 @@ class SpeedportClient:
                                 authenticated=candidate.authenticated,
                                 referer=candidate.referer,
                             )
+                            if (
+                                authenticated
+                                and not fetched_data
+                                and (
+                                    candidate.endpoint,
+                                    candidate.referer,
+                                )
+                                in _QUERY_TOKEN_READS
+                            ):
+                                # A freshly tokenized page read should be stable,
+                                # but one bounded retry prevents a transient empty
+                                # response from suppressing the control until reload.
+                                fetched_data = await self.get_json(
+                                    candidate.endpoint,
+                                    authenticated=True,
+                                    referer=candidate.referer,
+                                )
                         except SpeedportUnsupportedError as exc:
                             endpoint_results[cache_key] = (None, exc)
                         except SpeedportError as exc:
@@ -1530,6 +3566,13 @@ class SpeedportClient:
                             if authenticated:
                                 authenticated_ok = True
                     endpoint_data, error = endpoint_results[cache_key]
+                    if error is None and endpoint_data is not None:
+                        self._observe_candidate_data(
+                            family,
+                            candidate,
+                            endpoint_data,
+                            inventory=observed_candidate_schema,
+                        )
                     if (
                         error is None
                         and endpoint_data is not None
@@ -1605,8 +3648,7 @@ class SpeedportClient:
                             "No authenticated endpoint read succeeded",
                         )
 
-            self._selected_endpoints = selected
-            self._capabilities = CapabilityReport(
+            report = CapabilityReport(
                 status_json=status_ok,
                 tr064=tr064_ok,
                 wan_counters=counters_ok,
@@ -1614,9 +3656,13 @@ class SpeedportClient:
                 feature_endpoints=MappingProxyType(dict(selected)),
                 failures=MappingProxyType(failures),
             )
-            return self._capabilities
         finally:
             await self.logout()
+
+        self._selected_endpoints = selected
+        self._capabilities = report
+        self._observed_candidate_schema = observed_candidate_schema
+        return report
 
     def _add_status_capabilities(self, selected: dict[str, EndpointCapability]) -> None:
         """Expose core families proven directly by public Status.json."""
@@ -1683,7 +3729,10 @@ class SpeedportClient:
             raise SpeedportAuthenticationError(
                 "Router returned invalid login challenge"
             )
-        password_hash = sha256(f"{challenge}:{self._password}".encode()).hexdigest()
+        # The firmware mandates SHA-256(challenge:password) as its transient
+        # login proof. This is protocol compatibility, not password storage.
+        # codeql[py/weak-sensitive-data-hashing]: Firmware-mandated login proof.
+        login_proof = sha256(f"{challenge}:{self._password}".encode()).hexdigest()
         # A proof request may be accepted even when its response cannot be
         # decoded or the connection drops. Retain only this router-issued key
         # so logout/close can release the tentative session without ever
@@ -1691,7 +3740,7 @@ class SpeedportClient:
         self._session_cleanup_key = challenge_key
         result = await self._post_json_unlocked(
             "data/Login.json",
-            {"showpw": "0", "password": password_hash},
+            {"showpw": "0", "password": login_proof},
             authenticated=False,
             referer=None,
             ensure_auth=False,
@@ -1718,12 +3767,41 @@ class SpeedportClient:
         *,
         authenticated: bool,
         referer: str | None,
+        preserve_compounds: bool = False,
     ) -> dict[str, Any]:
         if authenticated:
             await self._ensure_authenticated_unlocked()
         path = _validate_endpoint(endpoint)
+        query: dict[str, str | int] = {}
+        settings_token_read = any(
+            (path, referer)
+            == (item.read_endpoint or item.endpoint, item.read_referer or item.referer)
+            for item in settings_contracts().values()
+        )
+        if (
+            authenticated
+            and referer
+            and (
+                (path.partition("?")[0], referer) in _QUERY_TOKEN_READS
+                or settings_token_read
+                or (path, referer) in target_settings_read_pairs()
+            )
+        ):
+            # Smart 4 page-scoped JSON endpoints return an empty document unless
+            # the page's current HTTP token is supplied as the `_tn` query value.
+            # Fetching the referer and then issuing this GET mirrors the router UI
+            # without changing router state.
+            token = await self._get_http_token_unlocked(referer)
+            if token is None or _QUERY_TOKEN_VALUE.fullmatch(token) is None:
+                raise SpeedportUnsupportedError(
+                    "Router page token is unavailable for protected read"
+                )
+            query["_tn"] = token
+        nonce = time.time_ns()
+        query["_time"] = nonce // 1_000_000
+        query["_rand"] = nonce % 1001
         separator = "&" if "?" in path else "?"
-        url = f"{self._base_url}/{path}{separator}_time={time.time_ns() // 1_000_000}"
+        url = f"{self._base_url}/{path}{separator}{urlencode(query)}"
         headers = self._json_headers(referer)
         text = await self._request_text_unlocked("GET", url, headers=headers)
         if _looks_like_login_page(text):
@@ -1734,7 +3812,11 @@ class SpeedportClient:
         if authenticated and self._login_key is None:
             raise SpeedportAuthenticationError("Authenticated session has no key")
         try:
-            return _decode_response(text, self._login_key)
+            return _decode_response(
+                text,
+                self._login_key,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
         except SpeedportDecodeError as exc:
             if authenticated:
                 self._invalidate_authentication()
@@ -1780,6 +3862,19 @@ class SpeedportClient:
         )
         headers = self._json_headers(referer)
         headers["Content-Type"] = "application/x-www-form-urlencoded"
+        # The request may have waited on a client lock, authentication, or page
+        # token. Revalidate the live HA session only after those awaits. Exact
+        # ownership-key logout remains possible after revocation/cancellation.
+        owned_logout = (
+            path == "data/Login.json"
+            and dict(data) == {"logout": "byby"}
+            and not authenticated
+            and not ensure_auth
+            and self._session_cleanup_key is not None
+            and request_key is self._session_cleanup_key
+        )
+        if not owned_logout:
+            check_private_authorization()
         text = await self._request_text_unlocked(
             "POST", f"{self._base_url}/{path}", headers=headers, data=body
         )
@@ -1804,6 +3899,9 @@ class SpeedportClient:
             f"{self._base_url}/{path}",
             headers=self._json_headers(None),
         )
+        if _looks_like_login_page(text):
+            self._invalidate_authentication()
+            raise SpeedportAuthenticationError("Router session expired")
         for pattern in _HTTP_TOKEN_PATTERNS:
             if match := pattern.search(text):
                 return match.group(1)
@@ -1813,13 +3911,14 @@ class SpeedportClient:
         if not self._authenticated:
             await self._login_unlocked()
 
-    async def _logout_unlocked(self) -> None:
+    async def _logout_unlocked(self, *, require_confirmation: bool = False) -> None:
         """Release our web login while retaining credentials for later reuse."""
         cleanup_key = self._session_cleanup_key
         if cleanup_key is None:
             return
         try:
             primary_rejected = False
+            primary_confirmed = False
             try:
                 result = await self._post_json_unlocked(
                     "data/Login.json",
@@ -1831,11 +3930,13 @@ class SpeedportClient:
                     response_key=cleanup_key,
                 )
                 primary_rejected = _logout_response_rejected(result)
+                primary_confirmed = _logout_response_confirmed(result)
             except SpeedportError:
                 primary_rejected = True
-            if primary_rejected:
-                with suppress(SpeedportError):
-                    await self._post_json_unlocked(
+            cleanup_unconfirmed = not primary_confirmed
+            if primary_rejected or (require_confirmation and not primary_confirmed):
+                try:
+                    fallback = await self._post_json_unlocked(
                         "data/Login.json",
                         {"logout": "byby"},
                         authenticated=False,
@@ -1844,6 +3945,13 @@ class SpeedportClient:
                         request_key=cleanup_key,
                         response_key=cleanup_key,
                     )
+                    cleanup_unconfirmed = not _logout_response_confirmed(fallback)
+                except SpeedportError:
+                    cleanup_unconfirmed = True
+            if require_confirmation and cleanup_unconfirmed:
+                raise SpeedportProtocolError(
+                    "Router session cleanup could not be confirmed"
+                )
         finally:
             self._clear_session_state()
             await asyncio.sleep(_LOGOUT_SETTLE_SECONDS)
@@ -2032,7 +4140,17 @@ class SpeedportClient:
             kwargs["ssl"] = False
         try:
             async with self._session.request(method, url, **kwargs) as response:
-                text = await response.text(errors="replace")
+                if method != "GET" or urlsplit(url).path != "/data/IPData.json":
+                    text = await response.text(errors="replace")
+                else:
+                    body = bytearray()
+                    async for chunk in response.content.iter_chunked(16 * 1024):
+                        if len(body) + len(chunk) > _IP_INFORMATION_MAX_RESPONSE_BYTES:
+                            raise SpeedportProtocolError(
+                                "Router response exceeded the private read limit"
+                            )
+                        body.extend(chunk)
+                    text = body.decode("utf-8", errors="replace")
                 if response.status in {301, 302, 303, 307, 308}:
                     location = response.headers.get("Location", "")
                     if "login" in location.casefold():
@@ -2110,6 +4228,16 @@ def _require_guarded_scalar_value(
             "Guarded scalar state has an unsupported representation"
         )
     return value
+
+
+def _require_receiver_led_mode_value(payload: Mapping[str, Any]) -> str:
+    """Return the exact receiver LED readback as its write-side decimal code."""
+    raw_value = _require_guarded_scalar_value(
+        payload,
+        field="ex5g_led_mode",
+        allowed_values=frozenset(RECEIVER_LED_MODE_CODES),
+    )
+    return str(RECEIVER_LED_MODE_CODES[raw_value])
 
 
 def _select_managed_device_row(
@@ -2330,6 +4458,1131 @@ def _require_command_acknowledgement(response: Mapping[str, Any]) -> None:
         )
 
 
+def _reject_explicit_action_failure(response: Mapping[str, Any]) -> None:
+    """Allow absent ACK only when no exact response field reports failure."""
+    for key in ("status", "result"):
+        if key not in response:
+            continue
+        value = response[key]
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized in {"1", "ok", "success", "true"}:
+                continue
+            if normalized in {
+                "0",
+                "denied",
+                "error",
+                "failed",
+                "failure",
+                "false",
+                "no",
+                "nok",
+                "rejected",
+            }:
+                raise SpeedportCommandRejectedError(
+                    "Router explicitly rejected the administrator action"
+                )
+        else:
+            if (type(value) is bool and value) or (type(value) is int and value == 1):
+                continue
+            if (type(value) is bool and not value) or (
+                type(value) is int and value == 0
+            ):
+                raise SpeedportCommandRejectedError(
+                    "Router explicitly rejected the administrator action"
+                )
+        raise SpeedportMutationOutcomeUnknownError(
+            "Router mutation acknowledgement is indeterminate"
+        )
+    for key in ("error", "errors"):
+        if key in response and response[key] not in (None, "", False, 0, (), [], {}):
+            raise SpeedportCommandRejectedError(
+                "Router explicitly rejected the administrator action"
+            )
+
+
+def _require_exact_status_ok(response: Mapping[str, Any]) -> None:
+    """Require the VoIP-number deletion callback's exact positive status."""
+    for key in ("error", "errors"):
+        if key in response and response[key] not in (None, "", False, 0, (), [], {}):
+            raise SpeedportCommandRejectedError(
+                "Router explicitly rejected the administrator action"
+            )
+    status = _mapping_value(response, "status")
+    if isinstance(status, str) and status.strip().casefold() == "ok":
+        return
+    explicit_negative = (type(status) is bool and not status) or (
+        type(status) is int and status == 0
+    )
+    if isinstance(status, str):
+        explicit_negative = status.strip().casefold() in {
+            "0",
+            "denied",
+            "error",
+            "failed",
+            "failure",
+            "false",
+            "no",
+            "nok",
+            "rejected",
+        }
+    if explicit_negative:
+        raise SpeedportCommandRejectedError(
+            "Router explicitly rejected the administrator action"
+        )
+    raise SpeedportMutationOutcomeUnknownError(
+        "Router mutation acknowledgement is indeterminate"
+    )
+
+
+def _require_exact_result_ok(response: Mapping[str, Any]) -> None:
+    """Require the firmware-update callback's explicit result, never infer success."""
+    _reject_explicit_action_failure(response)
+    keys = [key for key in response if str(key).casefold() == "result"]
+    if keys == ["result"] and response["result"] == "ok":
+        return
+    raise SpeedportMutationOutcomeUnknownError(
+        "Router mutation acknowledgement is indeterminate"
+    )
+
+
+def _require_private_query_identifier(value: object, *, description: str) -> str:
+    """Accept one short opaque firmware row identifier without echoing it on error."""
+    if not isinstance(value, str) or _PRIVATE_QUERY_ID.fullmatch(value) is None:
+        raise SpeedportProtocolError(f"{description} is invalid")
+    return value
+
+
+def _require_admin_action_identifier(value: object, *, description: str) -> str:
+    """Accept one short opaque action target without echoing it on failure."""
+    if not isinstance(value, str) or _PRIVATE_QUERY_ID.fullmatch(value) is None:
+        raise SpeedportProtocolError(f"{description} is invalid")
+    return value
+
+
+def _require_admin_target_fingerprint(value: object) -> str:
+    """Accept one internal row fingerprint without echoing it on failure."""
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise SpeedportProtocolError("Administrator action target proof is invalid")
+    return value
+
+
+def _strict_router_boolean(value: object) -> bool | None:
+    """Parse only exact Boolean wire representations used by this firmware."""
+    if type(value) is bool:
+        return value
+    if type(value) is int and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str) and value in {"0", "1"}:
+        return value == "1"
+    return None
+
+
+def _require_unique_scalar(payload: Mapping[str, Any], field: str) -> object:
+    """Return one exact case-insensitive scalar field or fail closed."""
+    matches = [
+        value
+        for raw_key, value in payload.items()
+        if isinstance(raw_key, str) and raw_key.strip().casefold() == field.casefold()
+    ]
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError("Router action state is missing or ambiguous")
+    return matches[0]
+
+
+def _require_dect_scan_active(payload: Mapping[str, Any]) -> bool:
+    """Return the exact DECT scan lifecycle value."""
+    value = _strict_router_boolean(
+        _require_unique_scalar(payload, "dect_detect_status")
+    )
+    if value is None:
+        raise SpeedportUnsupportedError("DECT scan state is unsupported")
+    return value
+
+
+def _dect_handset_rows(payload: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Return one complete, uniquely identified firmware handset collection."""
+    return _strict_dect_handset_rows(payload)
+
+
+def _require_dect_handset(
+    payload: Mapping[str, Any],
+    *,
+    handset_id: str,
+) -> dict[str, Any]:
+    """Return one exact handset row by stable opaque ID."""
+    matches = [
+        row
+        for row in _dect_handset_rows(payload)
+        if _private_query_identifier(row.get("id")) == handset_id
+    ]
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError("DECT handset target is missing or ambiguous")
+    return matches[0]
+
+
+def _dect_handset_fingerprint(
+    row: Mapping[str, Any],
+    *,
+    handset_id: str,
+) -> str:
+    """Bind one handset token to stable, non-secret row identity fields."""
+    name = _first_private_query_value(
+        row,
+        ("dect_name", "name"),
+        _private_query_text,
+        max_length=64,
+    )
+    return sha256(f"dect\x1f{handset_id}\x1f{name or ''}".encode()).hexdigest()
+
+
+def _require_dect_paging_state(
+    payload: Mapping[str, Any],
+    *,
+    handset_id: str,
+) -> bool:
+    """Return one exact per-handset paging state."""
+    value = _strict_router_boolean(
+        _require_unique_scalar(payload, f"pagingstat{handset_id}")
+    )
+    if value is None:
+        raise SpeedportUnsupportedError("DECT paging state is unsupported")
+    return value
+
+
+def _project_dect_handset_targets(
+    station: Mapping[str, Any],
+    status: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project bounded action targets without exposing handset assignments."""
+    rows = _dect_handset_rows(station)
+    eligible: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        target_id = _private_query_identifier(row.get("id"))
+        if target_id is None or target_id in seen:
+            continue
+        seen.add(target_id)
+        try:
+            paging = _require_dect_paging_state(status, handset_id=target_id)
+        except SpeedportUnsupportedError:
+            continue
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "reference": target_id,
+            "paging": paging,
+        }
+        target["target_fingerprint"] = _dect_handset_fingerprint(
+            row,
+            handset_id=target_id,
+        )
+        name = _first_private_query_value(
+            row,
+            ("dect_name", "name"),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        eligible.append(target)
+    return {
+        "targets": eligible[:_PRIVATE_QUERY_MAX_DECT_TARGETS],
+        "truncated": len(eligible) > _PRIVATE_QUERY_MAX_DECT_TARGETS,
+    }
+
+
+def _voip_line_rows(payload: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Return one complete, uniquely identified firmware VoIP line collection."""
+    return _strict_voip_line_rows(payload)
+
+
+def _project_voip_line_targets(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project bounded line action identities without exposing phone numbers."""
+    targets: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in _voip_line_rows(payload):
+        target_id = _private_query_identifier(
+            row.get("id", row.get("ipphonenumber_id"))
+        )
+        if target_id is None or target_id in seen:
+            continue
+        seen.add(target_id)
+        status = row.get("number_status")
+        if status not in {"ok", "inactive"}:
+            continue
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _voip_line_fingerprint(
+                row,
+                line_id=target_id,
+            ),
+            "reference": target_id,
+            "active": status == "ok",
+        }
+        number = _first_private_query_value(
+            row,
+            ("ip_number", "phone_number", "number"),
+            _private_query_phone_number,
+            max_length=_PRIVATE_QUERY_MAX_PHONE_LENGTH,
+        )
+        digits = "".join(character for character in number or "" if character.isdigit())
+        if len(digits) > _MASKED_PHONE_SUFFIX_DIGITS:
+            target["number_suffix"] = digits[-_MASKED_PHONE_SUFFIX_DIGITS:]
+        targets.append(target)
+    return {
+        "targets": targets[:_PRIVATE_QUERY_MAX_VOIP_TARGETS],
+        "truncated": len(targets) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _voip_line_fingerprint(
+    row: Mapping[str, Any],
+    *,
+    line_id: str,
+) -> str:
+    """Bind one line token to stable identity fields without exposing them."""
+    number = _first_private_query_value(
+        row,
+        ("ip_number", "phone_number", "number"),
+        _private_query_phone_number,
+        max_length=_PRIVATE_QUERY_MAX_PHONE_LENGTH,
+    )
+    provider = _as_int(row.get("isp_selection"))
+    provider_value = (
+        provider
+        if provider is not None and 0 <= provider <= _MAX_VOIP_PROVIDER_CODE
+        else ""
+    )
+    return sha256(
+        f"voip\x1f{line_id}\x1f{number or ''}\x1f{provider_value}".encode()
+    ).hexdigest()
+
+
+def _require_voip_line(
+    payload: Mapping[str, Any],
+    *,
+    line_id: str,
+) -> dict[str, Any]:
+    """Return one exact VoIP line row by stable opaque ID."""
+    rows = _voip_line_rows(payload)
+    matches = [
+        row
+        for row in rows
+        if _private_query_identifier(row.get("id", row.get("ipphonenumber_id")))
+        == line_id
+    ]
+    if len(matches) != 1:
+        raise SpeedportUnsupportedError("VoIP line target is missing or ambiguous")
+    return matches[0]
+
+
+def _require_voip_line_active(row: Mapping[str, Any]) -> bool:
+    """Return one exact VoIP line state without retaining its number."""
+    status = row.get("number_status")
+    if status == "ok":
+        return True
+    if status == "inactive":
+        return False
+    raise SpeedportUnsupportedError("VoIP line state is unsupported")
+
+
+def _project_dect_handset_disconnect_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact handset identities with an opaque reference."""
+    targets: list[dict[str, Any]] = []
+    rows = _strict_dect_handset_rows(payload)
+    for row in rows[:_PRIVATE_QUERY_MAX_DECT_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _dect_handset_fingerprint(
+                row,
+                handset_id=target_id,
+            ),
+            "reference": target_id,
+        }
+        name = _first_private_query_value(
+            row,
+            ("dect_name", "name"),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_DECT_TARGETS,
+    }
+
+
+def _dect_repeater_fingerprint(_row: Mapping[str, Any], repeater_id: str) -> str:
+    """Bind a repeater action token to exact stable row identity."""
+    return sha256(f"dect-repeater\x1f{repeater_id}".encode()).hexdigest()
+
+
+def _project_dect_repeater_disconnect_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact repeater identities with an admin-visible opaque reference."""
+    rows = _strict_dect_repeater_rows(payload)
+    return {
+        "targets": [
+            {
+                "target_id": (target_id := cast("str", row["id"])),
+                "target_fingerprint": _dect_repeater_fingerprint(row, target_id),
+                "reference": target_id,
+            }
+            for row in rows[:_PRIVATE_QUERY_MAX_DECT_TARGETS]
+        ],
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_DECT_TARGETS,
+    }
+
+
+def _voip_provider_fingerprint(row: Mapping[str, Any], provider_id: str) -> str:
+    """Bind a provider token without retaining credentials or telephone data."""
+    provider_code = _bounded_integer(
+        row.get("isp_selection"),
+        minimum=0,
+        maximum=_MAX_VOIP_PROVIDER_CODE,
+    )
+    code = provider_code if provider_code is not None else ""
+    return sha256(f"voip-provider\x1f{provider_id}\x1f{code}".encode()).hexdigest()
+
+
+def _project_voip_provider_delete_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact provider targets without exposing credentials."""
+    rows = _strict_voip_provider_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _voip_provider_fingerprint(row, target_id),
+            "reference": target_id,
+        }
+        provider_code = _bounded_integer(
+            row.get("isp_selection"),
+            minimum=0,
+            maximum=_MAX_VOIP_PROVIDER_CODE,
+        )
+        if provider_code is not None:
+            target["provider_code"] = provider_code
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _project_voip_line_delete_targets(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project all exact VoIP number targets with only a masked suffix."""
+    rows = _strict_voip_line_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _voip_line_fingerprint(
+                row,
+                line_id=target_id,
+            ),
+            "reference": target_id,
+        }
+        status = row.get("number_status")
+        if status in {"ok", "inactive"}:
+            target["active"] = status == "ok"
+        number = _first_private_query_value(
+            row,
+            ("ip_number", "phone_number", "number"),
+            _private_query_phone_number,
+            max_length=_PRIVATE_QUERY_MAX_PHONE_LENGTH,
+        )
+        digits = "".join(character for character in number or "" if character.isdigit())
+        if len(digits) > _MASKED_PHONE_SUFFIX_DIGITS:
+            target["number_suffix"] = digits[-_MASKED_PHONE_SUFFIX_DIGITS:]
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _ip_pbx_client_fingerprint(row: Mapping[str, Any], client_id: str) -> str:
+    """Bind a PBX-client token to stable non-secret identity fields."""
+    name = _first_private_query_value(
+        row,
+        ("ipclient_mdevice_name",),
+        _private_query_text,
+        max_length=64,
+    )
+    mac = _private_query_mac(row.get("ipclient_mdevice_mac"))
+    return sha256(
+        f"ip-pbx-client\x1f{client_id}\x1f{name or ''}\x1f{mac or ''}".encode()
+    ).hexdigest()
+
+
+def _project_ip_pbx_client_delete_targets(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project exact PBX-client targets without credentials."""
+    rows = _strict_ip_pbx_client_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _ip_pbx_client_fingerprint(row, target_id),
+            "reference": target_id,
+        }
+        name = _first_private_query_value(
+            row,
+            ("ipclient_mdevice_name",),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        status_code = _bounded_integer(
+            row.get("ipclient_status"),
+            minimum=0,
+            maximum=2,
+        )
+        if status_code is not None:
+            target["status"] = _IP_PBX_STATUS_VALUES[status_code]
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _phonebook_entry_fingerprint(
+    row: Mapping[str, Any],
+    *,
+    contact_id: str,
+    phonebook_id: int,
+) -> str:
+    """Bind one contact token without returning its private fields."""
+    values = [
+        _first_private_query_value(
+            row,
+            (field,),
+            (
+                _private_query_phone_number
+                if field.startswith("number")
+                else _private_query_text
+            ),
+            max_length=_PRIVATE_QUERY_MAX_DISPLAY_NAME_LENGTH,
+        )
+        or ""
+        for field in ("name", "vorname", "number_p", "number_a", "number_m", "number_n")
+    ]
+    fingerprint_value = "\x1f".join(
+        ("phonebook-entry", str(phonebook_id), contact_id, *values)
+    )
+    return sha256(fingerprint_value.encode()).hexdigest()
+
+
+def _project_phonebook_entry_delete_targets(
+    payload: Mapping[str, Any],
+    *,
+    phonebook_id: int,
+) -> dict[str, Any]:
+    """Project exact contact targets from one complete phonebook response."""
+    rows = _strict_phonebook_rows(payload)
+    _require_complete_phonebook_result(payload, rows)
+    targets: list[dict[str, Any]] = []
+    # The strict phonebook reader already proves a bounded complete inventory.
+    # A VoIP-device display cap must not hide otherwise valid contact targets.
+    for row in rows:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _phonebook_entry_fingerprint(
+                row,
+                contact_id=target_id,
+                phonebook_id=phonebook_id,
+            ),
+            "phonebook_id": phonebook_id,
+            "reference": target_id,
+        }
+        name_parts = [
+            value
+            for value in (
+                _first_private_query_value(
+                    row,
+                    ("vorname",),
+                    _private_query_text,
+                    max_length=32,
+                ),
+                _first_private_query_value(
+                    row,
+                    ("name",),
+                    _private_query_text,
+                    max_length=32,
+                ),
+            )
+            if value is not None
+        ]
+        display_name = " ".join(name_parts)
+        if 0 < len(display_name) <= _PRIVATE_QUERY_MAX_DISPLAY_NAME_LENGTH:
+            target["display_name"] = display_name
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": False,
+    }
+
+
+def _nas_share_fingerprint(row: Mapping[str, Any], share_id: str) -> str:
+    """Bind one NAS-share token without credentials."""
+    name = _first_private_query_value(
+        row,
+        ("nas_folder_name", "nas_share_name", "share_name"),
+        _private_query_text,
+        max_length=64,
+    )
+    flags = tuple(
+        _strict_router_boolean(row[field]) if field in row else None
+        for field in ("nas_active", "nas_folder_nur_lesen", "nas_secure")
+    )
+    return sha256(
+        f"nas-share\x1f{share_id}\x1f{name or ''}\x1f{flags!r}".encode()
+    ).hexdigest()
+
+
+def _project_nas_share_delete_targets(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project exact NAS-share targets without credentials."""
+    rows = _strict_nas_share_rows(payload)
+    targets: list[dict[str, Any]] = []
+    for row in rows[:_PRIVATE_QUERY_MAX_VOIP_TARGETS]:
+        target_id = cast("str", row["id"])
+        target: dict[str, Any] = {
+            "target_id": target_id,
+            "target_fingerprint": _nas_share_fingerprint(row, target_id),
+            "reference": target_id,
+        }
+        name = _first_private_query_value(
+            row,
+            ("nas_folder_name", "nas_share_name", "share_name"),
+            _private_query_text,
+            max_length=64,
+        )
+        if name is not None:
+            target["name"] = name
+        targets.append(target)
+    return {
+        "targets": targets,
+        "truncated": len(rows) > _PRIVATE_QUERY_MAX_VOIP_TARGETS,
+    }
+
+
+def _require_phonebook_id(value: object) -> int:
+    """Accept only the five firmware-supported local phonebook indexes."""
+    if type(value) is not int or value not in _PHONEBOOK_IDS:
+        raise SpeedportProtocolError("Phonebook ID is invalid")
+    return value
+
+
+def _require_phonebook_search_prefix(value: object) -> str:
+    """Accept the exact all-contacts or single-letter firmware search form."""
+    if not isinstance(value, str) or _PHONEBOOK_SEARCH_PREFIX.fullmatch(value) is None:
+        raise SpeedportProtocolError("Phonebook search prefix is invalid")
+    return value
+
+
+def _project_ip_pbx_client(
+    response: Mapping[str, Any],
+    *,
+    client_id: str,
+) -> dict[str, Any]:
+    """Project one PBX status row while discarding credentials and unknown fields."""
+    rows = _private_query_rows(_mapping_value(response, "addipclient"))
+    matches = [
+        row for row in rows if _private_query_identifier(row.get("id")) == client_id
+    ]
+    if len(matches) != 1:
+        raise SpeedportProtocolError("IP-PBX refresh returned no unique client row")
+
+    row = matches[0]
+    status_code = _bounded_integer(row.get("ipclient_status"), minimum=0, maximum=2)
+    if status_code is None:
+        raise SpeedportProtocolError("IP-PBX refresh returned an invalid status")
+    result: dict[str, Any] = {
+        "client_id": client_id,
+        "status": _IP_PBX_STATUS_VALUES[status_code],
+        "status_code": status_code,
+    }
+    name = _private_query_text(row.get("ipclient_mdevice_name"))
+    if name is not None:
+        result["name"] = name
+    ipv4 = _private_query_ipv4(row.get("ipclient_mdevice_ipv4"))
+    if ipv4 is not None:
+        result["ipv4"] = ipv4
+    mac = _private_query_mac(row.get("ipclient_mdevice_mac"))
+    if mac is not None:
+        result["mac"] = mac
+    return result
+
+
+def _project_phonebook_entries(
+    response: Mapping[str, Any],
+    *,
+    phonebook_id: int,
+    prefix: str,
+) -> dict[str, Any]:
+    """Project an allowlisted, bounded contact search result."""
+    rows = _private_query_rows(
+        _mapping_value(response, "addbookentry"),
+        maximum_rows=_PRIVATE_PHONEBOOK_MAX_ROWS,
+    )
+    entries: list[dict[str, str]] = []
+    for row in rows[:_PRIVATE_PHONEBOOK_MAX_ROWS]:
+        contact_id = _private_query_identifier(row.get("id"))
+        if contact_id is None:
+            continue
+        entry = {"contact_id": contact_id}
+        for output, candidates, parser in (
+            ("last_name", ("name",), _private_query_text),
+            ("first_name", ("vorname",), _private_query_text),
+            (
+                "number",
+                ("number:1", "number", "number_p"),
+                _private_query_phone_number,
+            ),
+        ):
+            value = _first_private_query_value(row, candidates, parser)
+            if value is not None:
+                entry[output] = value
+        entries.append(entry)
+
+    result: dict[str, Any] = {
+        "phonebook_id": phonebook_id,
+        "prefix": prefix,
+        "entries": entries,
+        "truncated": len(rows) > _PRIVATE_PHONEBOOK_MAX_ROWS,
+    }
+    total = _bounded_integer(
+        _mapping_value(response, "num_entries"),
+        minimum=0,
+        maximum=1000,
+    )
+    if total is not None:
+        result["total"] = total
+    free_entries = _bounded_integer(
+        _mapping_value(response, "free_entry_num"),
+        minimum=0,
+        maximum=1000,
+    )
+    if free_entries is not None:
+        result["free_entries"] = free_entries
+    return result
+
+
+def _project_phonebook_contact(
+    response: Mapping[str, Any],
+    *,
+    phonebook_id: int,
+    contact_id: str,
+) -> dict[str, Any]:
+    """Project only reviewed contact fields and discard every unknown value."""
+    row = _casefold_private_query_mapping(response)
+    contact: dict[str, str] = {}
+    for output, candidates, parser, max_length in (
+        ("last_name", ("name",), _private_query_text, 256),
+        ("first_name", ("vorname",), _private_query_text, 256),
+        ("private_number", ("number_p",), _private_query_phone_number, 64),
+        ("work_number", ("number_a",), _private_query_phone_number, 64),
+        ("mobile_number", ("number_m",), _private_query_phone_number, 64),
+        (
+            "secondary_mobile_number",
+            ("number_n",),
+            _private_query_phone_number,
+            64,
+        ),
+        ("street", ("strasse",), _private_query_text, 256),
+        ("postal_code", ("plz",), _private_query_text, 32),
+        ("city", ("ort",), _private_query_text, 256),
+        ("birthday", ("geburtstag",), _private_query_birthday, 10),
+    ):
+        value = _first_private_query_value(
+            row,
+            candidates,
+            parser,
+            max_length=max_length,
+        )
+        if value is not None:
+            contact[output] = value
+    if not contact:
+        raise SpeedportProtocolError("Phonebook contact response had no safe fields")
+    return {
+        "phonebook_id": phonebook_id,
+        "contact_id": contact_id,
+        "contact": contact,
+    }
+
+
+def _mapping_value(mapping: Mapping[str, Any], key: str) -> Any:
+    """Return one case-insensitive field only when its spelling is unambiguous."""
+    matches = [
+        value for raw_key, value in mapping.items() if str(raw_key).casefold() == key
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _private_query_rows(
+    value: Any, *, maximum_rows: int = _PRIVATE_QUERY_MAX_ROWS
+) -> tuple[dict[str, Any], ...]:
+    """Expand only bounded mapping rows from a decoded template collection."""
+    if isinstance(value, Mapping):
+        sequence_columns = {
+            str(key): tuple(items)
+            for key, items in value.items()
+            if isinstance(items, Sequence)
+            and not isinstance(items, (str, bytes, bytearray))
+        }
+        if not sequence_columns:
+            row = _casefold_private_query_mapping(value)
+            return (row,) if row else ()
+        lengths = {len(items) for items in sequence_columns.values()}
+        if len(lengths) != 1:
+            return ()
+        scalar_columns = {
+            str(key): item for key, item in value.items() if key not in sequence_columns
+        }
+        length = min(lengths.pop(), maximum_rows + 1)
+        candidates: tuple[Mapping[Any, Any], ...] = tuple(
+            {
+                **scalar_columns,
+                **{key: items[index] for key, items in sequence_columns.items()},
+            }
+            for index in range(length)
+        )
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        candidates = tuple(
+            item for item in value[: maximum_rows + 1] if isinstance(item, Mapping)
+        )
+    else:
+        return ()
+    rows = tuple(_casefold_private_query_mapping(candidate) for candidate in candidates)
+    return tuple(row for row in rows if row)
+
+
+def _strict_private_query_rows(
+    payload: Mapping[str, Any],
+    collection: str,
+    *,
+    maximum_rows: int = _PRIVATE_QUERY_MAX_ROWS,
+) -> tuple[dict[str, Any], ...]:
+    """Return one complete collection without dropping malformed rows."""
+    value = _mapping_value(payload, collection)
+    if value is None:
+        raise SpeedportUnsupportedError(
+            "Router target inventory is missing or ambiguous"
+        )
+    if isinstance(value, Mapping):
+        sequence_columns = {
+            str(key): tuple(items)
+            for key, items in value.items()
+            if isinstance(items, Sequence)
+            and not isinstance(items, (str, bytes, bytearray))
+        }
+        if sequence_columns:
+            lengths = {len(items) for items in sequence_columns.values()}
+            if len(lengths) != 1:
+                raise SpeedportUnsupportedError("Router target inventory is malformed")
+            length = lengths.pop()
+            if length > maximum_rows:
+                raise SpeedportUnsupportedError("Router target inventory is truncated")
+            scalar_columns = {
+                str(key): item
+                for key, item in value.items()
+                if str(key) not in sequence_columns
+            }
+            candidates: tuple[Mapping[Any, Any], ...] = tuple(
+                {
+                    **scalar_columns,
+                    **{key: items[index] for key, items in sequence_columns.items()},
+                }
+                for index in range(length)
+            )
+        else:
+            candidates = (value,) if value else ()
+    elif isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        if len(value) > maximum_rows or any(
+            not isinstance(item, Mapping) for item in value
+        ):
+            raise SpeedportUnsupportedError("Router target inventory is truncated")
+        candidates = tuple(cast("Mapping[Any, Any]", item) for item in value)
+    else:
+        raise SpeedportUnsupportedError("Router target inventory is malformed")
+
+    rows = tuple(_casefold_private_query_mapping(candidate) for candidate in candidates)
+    if any(not row for row in rows):
+        raise SpeedportUnsupportedError("Router target inventory is malformed")
+    return rows
+
+
+def _strict_identified_rows(
+    payload: Mapping[str, Any],
+    collection: str,
+    *,
+    identifier_fields: tuple[str, ...] = ("id",),
+    maximum_rows: int = _PRIVATE_QUERY_MAX_ROWS,
+) -> tuple[dict[str, Any], ...]:
+    """Return complete rows with unique canonical opaque IDs."""
+    rows = _strict_private_query_rows(payload, collection, maximum_rows=maximum_rows)
+    identified: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        identifiers = {
+            identifier
+            for field in identifier_fields
+            if (identifier := _private_query_identifier(row.get(field))) is not None
+        }
+        if len(identifiers) != 1:
+            raise SpeedportUnsupportedError("Router target identity is ambiguous")
+        identifier = identifiers.pop()
+        if identifier in seen:
+            raise SpeedportUnsupportedError("Router target identity is ambiguous")
+        seen.add(identifier)
+        identified.append({**row, "id": identifier})
+    return tuple(identified)
+
+
+def _strict_dect_handset_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    collections = [
+        key
+        for key in ("adddectdevice", "adddect")
+        if _mapping_value(payload, key) is not None
+    ]
+    if len(collections) != 1:
+        raise SpeedportUnsupportedError(
+            "DECT handset inventory is missing or ambiguous"
+        )
+    return _strict_identified_rows(payload, collections[0])
+
+
+def _strict_dect_repeater_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addrepeater")
+
+
+def _strict_voip_provider_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addipphoneprovider")
+
+
+def _strict_voip_line_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(
+        payload,
+        "addipnumber",
+        identifier_fields=("id", "ipphonenumber_id"),
+    )
+
+
+def _strict_ip_pbx_client_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    return _strict_identified_rows(payload, "addipclient")
+
+
+def _strict_phonebook_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    # The real firmware omits addbookentry for an empty local book. Only its
+    # complete successful zero-count response proves absence after deletion.
+    collection_keys = [
+        key for key in payload if str(key).strip().casefold() == "addbookentry"
+    ]
+    if (
+        not collection_keys
+        and _mapping_value(payload, "status") == "ok"
+        and _bounded_integer(
+            _mapping_value(payload, "num_entries"), minimum=0, maximum=0
+        )
+        == 0
+        and _bounded_integer(
+            _mapping_value(payload, "free_entry_num"), minimum=0, maximum=1000
+        )
+        is not None
+    ):
+        return ()
+    return _strict_identified_rows(
+        payload, "addbookentry", maximum_rows=_PRIVATE_PHONEBOOK_MAX_ROWS
+    )
+
+
+def _strict_nas_share_rows(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Return complete NAS-share rows, including the firmware's flat form."""
+    for collection in ("addnasfolder", "nas_folders", "nasfolder"):
+        if _mapping_value(payload, collection) is not None:
+            return _strict_identified_rows(
+                payload,
+                collection,
+                identifier_fields=("sid", "id"),
+            )
+    row = _casefold_private_query_mapping(payload)
+    raw_identifier = row.get("sid", row.get("id"))
+    if (
+        isinstance(raw_identifier, (str, int))
+        and not isinstance(raw_identifier, bool)
+        and str(raw_identifier).strip() == "-1"
+    ):
+        return ()
+    identifier = _private_query_identifier(raw_identifier)
+    if identifier is None:
+        raise SpeedportUnsupportedError("NAS share inventory is missing or ambiguous")
+    return ({**row, "id": identifier},)
+
+
+def _target_membership(
+    rows: tuple[dict[str, Any], ...],
+    *,
+    target_id: str,
+    target_fingerprint: str,
+    fingerprint: Callable[[Mapping[str, Any], str], str],
+) -> bool:
+    """Prove exact target presence or complete absence."""
+    matches = [row for row in rows if row["id"] == target_id]
+    if not matches:
+        return False
+    if len(matches) != 1 or fingerprint(matches[0], target_id) != target_fingerprint:
+        raise SpeedportUnsupportedError("Administrator action target identity changed")
+    return True
+
+
+def _require_complete_phonebook_result(
+    payload: Mapping[str, Any],
+    rows: tuple[dict[str, Any], ...],
+) -> None:
+    """Require explicit proof that a phonebook response is untruncated."""
+    total = _bounded_integer(
+        _mapping_value(payload, "num_entries"),
+        minimum=0,
+        maximum=_PRIVATE_PHONEBOOK_MAX_ROWS,
+    )
+    if total is None or total != len(rows):
+        raise SpeedportUnsupportedError("Phonebook target inventory is incomplete")
+
+
+def _casefold_private_query_mapping(value: Mapping[Any, Any]) -> dict[str, Any]:
+    """Normalize field names while rejecting ambiguous duplicate spellings."""
+    result: dict[str, Any] = {}
+    for raw_key, item in value.items():
+        key = str(raw_key).strip().casefold()
+        if not key or key in result:
+            return {}
+        result[key] = item
+    return result
+
+
+def _first_private_query_value(
+    row: Mapping[str, Any],
+    keys: Sequence[str],
+    parser: _PrivateQueryParser,
+    *,
+    max_length: int = _PRIVATE_QUERY_MAX_TEXT_LENGTH,
+) -> str | None:
+    """Parse the first reviewed private field without exposing rejected values."""
+    for key in keys:
+        if key not in row:
+            continue
+        value = parser(row[key], max_length=max_length)
+        if value is not None:
+            return value
+    return None
+
+
+def _private_query_identifier(value: Any, *, max_length: int = 32) -> str | None:
+    del max_length
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    return text if _PRIVATE_QUERY_ID.fullmatch(text) is not None else None
+
+
+def _private_query_text(
+    value: Any,
+    *,
+    max_length: int = _PRIVATE_QUERY_MAX_TEXT_LENGTH,
+) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > max_length or not text.isprintable():
+        return None
+    return text
+
+
+def _private_query_phone_number(value: Any, *, max_length: int = 64) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if (
+        not text
+        or len(text) > min(max_length, _PRIVATE_QUERY_MAX_PHONE_LENGTH)
+        or _PHONEBOOK_NUMBER.fullmatch(text) is None
+    ):
+        return None
+    return text
+
+
+def _private_query_birthday(value: Any, *, max_length: int = 10) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) > max_length or _PHONEBOOK_BIRTHDAY.fullmatch(text) is None:
+        return None
+    return text or None
+
+
+def _private_query_ipv4(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        address = ipaddress.IPv4Address(value.strip())
+    except ipaddress.AddressValueError:
+        return None
+    return str(address)
+
+
+def _private_query_mac(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or _OBSERVED_SCHEMA_MAC.fullmatch(value.strip()) is None
+    ):
+        return None
+    return value.strip().upper().replace("-", ":")
+
+
+def _bounded_integer(value: Any, *, minimum: int, maximum: int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    return parsed if minimum <= parsed <= maximum else None
+
+
 def _mac_token(*, value: str | int | bool) -> str:
     """Compare MAC spellings without changing the preserved row value."""
     return "".join(
@@ -2371,14 +5624,24 @@ def _looks_like_login_page(text: str) -> bool:
     return any(marker in folded for marker in _LOGIN_MARKERS)
 
 
-def _decode_response(payload: str, challenge_key: bytes | None) -> dict[str, Any]:
+def _decode_response(
+    payload: str, challenge_key: bytes | None, *, preserve_compounds: bool = False
+) -> dict[str, Any]:
     """Decode with the active challenge key, then the fixed public key."""
     if challenge_key is not None and is_encrypted_payload(payload):
         try:
-            return decode_payload(payload, challenge_key)
+            return decode_payload(
+                payload,
+                challenge_key,
+                **({"preserve_compounds": True} if preserve_compounds else {}),
+            )
         except SpeedportDecodeError:
             pass
-    return decode_payload(payload, DEFAULT_KEY)
+    return decode_payload(
+        payload,
+        DEFAULT_KEY,
+        **({"preserve_compounds": True} if preserve_compounds else {}),
+    )
 
 
 def _logout_response_rejected(data: Mapping[str, Any]) -> bool:
@@ -2388,6 +5651,31 @@ def _logout_response_rejected(data: Mapping[str, Any]) -> bool:
         if (
             value is not None
             and str(value).strip().casefold() in _LOGOUT_REJECTED_STATES
+        ):
+            return True
+    return any(
+        key in data and data[key] not in (None, "", False, 0, (), [], {})
+        for key in ("error", "errors")
+    )
+
+
+def _logout_response_confirmed(data: Mapping[str, Any]) -> bool:
+    """Return whether a decoded logout response explicitly confirms release."""
+    if _logout_response_rejected(data):
+        return False
+    for key in ("logout", "status", "result"):
+        value = data.get(key)
+        if type(value) is bool:
+            if value:
+                return True
+            continue
+        if type(value) is int:
+            if value == 1:
+                return True
+            continue
+        if (
+            isinstance(value, str)
+            and value.strip().casefold() in _LOGOUT_ACCEPTED_STATES
         ):
             return True
     return False
@@ -2420,8 +5708,58 @@ def _failure_text(error: SpeedportError) -> str:
 def _has_capability_evidence(
     data: Mapping[str, Any], capability: EndpointCapability
 ) -> bool:
+    if capability.family == "wps_status" and not data:
+        # WPSStatus.json is an ephemeral transaction endpoint. An empty,
+        # successfully decoded response is its firmware-defined idle shape.
+        return True
     if not data:
         return False
+    if capability.family == "receiver_led":
+        try:
+            _require_receiver_led_mode_value(data)
+        except SpeedportUnsupportedError:
+            return False
+        return True
+    exact_scalar = {
+        "connection_privacy": ("lan_privacy_policy", _THREE_STATE_VALUES),
+        "wps": ("use_wps", _BINARY_STATE_VALUES),
+        "wps_status": ("wlan_wps_state", _WPS_STATE_VALUES),
+    }.get(capability.family)
+    if exact_scalar is not None:
+        field, allowed_values = exact_scalar
+        try:
+            _require_guarded_scalar_value(
+                data,
+                field=field,
+                allowed_values=allowed_values,
+            )
+        except SpeedportUnsupportedError:
+            return False
+        return True
+    if capability.family == "dect_status":
+        try:
+            _require_dect_scan_active(data)
+        except SpeedportUnsupportedError:
+            return False
+        return True
+    strict_collections = {
+        "dect": _strict_dect_handset_rows,
+        "dect_repeater": _strict_dect_repeater_rows,
+        "voip_lines": _strict_voip_line_rows,
+        "voip_providers": _strict_voip_provider_rows,
+        "pbx_clients": _strict_ip_pbx_client_rows,
+        "phonebook": _strict_phonebook_rows,
+        "nas_folders": _strict_nas_share_rows,
+    }
+    strict_collection = strict_collections.get(capability.family)
+    if strict_collection is not None:
+        try:
+            rows = strict_collection(data)
+            if capability.family == "phonebook":
+                _require_complete_phonebook_result(data, rows)
+        except SpeedportUnsupportedError:
+            return False
+        return True
     if not capability.evidence_keys:
         return True
     keys = tuple(_iter_mapping_keys(data))
@@ -2442,6 +5780,156 @@ def _iter_mapping_keys(value: object) -> tuple[str, ...]:
         for item in value:
             keys.extend(_iter_mapping_keys(item))
     return tuple(keys)
+
+
+def _describe_observed_schema(
+    data: Mapping[Any, Any],
+) -> tuple[tuple[str, str], ...]:
+    """Describe bounded JSON structure while retaining no response values."""
+    descriptors: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(path: str, value: object) -> bool:
+        shape = _observed_schema_shape(value)
+        if shape is None:
+            return False
+        descriptor = (path, shape)
+        if descriptor not in seen:
+            if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                return False
+            descriptors.append(descriptor)
+            seen.add(descriptor)
+        return True
+
+    def visit(value: object, path: str, depth: int) -> None:
+        if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS or not add(path, value):
+            return
+        if depth >= _OBSERVED_SCHEMA_MAX_DEPTH:
+            return
+        if isinstance(value, Mapping):
+            for index, (raw_name, item) in enumerate(value.items()):
+                if index >= _OBSERVED_SCHEMA_MAX_MAPPING_ITEMS:
+                    return
+                if not isinstance(raw_name, str):
+                    continue
+                safe_name = _safe_observed_schema_field_name(raw_name)
+                if safe_name is None:
+                    continue
+                child_path = f"{path}.{safe_name}" if path else safe_name
+                visit(item, child_path, depth + 1)
+                if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                    return
+            return
+        if isinstance(value, list | tuple):
+            item_path = f"{path}[]"
+            for item in value[:_OBSERVED_SCHEMA_MAX_ARRAY_ITEMS]:
+                visit(item, item_path, depth + 1)
+                if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+                    return
+
+    for index, (raw_name, value) in enumerate(data.items()):
+        if index >= _OBSERVED_SCHEMA_MAX_MAPPING_ITEMS:
+            break
+        if not isinstance(raw_name, str):
+            continue
+        safe_name = _safe_observed_schema_field_name(raw_name)
+        if safe_name is None:
+            continue
+        visit(value, safe_name, 1)
+        if len(descriptors) >= _OBSERVED_SCHEMA_MAX_FIELDS:
+            break
+    return tuple(descriptors)
+
+
+def _safe_observed_candidate_metadata(
+    family: str,
+    candidate: EndpointCapability,
+) -> tuple[str, str, bool, str | None] | None:
+    """Accept only fixed local firmware paths that cannot contain identifiers."""
+    safe_family = _safe_observed_schema_name(family)
+    if safe_family != family:
+        return None
+
+    endpoint_match = _OBSERVED_SCHEMA_ENDPOINT.fullmatch(candidate.endpoint)
+    if (
+        endpoint_match is None
+        or _safe_observed_schema_name(endpoint_match.group("name").casefold()) is None
+    ):
+        return None
+
+    referer = candidate.referer
+    if referer is not None:
+        referer_match = _OBSERVED_SCHEMA_REFERER.fullmatch(referer)
+        if referer_match is None or any(
+            _safe_observed_schema_name(component) is None
+            for component in referer_match.group("path").split("/")
+        ):
+            return None
+
+    return safe_family, candidate.endpoint, candidate.authenticated, referer
+
+
+def _safe_observed_schema_name(raw_name: str) -> str | None:
+    """Keep only exact schema-like names; normalize array indexes and reject PII."""
+    if (
+        not raw_name
+        or raw_name != raw_name.strip()
+        or len(raw_name) > _OBSERVED_SCHEMA_MAX_NAME_LENGTH
+        or raw_name != raw_name.casefold()
+        or _OBSERVED_SCHEMA_EMAIL.fullmatch(raw_name)
+        or _OBSERVED_SCHEMA_MAC.fullmatch(raw_name)
+        or _OBSERVED_SCHEMA_SEPARATED_MAC.search(raw_name)
+        or _OBSERVED_SCHEMA_COMPACT_IDENTIFIER.fullmatch(raw_name)
+        or _OBSERVED_SCHEMA_IP_TOKENS.search(raw_name)
+    ):
+        return None
+    try:
+        ipaddress.ip_address(raw_name.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return None
+
+    normalized = _OBSERVED_SCHEMA_ARRAY_INDEX.sub("[]", raw_name)
+    number_check = normalized.replace("[]", "")
+    tokens = frozenset(number_check.split("_"))
+    if (
+        _OBSERVED_SCHEMA_LONG_NUMBER.search(number_check)
+        or _OBSERVED_SCHEMA_DYNAMIC_KEY.fullmatch(number_check)
+        or tokens & _OBSERVED_SCHEMA_BLOCKED_TOKENS
+        or not any(character.isalpha() for character in number_check)
+        or not _OBSERVED_SCHEMA_SAFE_NAME.fullmatch(normalized)
+    ):
+        return None
+    return normalized
+
+
+def _safe_observed_schema_field_name(raw_name: str) -> str | None:
+    """Retain only fixed, non-identifying firmware schema field names."""
+    normalized = _safe_observed_schema_name(raw_name)
+    if normalized is None:
+        return None
+    candidate = normalized.replace("[]", "")
+    return normalized if candidate in _OBSERVED_SCHEMA_SAFE_FIELDS else None
+
+
+def _observed_schema_shape(value: object) -> str | None:
+    """Return only JSON shape metadata, never a scalar value."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list | tuple):
+        return "array"
+    return None
 
 
 def _as_int(value: object) -> int | None:

@@ -11,13 +11,24 @@ import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL, POLICY_READ
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.update import UpdateEntityFeature
-from homeassistant.components.websocket_api.decorators import websocket_command
+from homeassistant.components.websocket_api.decorators import (
+    require_admin,
+    websocket_command,
+)
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .management import ManagementRisk, get_entity_write_contract
+from .panel_focus import async_register_focus_commands
+from .panel_queries import (
+    async_register_admin_query_commands,
+    private_websocket_rejection,
+)
+from .panel_read import admin_read_payload
 
 if TYPE_CHECKING:
     from homeassistant.components.websocket_api.connection import ActiveConnection
@@ -32,23 +43,88 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 6
+PANEL_SCHEMA_VERSION: Final = 33
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
 _FRONTEND_FILE: Final = "speedport-smart-panel.js"
 _PANEL_DATA_KEY: Final = f"{DOMAIN}_frontend_panel"
 _PANEL_WS_TYPE: Final = f"{DOMAIN}/panel"
+_PANEL_ADMIN_READ_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/admin_read"
 
 _PUBLIC_STATUS_KEYS: Final = frozenset(
     {
+        "ddns_connected",
+        "ddns_status",
+        "device_password_changed",
+        "dns_rebind_protection",
         "dsl_connected",
         "dsl_downstream",
+        "dsl_error_code",
         "dsl_upstream",
+        "firewall_enabled",
+        "hybrid_connected",
+        "hybrid_dsl_tunnel",
+        "hybrid_enabled",
+        "hybrid_lte_tunnel",
+        "initial_setup_completed",
+        "internet_bng_configured",
         "internet_connected",
+        "internet_connected_since",
+        "internet_error_code",
+        "internet_privacy_level",
+        "internet_provider_family",
+        "internet_provisioning_code",
         "internet_uptime",
+        "lan_linked_ports",
+        "lan_port_1_connected",
+        "lan_port_1_speed",
+        "lan_port_2_connected",
+        "lan_port_2_speed",
+        "lan_port_3_connected",
+        "lan_port_3_speed",
+        "lan_port_4_connected",
+        "lan_port_4_speed",
+        "mobile_band",
+        "mobile_connected",
+        "mobile_lte_band",
+        "mobile_lte_signal",
+        "mobile_network_type",
+        "mobile_nr_band",
+        "mobile_nr_signal",
+        "mobile_rsrp",
+        "mobile_status_code",
+        "parental_controls_enabled",
+        "port_blocking_enabled",
+        "receiver_esim_supported",
+        "receiver_external_modem_enabled",
+        "receiver_external_wan_link",
+        "receiver_lte_enabled",
+        "receiver_mode",
+        "remote_support_active",
+        "receiver_model",
+        "router_https_enabled",
+        "settings_write_blocked",
+        "smarthome_linked",
+        "easy_support_enabled",
+        "system_operating_mode",
+        "telephony_hd_voice_active",
+        "telephony_manual_configuration_available",
+        "telephony_provider_family",
+        "telephony_provisioning_code",
         "wan_download_capacity",
         "wan_upload_capacity",
+        "wifi_2_4_clients",
+        "wifi_5_channel_width",
+        "wifi_5_clients",
+        "wifi_guest_clients",
+        "wifi_guest_2_4_clients",
+        "wifi_guest_5_clients",
+        "wifi_guest_wifi_4_clients",
+        "wifi_guest_wifi_5_clients",
+        "wifi_guest_wifi_6_clients",
+        "wifi_guest_remaining_time",
+        "wifi_office_clients",
     }
 )
 _WAN_COUNTER_KEYS: Final = frozenset(
@@ -87,50 +163,58 @@ _TOTR64_KEYS: Final = frozenset(
 )
 _INTEGRATION_KEYS: Final = frozenset(
     {
+        "capture_read_only_inventory",
+        "endpoint_failures",
+        "fast_polling_health",
         "last_successful_update",
         "management_access",
+        "normal_polling_health",
         "request_latency",
         "retry_protected_data",
         "router_problem",
+        "slow_polling_health",
         "update_failures",
     }
 )
+_NON_MUTATING_BUTTON_KEYS: Final = frozenset(
+    {
+        "capture_read_only_inventory",
+        "retry_protected_data",
+    }
+)
+_NON_MUTATING_BUTTON_FEATURES: Final = {
+    "capture_read_only_inventory": "home_assistant_capability_inventory",
+    "retry_protected_data": "home_assistant_session_recovery",
+}
 _CHILD_SECTIONS: Final = {
     "client": "clients",
     "dect_handset": "telephony",
+    "dect_repeater": "telephony",
     "ip_phone": "telephony",
     "mesh_node": "wireless",
+    "powerline_node": "clients",
     "receiver": "mobile",
     "telephone_line": "telephony",
     "usb_device": "system",
 }
-_DISRUPTIVE_CONTROL_KEYS: Final = frozenset(
-    {
-        "firmware",
-        "hybrid_bonding",
-        "internet_privacy_level_control",
-        "optimize_mesh",
-        "reboot_router",
-        "reconnect_internet",
-        "restart_dsl",
-        "restart_vpn",
-        "update_ddns",
-        "wps",
-    }
-)
-_TYPED_CONTROL_KEYS: Final = {
-    "select": frozenset(
-        {
-            "internet_privacy_level_control",
-            "receiver_led_mode_control",
-        }
-    ),
-    "text": frozenset({"client_name"}),
-}
 _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
+    # Public overview connection diagnostics. The group map is independent of
+    # transport source; `_PUBLIC_STATUS_KEYS` keeps these browser-independent.
+    "internet_bng_configured": "connection_internet",
+    "internet_provisioning_code": "connection_internet",
+    "internet_provider_family": "connection_internet",
+    "internet_error_code": "connection_internet",
     # Internet privacy.
     "internet_privacy_level": "connection_privacy",
+    # Public overview mobile state and receiver identity class.
+    "mobile_connected": "mobile_connection",
+    "mobile_status_code": "mobile_connection",
+    "mobile_nr_signal": "mobile_signal",
+    "mobile_lte_signal": "mobile_signal",
+    "mobile_nr_band": "mobile_radio",
+    "mobile_lte_band": "mobile_radio",
     # Wi-Fi radios, access policy, WPS, and schedule metadata.
+    "wifi_enabled": "wireless_general",
     "wifi_band_mode": "wireless_radios",
     "wifi_2_4_encryption_mode": "wireless_2_4",
     "wifi_2_4_visible": "wireless_2_4",
@@ -143,10 +227,22 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "wifi_schedule_mode": "wireless_schedule",
     "wifi_schedule_daily_from": "wireless_schedule",
     "wifi_schedule_daily_to": "wireless_schedule",
+    "wifi_schedule_weekly": "wireless_schedule",
     "wifi_guest_encryption_mode": "wireless_guest",
     "wifi_office_encryption_mode": "wireless_office",
+    # LAN and DHCP addressing summaries.
+    "lan_ipv4_address": "clients_lan",
+    "lan_subnet_mask": "clients_lan",
+    "lan_ipv6_enabled": "clients_lan",
+    "dhcp_pool_size": "clients_dhcp",
+    # DDNS status.
+    "ddns_provider": "system_ddns",
+    "ddns_status": "system_ddns",
     # External mobile receiver status and firmware.
     "receiver_mode": "mobile_receiver_status",
+    "receiver_model": "mobile_receiver_status",
+    "receiver_esim_supported": "mobile_receiver_status",
+    "receiver_external_wan_link": "mobile_receiver_status",
     "receiver_led_mode": "mobile_receiver_status",
     "receiver_external_modem_enabled": "mobile_receiver_status",
     "receiver_lte_enabled": "mobile_receiver_status",
@@ -166,10 +262,12 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "usb_storage_total": "system_nas",
     "usb_storage_used": "system_nas",
     "usb_storage_free": "system_nas",
-    "nas_enabled": "system_nas",
-    "nas_secure": "system_nas",
-    "nas_read_only": "system_nas",
+    "media_server_folders": "system_usb",
+    "media_server_active_folders": "system_usb",
     # Network security configuration summaries.
+    "firewall_enabled": "system_security",
+    "dns_rebind_protection": "system_security",
+    "router_https_enabled": "system_security",
     "dns_rebind_exceptions": "system_security_dns",
     "port_block_rules": "system_security_port_block",
     "active_port_block_rules": "system_security_port_block",
@@ -177,6 +275,7 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "qos_prioritized_clients": "system_security_qos",
     # DECT, PBX, and VoIP summaries.
     "dect_repeaters": "telephony_dect",
+    "phonebook_entries": "telephony_phonebooks",
     "dect_scan_active": "telephony_dect",
     "dect_smart_home_enabled": "telephony_dect",
     "pbx_configured_clients": "telephony_pbx",
@@ -191,6 +290,10 @@ _PROTECTED_READ_ONLY_GROUP_BY_KEY: Final = {
     "telephony_warning_voip_numbers": "telephony_voip",
     "telephony_voip_possible": "telephony_voip",
     # Router firmware and support status.
+    "system_operating_mode": "system_health",
+    "settings_write_blocked": "system_health",
+    "device_password_changed": "system_health",
+    "initial_setup_completed": "system_health",
     "firmware_update_time": "system_firmware",
     "firmware_update_planned": "system_firmware",
     "firmware_automatic_updates": "system_firmware",
@@ -210,7 +313,12 @@ class _ChildDevicePanelData(TypedDict):
 
 async def async_register_panel(hass: HomeAssistant) -> None:
     """Register static assets, metadata API, and one global sidebar panel."""
+    from .file_transfer_http import async_register_file_transfer_views  # noqa: PLC0415
+    from .panel_private_http import async_register_private_panel_view  # noqa: PLC0415
+
     panel_state: dict[str, bool] = hass.data.setdefault(_PANEL_DATA_KEY, {})
+    async_register_file_transfer_views(hass)
+    async_register_private_panel_view(hass)
 
     if not panel_state.get("static_registered"):
         await hass.http.async_register_static_paths(
@@ -226,6 +334,11 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 
     if not panel_state.get("websocket_registered"):
         websocket_api.async_register_command(hass, websocket_panel_info)
+        websocket_api.async_register_command(
+            hass, private_websocket_rejection(_PANEL_ADMIN_READ_WS_TYPE)
+        )
+        async_register_admin_query_commands(hass)
+        async_register_focus_commands(hass)
         panel_state["websocket_registered"] = True
 
     if panel_state.get("panel_owned"):
@@ -301,6 +414,49 @@ def websocket_panel_info(
     )
 
 
+@websocket_command(
+    {
+        vol.Required("type"): _PANEL_ADMIN_READ_WS_TYPE,
+        vol.Required("entry_id"): str,
+    }
+)
+@require_admin
+@callback
+def websocket_panel_admin_read(
+    hass: HomeAssistant,
+    connection: ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return an administrator-only projection of cached normalized lists."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN:
+        connection.send_error(
+            msg["id"],
+            "entry_not_found",
+            "Speedport Smart config entry not found",
+        )
+        return
+    if entry.state is not ConfigEntryState.LOADED:
+        connection.send_error(
+            msg["id"],
+            "entry_not_loaded",
+            "Speedport Smart config entry is not loaded",
+        )
+        return
+    hub = _loaded_hub(entry)
+    if hub is None:
+        connection.send_error(
+            msg["id"],
+            "entry_not_loaded",
+            "Speedport Smart config entry is not loaded",
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        admin_read_payload(hub.data, entry_id=entry.entry_id),
+    )
+
+
 def _entry_panel_data(
     entry: ConfigEntry[Any],
     connection: ActiveConnection,
@@ -330,18 +486,35 @@ def _entry_panel_data(
 
     hub = _loaded_hub(entry)
     model: str | None = None
+    firmware: str | None = None
+    hardware_version: str | None = None
     capabilities: list[str] = []
     management: dict[str, Any] | None = None
     access_sources: list[dict[str, Any]] = []
     capability_families: list[dict[str, str]] = []
+    admin_actions: list[dict[str, Any]] = []
+    settings: list[dict[str, Any]] = []
+    file_transfers: list[dict[str, Any]] = []
     if hub is not None:
-        model = hub.router_identity.model
+        identity = hub.router_identity
+        model = identity.model
+        firmware = identity.firmware
+        hardware_version = identity.hardware_version
         source_data, family_data = _capability_panel_data(hub)
         if connection.user.is_admin:
             capabilities = sorted(hub.capabilities)
             management = _management_panel_data(hub)
             access_sources = source_data
             capability_families = family_data
+            action_metadata = getattr(hub, "admin_actions_metadata", None)
+            if callable(action_metadata):
+                admin_actions = action_metadata()
+            settings_metadata = getattr(hub, "settings_metadata", None)
+            if callable(settings_metadata):
+                settings = settings_metadata()
+            transfer_metadata = getattr(hub, "file_transfers_metadata", None)
+            if callable(transfer_metadata):
+                file_transfers = transfer_metadata()
         else:
             access_sources = _permission_scoped_access_sources(source_data, entities)
             if any(
@@ -353,11 +526,16 @@ def _entry_panel_data(
         "entry_id": entry.entry_id,
         "title": entry.title,
         "model": model,
+        "firmware": firmware,
+        "hardware_version": hardware_version,
         "entry_state": entry.state.value,
         "management": management,
         "access_sources": access_sources,
         "capabilities": capabilities,
         "capability_families": capability_families,
+        "admin_actions": admin_actions,
+        "settings": settings,
+        "file_transfers": file_transfers,
         "entities": entities,
     }
 
@@ -393,19 +571,24 @@ def _entity_panel_data(
     translation_key = entity_entry.translation_key or entity_id.partition(".")[2]
     child_kind = child_device["kind"] if child_device is not None else None
     protected_read_only = translation_key in _PROTECTED_READ_ONLY_GROUP_BY_KEY
-    supports_control = not protected_read_only and (
-        entity_domain in {"button", "switch"}
-        or (
-            entity_domain == "update"
-            and bool(entity_entry.supported_features & UpdateEntityFeature.INSTALL)
-        )
-        or (
-            entity_entry.translation_key is not None
-            and entity_entry.translation_key
-            in _TYPED_CONTROL_KEYS.get(entity_domain, ())
-        )
+    write_contract = (
+        get_entity_write_contract(entity_domain, translation_key)
+        if entity_entry.translation_key is not None
+        else None
     )
-    is_control = supports_control and _can_control_entity(
+    is_non_mutating_control = (
+        entity_domain == "button"
+        and entity_entry.translation_key in _NON_MUTATING_BUTTON_KEYS
+    )
+    supports_control = not protected_read_only and (
+        is_non_mutating_control or write_contract is not None
+    )
+    management_feature = (
+        write_contract.feature_id
+        if write_contract is not None
+        else _NON_MUTATING_BUTTON_FEATURES.get(translation_key)
+    )
+    can_control = supports_control and _can_control_entity(
         connection,
         entity_id,
     )
@@ -430,9 +613,23 @@ def _entity_panel_data(
             else _section_for_entity(translation_key, entity_domain, child_kind)
         ),
         "access_source": access_source,
-        "control": is_control,
-        "mutates_router": is_control and translation_key != "retry_protected_data",
-        "disruptive": translation_key in _DISRUPTIVE_CONTROL_KEYS,
+        "control": can_control,
+        "control_supported": supports_control,
+        "management_feature": management_feature,
+        "mutates_router": supports_control and write_contract is not None,
+        "risk": write_contract.risk.value if write_contract is not None else "normal",
+        "confirmation": (
+            write_contract.confirmation.value
+            if write_contract is not None
+            else "confirm"
+        ),
+        "disruptive": write_contract is not None
+        and write_contract.risk
+        in {
+            ManagementRisk.DISRUPTIVE,
+            ManagementRisk.LOCKOUT,
+            ManagementRisk.DESTRUCTIVE,
+        },
     }
     if capability_group := _PROTECTED_READ_ONLY_GROUP_BY_KEY.get(translation_key):
         panel_data["capability_group"] = capability_group
@@ -503,10 +700,14 @@ def _section_for_entity(
     ):
         return "telephony"
     if key in {
+        "endpoint_failures",
+        "fast_polling_health",
         "last_successful_update",
         "management_access",
+        "normal_polling_health",
         "request_latency",
         "router_problem",
+        "slow_polling_health",
         "update_failures",
     }:
         return "management"
@@ -524,14 +725,14 @@ def _access_source_for_entity(
     key = translation_key.casefold()
     if key in _INTEGRATION_KEYS:
         return "integration"
-    if key in _PROTECTED_READ_ONLY_GROUP_BY_KEY:
-        return "protected_json"
     if is_control:
         return "router_control"
     if child_kind is not None or entity_domain == "device_tracker":
         return "protected_json"
     if key in _PUBLIC_STATUS_KEYS:
         return "public_status"
+    if key in _PROTECTED_READ_ONLY_GROUP_BY_KEY:
+        return "protected_json"
     if key in _WAN_COUNTER_KEYS:
         return "wan_counters"
     if key in _TOTR64_KEYS:
@@ -590,13 +791,16 @@ def _management_panel_data(hub: SpeedportHub) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {
             "state": "unavailable",
+            "generation": 0,
             "browser_logout_required": False,
             "controls_available": False,
             "retry_after_seconds": None,
             "last_successful_update": None,
         }
+    generation = value.get("generation", 0)
     return {
         "state": value.get("state", "unknown"),
+        "generation": generation if type(generation) is int and generation >= 0 else 0,
         "browser_logout_required": bool(value.get("browser_logout_required", False)),
         "controls_available": hub.management_controls_available,
         "retry_after_seconds": value.get("retry_after_seconds"),
@@ -648,6 +852,7 @@ def _capability_panel_data(
     polling = diagnostics.get("polling", {})
     fast_available = _poll_group_available(polling, "fast")
     normal_available = _poll_group_available(polling, "normal")
+    slow_available = _poll_group_available(polling, "slow")
     management: Any = hub.get("management.access", {})
     management_available = (
         isinstance(management, Mapping) and management.get("state") == "available"
@@ -661,14 +866,19 @@ def _capability_panel_data(
             "id": "public_status",
             "label": "Browser-independent status",
             "supported": public_supported,
-            "available": public_supported and fast_available,
+            "available": (
+                public_supported and fast_available and "status" not in endpoint_errors
+            ),
         },
         {
             "id": "protected_json",
             "label": "Protected router data",
             "supported": protected_supported,
             "available": (
-                protected_supported and management_available and normal_available
+                protected_supported
+                and management_available
+                and normal_available
+                and slow_available
             ),
         },
         {
@@ -686,6 +896,7 @@ def _capability_panel_data(
             "label": "Live WAN counters",
             "supported": wan_supported,
             "polling_available": fast_available,
+            "availability_checked_at": dt_util.utcnow().isoformat(),
             "available": (
                 wan_supported
                 and fast_available
@@ -693,6 +904,13 @@ def _capability_panel_data(
             ),
             "effective_interval_seconds": wan_telemetry.get(
                 "effective_interval_seconds"
+            ),
+            "observed_interval_seconds": wan_telemetry.get("observed_interval_seconds"),
+            "rate_method": wan_telemetry.get("rate_method"),
+            "rate_sample_span_seconds": wan_telemetry.get("rate_sample_span_seconds"),
+            "polling_focus": wan_telemetry.get("polling_focus"),
+            "background_refresh_deferred": wan_telemetry.get(
+                "background_refresh_deferred", False
             ),
             "mode": wan_telemetry.get("mode"),
             "state": wan_telemetry.get("state"),
@@ -703,6 +921,9 @@ def _capability_panel_data(
             ),
             "retrying": wan_telemetry.get("retrying", False),
             "retry_in_seconds": wan_telemetry.get("retry_in_seconds"),
+            "success_streak": wan_telemetry.get("success_streak"),
+            "success_samples_required": wan_telemetry.get("success_samples_required"),
+            "cooldown_seconds": wan_telemetry.get("cooldown_seconds"),
             "last_sampled_at": wan_telemetry.get("last_sampled_at"),
         },
     ]

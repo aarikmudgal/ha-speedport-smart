@@ -123,6 +123,8 @@ class EndpointCapability:
     authenticated: bool = False
     referer: str | None = None
     evidence_keys: tuple[str, ...] = ()
+    automatic_probe: bool = False
+    inventory_safe: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +145,18 @@ class CapabilityReport:
         return family in self.feature_endpoints
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateInventoryResult:
+    """Value-free outcome of one explicit candidate inventory capture."""
+
+    attempted: int
+    succeeded: int
+    unsupported: int
+    failed: int
+    observed: int
+    excluded: int = 0
+
+
 def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:
     """Normalize public Status.json values without fabricating missing fields."""
     info = RouterInfo(
@@ -151,7 +165,6 @@ def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:
             "device_name",
             "model_name",
             "product_name",
-            "domain_name",
         )
         or "Speedport",
         firmware=_first_text(raw, "firmware_version", "firmware", "sw_version"),
@@ -169,7 +182,6 @@ def normalize_status(raw: Mapping[str, Any]) -> RouterStatus:
             "online_status",
             "internet_status",
             "inet_status",
-            "router_state",
         ),
         dsl_state=_first_text(raw, "dsl_link_status", "dsl_status"),
         dsl_downstream_bps=_first_int(raw, "dsl_downstream"),

@@ -18,7 +18,9 @@ CCM_TAG_LENGTH = 16
 _HEX_PAYLOAD = re.compile(r"^[0-9a-fA-F]+$")
 
 
-def decode_payload(payload: str, key: bytes | str = DEFAULT_KEY) -> dict[str, Any]:
+def decode_payload(
+    payload: str, key: bytes | str = DEFAULT_KEY, *, preserve_compounds: bool = False
+) -> dict[str, Any]:
     """Decode encrypted hex or plain Speedport JSON into mapping."""
     text = payload.strip()
     if not text or text == "[]":
@@ -44,7 +46,7 @@ def decode_payload(payload: str, key: bytes | str = DEFAULT_KEY) -> dict[str, An
     except json.JSONDecodeError as exc:
         msg = "Speedport response is neither encrypted nor valid JSON"
         raise SpeedportDecodeError(msg) from exc
-    return normalize_document(document)
+    return normalize_document(document, preserve_compounds=preserve_compounds)
 
 
 def encode_payload(payload: str, key: bytes | str = DEFAULT_KEY) -> str:
@@ -56,12 +58,14 @@ def encode_payload(payload: str, key: bytes | str = DEFAULT_KEY) -> str:
     return encrypted.hex()
 
 
-def normalize_document(document: object) -> dict[str, Any]:
+def normalize_document(
+    document: object, *, preserve_compounds: bool = False
+) -> dict[str, Any]:
     """Normalize Speedport varid/varvalue documents without losing duplicates."""
     if isinstance(document, Mapping):
         return {str(key): value for key, value in document.items()}
     if isinstance(document, list):
-        return _flatten_items(document)
+        return _flatten_items(document, preserve_compounds=preserve_compounds)
     msg = f"Unsupported JSON root type: {type(document).__name__}"
     raise SpeedportDecodeError(msg)
 
@@ -92,13 +96,27 @@ def _coerce_key(key: bytes | str) -> bytes:
     return key
 
 
-def _flatten_items(items: list[object]) -> dict[str, Any]:
+def _flatten_items(
+    items: list[object], *, preserve_compounds: bool = False
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for item in items:
         if not isinstance(item, Mapping) or "varid" not in item:
             continue
         key = str(item["varid"])
-        value = _normalize_value(item.get("varvalue"))
+        value = _normalize_value(
+            item.get("varvalue"), preserve_compounds=preserve_compounds
+        )
+        if preserve_compounds and item.get("vartype") == "compound":
+            children = item.get("compounds")
+            if not isinstance(children, list) or not children:
+                raise SpeedportDecodeError("Configuration compound has no bindings")
+            bindings = _flatten_items(children, preserve_compounds=True)
+            if key in bindings or not isinstance(value, str):
+                raise SpeedportDecodeError(
+                    "Configuration compound binding is ambiguous"
+                )
+            value = {key: value, **bindings}
         if key not in result:
             result[key] = value
             continue
@@ -113,11 +131,17 @@ def _flatten_items(items: list[object]) -> dict[str, Any]:
     return result
 
 
-def _normalize_value(value: object) -> object:
+def _normalize_value(value: object, *, preserve_compounds: bool = False) -> object:
     if isinstance(value, list):
         if any(isinstance(item, Mapping) and "varid" in item for item in value):
-            return _flatten_items(value)
-        return [_normalize_value(item) for item in value]
+            return _flatten_items(value, preserve_compounds=preserve_compounds)
+        return [
+            _normalize_value(item, preserve_compounds=preserve_compounds)
+            for item in value
+        ]
     if isinstance(value, Mapping):
-        return {str(key): _normalize_value(item) for key, item in value.items()}
+        return {
+            str(key): _normalize_value(item, preserve_compounds=preserve_compounds)
+            for key, item in value.items()
+        }
     return value

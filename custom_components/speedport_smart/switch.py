@@ -21,7 +21,6 @@ from .platform_helpers import (
     same_managed_client_row,
     speedport_child_device,
     stable_id,
-    supported,
     value,
 )
 
@@ -81,51 +80,6 @@ SWITCH_DESCRIPTIONS: tuple[SpeedportSwitchEntityDescription, ...] = (
         coordinator_group=PollGroup.NORMAL,
         command="set_office_wifi",
     ),
-    SpeedportSwitchEntityDescription(
-        key="upnp",
-        translation_key="upnp",
-        data_path="nat.upnp_enabled",
-        capability="nat",
-        coordinator_group=PollGroup.SLOW,
-        command="set_upnp",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportSwitchEntityDescription(
-        key="ddns",
-        translation_key="ddns",
-        data_path="ddns.enabled",
-        capability="ddns",
-        coordinator_group=PollGroup.SLOW,
-        command="set_ddns",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportSwitchEntityDescription(
-        key="vpn",
-        translation_key="vpn",
-        data_path="vpn.enabled",
-        capability="vpn",
-        coordinator_group=PollGroup.SLOW,
-        command="set_vpn",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportSwitchEntityDescription(
-        key="parental_controls",
-        translation_key="parental_controls",
-        data_path="parental.enabled",
-        capability="parental",
-        coordinator_group=PollGroup.SLOW,
-        command="set_parental_controls",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportSwitchEntityDescription(
-        key="media_server",
-        translation_key="media_server",
-        data_path="usb.media_server_enabled",
-        capability="usb",
-        coordinator_group=PollGroup.SLOW,
-        command="set_media_server",
-        entity_category=EntityCategory.CONFIG,
-    ),
 )
 
 
@@ -159,9 +113,7 @@ def _setup_fixed_switches(
         for description in SWITCH_DESCRIPTIONS:
             if description.key in known:
                 continue
-            if not hub.supports_command(description.command) or not supported(
-                hub, description.capability, description.data_path
-            ):
+            if not hub.supports_command(description.command):
                 continue
             known.add(description.key)
             entities.append(SpeedportCommandSwitch(hub, description))
@@ -319,7 +271,7 @@ class SpeedportCommandSwitch(SpeedportEntity, SwitchEntity):
         """Remain available only with explicit current-state readback."""
         return (
             super().available
-            and self.hub.management_controls_available
+            and self.hub.command_decision(self.entity_description.command).executable
             and self.is_on is not None
         )
 
@@ -352,6 +304,7 @@ class SpeedportCommandSwitch(SpeedportEntity, SwitchEntity):
 class _SpeedportCollectionSwitch(SpeedportEntity, SwitchEntity):
     """Base for stable items within a router collection."""
 
+    _command: str
     _collection_path: str
     _identifier: str
 
@@ -371,7 +324,7 @@ class _SpeedportCollectionSwitch(SpeedportEntity, SwitchEntity):
         """Return whether this stable collection item still exists."""
         return (
             super().available
-            and self.hub.management_controls_available
+            and self.hub.command_decision(self._command).executable
             and self._item is not None
         )
 
@@ -379,6 +332,7 @@ class _SpeedportCollectionSwitch(SpeedportEntity, SwitchEntity):
 class SpeedportPortForwardSwitch(_SpeedportCollectionSwitch):
     """Toggle one existing PortuwMain forwarding rule."""
 
+    _command = "set_port_forward_rule"
     _collection_path = "nat.port_forward_rules"
     _attr_translation_key = "port_forward_rule"
     _attr_entity_registry_enabled_default = True
@@ -471,6 +425,7 @@ class SpeedportPortForwardSwitch(_SpeedportCollectionSwitch):
 class SpeedportClientInternetSwitch(_SpeedportCollectionSwitch):
     """Pause or resume one client's internet access."""
 
+    _command = "set_client_internet_paused"
     _collection_path = "clients.items"
     _attr_translation_key = "client_internet_access"
     _attr_entity_registry_enabled_default = True
@@ -540,6 +495,7 @@ class SpeedportClientInternetSwitch(_SpeedportCollectionSwitch):
 class SpeedportClientFixedDhcpSwitch(_SpeedportCollectionSwitch):
     """Toggle only one managed row's proven fixed-DHCP flag."""
 
+    _command = "set_client_fixed_dhcp"
     _collection_path = "clients.items"
     _attr_translation_key = "client_fixed_dhcp"
     _attr_entity_registry_enabled_default = True

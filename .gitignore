@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+node_modules/
 htmlcov/
 coverage.xml
 dist/
@@ -23,3 +24,7 @@ config_entry-*.json
 diagnostics-*.json
 router-capture*
 *.pcap
+*.har
+*.saz
+*.netlog
+speedport-control-capture-raw*

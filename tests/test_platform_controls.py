@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -16,6 +18,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.speedport_smart.api import SpeedportSessionBusyError
 from custom_components.speedport_smart.button import (
     BUTTON_DESCRIPTIONS,
+    SpeedportCaptureReadOnlyInventoryButton,
     SpeedportCommandButton,
     SpeedportRetryProtectedDataButton,
 )
@@ -35,7 +38,7 @@ from custom_components.speedport_smart.device_tracker import (
     async_setup_entry as async_setup_trackers,
 )
 from custom_components.speedport_smart.hub import SpeedportHub
-from custom_components.speedport_smart.models import RouterInfo
+from custom_components.speedport_smart.models import EndpointCapability, RouterInfo
 from custom_components.speedport_smart.select import (
     SELECT_DESCRIPTIONS,
     SpeedportCommandSelect,
@@ -85,6 +88,30 @@ def _attach_coordinators(hass: HomeAssistant, hub: SpeedportHub) -> None:
         hub.attach_coordinator(group, coordinator)
 
 
+def _add_exact_feature_families(hub: SpeedportHub, *families: str) -> None:
+    """Add exact probed endpoint families to a focused control fixture."""
+    report = hub._capability_report  # noqa: SLF001 - explicit capability fixture
+    assert report is not None
+    endpoints = dict(report.feature_endpoints)
+    endpoints.update(
+        {
+            family: EndpointCapability(
+                family,
+                f"data/{family}.json",
+                authenticated=True,
+            )
+            for family in families
+        }
+    )
+    hub._apply_capability_report(  # noqa: SLF001 - explicit capability fixture
+        replace(
+            report,
+            authenticated_json=True,
+            feature_endpoints=MappingProxyType(endpoints),
+        )
+    )
+
+
 async def test_select_setup_requires_reviewed_identity_capabilities_and_readback(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -98,11 +125,11 @@ async def test_select_setup_requires_reviewed_identity_capabilities_and_readback
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
+    _add_exact_feature_families(
+        hub,
         "connection_privacy",
-        "receiver",
-    }
+        "receiver_led",
+    )
     hub._merge_data(  # noqa: SLF001
         {
             "internet": {"privacy_level": 1},
@@ -237,6 +264,7 @@ async def test_select_rejects_mismatched_post_command_readback_and_backoff(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    _add_exact_feature_families(hub, "receiver_led")
     description = _description(SELECT_DESCRIPTIONS, "receiver_led_mode_control")
     hub._merge_data({"receiver": {"led_mode": 0}})  # noqa: SLF001
     entity = SpeedportCommandSelect(hub, description)
@@ -270,9 +298,14 @@ async def test_switch_and_button_use_serialized_commands(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    _add_exact_feature_families(hub, "wps", "wps_status")
     hub._merge_data(  # noqa: SLF001 - platform contract fixture
         {
-            "wifi": {"enabled": True, "wps_status": "idle"},
+            "wifi": {
+                "enabled": True,
+                "wps_start_available": True,
+                "wps_status": "idle",
+            },
         }
     )
     hub.async_execute = AsyncMock()
@@ -329,6 +362,7 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    _add_exact_feature_families(hub, "clients", "wps", "wps_status")
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -344,7 +378,11 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     }
     hub._merge_data(  # noqa: SLF001
         {
-            "wifi": {"enabled": True, "wps_status": "idle"},
+            "wifi": {
+                "enabled": True,
+                "wps_start_available": True,
+                "wps_status": "idle",
+            },
             "clients": {"items": [client]},
         }
     )
@@ -352,11 +390,13 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     button = SpeedportCommandButton(hub, _description(BUTTON_DESCRIPTIONS, "wps"))
     text = SpeedportClientNameText(hub, "aa:bb:cc:dd:ee:ff")
     retry = SpeedportRetryProtectedDataButton(hub)
+    capture = SpeedportCaptureReadOnlyInventoryButton(hub)
 
     assert switch.available
     assert button.available
     assert text.available
     assert retry.available
+    assert capture.available
 
     hub._mark_management_busy(SpeedportSessionBusyError("busy"))  # noqa: SLF001
 
@@ -364,14 +404,34 @@ async def test_management_backoff_makes_mutating_entities_unavailable(
     assert not button.available
     assert not text.available
     assert retry.available
+    assert capture.available
 
     hub._set_management_access("available")  # noqa: SLF001
+    hub._protected_retry_at = 0.0  # noqa: SLF001 - isolate firmware gate
+    hub._merge_data(  # noqa: SLF001 - firmware-state safety fixture
+        {"system": {"settings_write_blocked": True}}
+    )
+
+    assert not switch.available
+    assert not button.available
+    assert not text.available
+    assert retry.available
+    assert capture.available
+
+    hub._merge_data(  # noqa: SLF001 - isolate protected retry gate
+        {"system": {"settings_write_blocked": False}}
+    )
     hub._protected_retry_at = hub._monotonic_time() + 60  # noqa: SLF001
 
     assert not switch.available
     assert not button.available
     assert not text.available
     assert retry.available
+    assert capture.available
+
+    hub.async_capture_candidate_inventory = AsyncMock()
+    await capture.async_press()
+    hub.async_capture_candidate_inventory.assert_awaited_once_with()
 
 
 async def test_wps_requires_fresh_started_state(
@@ -387,7 +447,10 @@ async def test_wps_requires_fresh_started_state(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._merge_data({"wifi": {"wps_status": "idle"}})  # noqa: SLF001
+    _add_exact_feature_families(hub, "wps", "wps_status")
+    hub._merge_data(  # noqa: SLF001
+        {"wifi": {"wps_start_available": True, "wps_status": "idle"}}
+    )
     hub.async_execute = AsyncMock(return_value={"status": "ok"})
     wps = SpeedportCommandButton(hub, _description(BUTTON_DESCRIPTIONS, "wps"))
 
@@ -410,7 +473,10 @@ async def test_wps_terminal_state_does_not_block_a_new_pairing_window(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._merge_data({"wifi": {"wps_status": "configured"}})  # noqa: SLF001
+    _add_exact_feature_families(hub, "wps", "wps_status")
+    hub._merge_data(  # noqa: SLF001
+        {"wifi": {"wps_start_available": True, "wps_status": "configured"}}
+    )
 
     async def execute(_command: str, **_parameters: Any) -> None:
         hub._merge_data({"wifi": {"wps_status": "success"}})  # noqa: SLF001
@@ -781,8 +847,10 @@ async def test_platform_setup_gates_controls_and_discovers_dynamic_entities(
     disabled: list[Any] = []
     await async_setup_switches(hass, disabled_entry, disabled.extend)
     await async_setup_buttons(hass, disabled_entry, disabled.extend)
-    assert len(disabled) == 1
-    assert isinstance(disabled[0], SpeedportRetryProtectedDataButton)
+    assert [type(entity) for entity in disabled] == [
+        SpeedportRetryProtectedDataButton,
+        SpeedportCaptureReadOnlyInventoryButton,
+    ]
 
     hub = SpeedportHub(
         hass,
@@ -868,9 +936,35 @@ async def test_platform_setup_gates_controls_and_discovers_dynamic_entities(
     assert any(
         isinstance(entity, SpeedportRetryProtectedDataButton) for entity in buttons
     )
-    assert entry.async_on_unload.call_count == 7
+    assert any(
+        isinstance(entity, SpeedportCaptureReadOnlyInventoryButton)
+        for entity in buttons
+    )
+    assert entry.async_on_unload.call_count == 6
     for unload_call in entry.async_on_unload.call_args_list:
         unload_call.args[0]()
+
+
+def test_fixed_descriptions_exclude_unproven_or_misleading_controls() -> None:
+    """Static read evidence must not create a writable entity contract."""
+    described_commands = {
+        description.command
+        for description in (*SWITCH_DESCRIPTIONS, *BUTTON_DESCRIPTIONS)
+    }
+
+    assert described_commands.isdisjoint(
+        {
+            "ddns_update",
+            "dsl_restart",
+            "mesh_optimize",
+            "set_ddns",
+            "set_media_server",
+            "set_parental_controls",
+            "set_upnp",
+            "set_vpn",
+            "wireguard_restart",
+        }
+    )
 
 
 async def test_reviewed_controls_register_after_protected_capability_recovery(
@@ -887,6 +981,7 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
     await hub.async_setup()
     _attach_coordinators(hass, hub)
     hub._capabilities = frozenset({"status", "system"})  # noqa: SLF001
+    hub._mark_management_unavailable()  # noqa: SLF001 - simulate GUI-owned session
     entry = MagicMock(runtime_data=hub)
     switches: list[Any] = []
     buttons: list[Any] = []
@@ -898,11 +993,44 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
     await async_setup_selects(hass, entry, selects.extend)
     await async_setup_texts(hass, entry, texts.extend)
 
-    assert switches == []
-    assert selects == []
+    assert {
+        entity.entity_description.key
+        for entity in switches
+        if isinstance(entity, SpeedportCommandSwitch)
+    } == {
+        "guest_wifi",
+        "hybrid_bonding",
+        "office_wifi",
+        "wifi",
+    }
+    assert {entity.entity_description.key for entity in selects} == {
+        "internet_privacy_level_control",
+        "receiver_led_mode_control",
+    }
     assert texts == []
-    assert len(buttons) == 1
-    assert isinstance(buttons[0], SpeedportRetryProtectedDataButton)
+    assert {
+        entity.entity_description.key
+        for entity in buttons
+        if isinstance(entity, SpeedportCommandButton)
+    } == {"reboot_router", "reconnect_internet", "wps"}
+    assert (
+        sum(isinstance(entity, SpeedportRetryProtectedDataButton) for entity in buttons)
+        == 1
+    )
+    assert (
+        sum(
+            isinstance(entity, SpeedportCaptureReadOnlyInventoryButton)
+            for entity in buttons
+        )
+        == 1
+    )
+    assert all(not entity.available for entity in switches)
+    assert all(not entity.available for entity in selects)
+    assert all(
+        not entity.available
+        for entity in buttons
+        if isinstance(entity, SpeedportCommandButton)
+    )
 
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
@@ -917,24 +1045,27 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
         "uses_dhcp": True,
         "uses_rule": 0,
     }
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
+    _add_exact_feature_families(
+        hub,
         "clients",
         "connection_privacy",
         "hybrid",
         "internet",
         "nat",
         "port_forwarding",
-        "receiver",
+        "receiver_led",
+        "system",
         "wifi",
         "wps",
-    }
+        "wps_status",
+    )
     hub._merge_data(  # noqa: SLF001
         {
             "wifi": {
                 "enabled": True,
                 "guest": {"enabled": False},
                 "office": {"enabled": True},
+                "wps_start_available": True,
                 "wps_status": "idle",
             },
             "internet": {"privacy_level": 1, "state": "online"},
@@ -953,6 +1084,7 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
             },
         }
     )
+    hub._set_management_access("available")  # noqa: SLF001 - recovered session
     snapshot = GroupSnapshot(
         group=PollGroup.NORMAL,
         data=hub.data,
@@ -1004,6 +1136,157 @@ async def test_reviewed_controls_register_after_protected_capability_recovery(
         unload_call.args[0]()
 
 
+async def test_registered_controls_follow_firmware_drift_without_duplicates(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    router_info: RouterInfo,
+) -> None:
+    """Registered fixed and collection controls fail closed, then recover in place."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    _add_exact_feature_families(
+        hub,
+        "clients",
+        "connection_privacy",
+        "hybrid",
+        "internet",
+        "nat",
+        "port_forwarding",
+        "receiver_led",
+        "system",
+        "wifi",
+        "wps",
+        "wps_status",
+    )
+    client = {
+        "id": "aa:bb:cc:dd:ee:ff",
+        "source_kind": "addmdevice",
+        "source_row_id": "row-1",
+        "managed_form_supported": True,
+        "mac": "AA:BB:CC:DD:EE:FF",
+        "name": "Phone",
+        "ipv4": "192.0.2.10",
+        "connected": True,
+        "fixed_dhcp": False,
+        "uses_dhcp": True,
+        "uses_rule": 0,
+    }
+    hub._merge_data(  # noqa: SLF001 - complete writable readback fixture
+        {
+            "hybrid": {"enabled": True},
+            "internet": {"privacy_level": 1, "state": "online"},
+            "receiver": {"led_mode": 0},
+            "wifi": {
+                "enabled": True,
+                "guest": {"enabled": False},
+                "office": {"enabled": True},
+                "wps_start_available": True,
+                "wps_status": "idle",
+            },
+            "clients": {"items": [client]},
+            "nat": {
+                "port_forward_rules": [
+                    {
+                        "id": "rule-1",
+                        "name": "HTTPS",
+                        "active": True,
+                        "_identity_fingerprint": _PORT_FORWARD_FINGERPRINT,
+                    }
+                ]
+            },
+        }
+    )
+    entry = MagicMock(runtime_data=hub)
+    switches: list[Any] = []
+    buttons: list[Any] = []
+    selects: list[Any] = []
+    texts: list[Any] = []
+
+    await async_setup_switches(hass, entry, switches.extend)
+    await async_setup_buttons(hass, entry, buttons.extend)
+    await async_setup_selects(hass, entry, selects.extend)
+    await async_setup_texts(hass, entry, texts.extend)
+
+    writable = [
+        *switches,
+        *(entity for entity in buttons if isinstance(entity, SpeedportCommandButton)),
+        *selects,
+        *texts,
+    ]
+    safe_read_only = [
+        entity
+        for entity in buttons
+        if isinstance(
+            entity,
+            SpeedportRetryProtectedDataButton | SpeedportCaptureReadOnlyInventoryButton,
+        )
+    ]
+    assert any(isinstance(entity, SpeedportPortForwardSwitch) for entity in writable)
+    assert any(
+        isinstance(entity, SpeedportClientFixedDhcpSwitch) for entity in writable
+    )
+    assert len(safe_read_only) == 2
+    assert writable
+    assert all(entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+    counts = (len(switches), len(buttons), len(selects), len(texts))
+
+    def publish(group: PollGroup, generation: int) -> None:
+        hub.coordinator(group).async_set_updated_data(
+            GroupSnapshot(
+                group=group,
+                data=hub.data,
+                generation=generation,
+                updated_at=datetime.now(UTC),
+            )
+        )
+
+    hub._router_info = RouterInfo(  # noqa: SLF001 - simulate reported drift
+        model=router_info.model,
+        firmware="unreviewed",
+        serial_number=router_info.serial_number,
+        hardware_version=router_info.hardware_version,
+    )
+    publish(PollGroup.NORMAL, 1)
+    publish(PollGroup.SLOW, 1)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(not entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    hub._router_info = router_info  # noqa: SLF001 - exact reviewed identity restored
+    publish(PollGroup.NORMAL, 2)
+    publish(PollGroup.SLOW, 2)
+    publish(PollGroup.NORMAL, 3)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    hub._mark_management_unavailable()  # noqa: SLF001 - transient session loss
+    publish(PollGroup.NORMAL, 4)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(not entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    hub._set_management_access("available")  # noqa: SLF001 - session recovered
+    publish(PollGroup.NORMAL, 5)
+
+    assert (len(switches), len(buttons), len(selects), len(texts)) == counts
+    assert all(entity.available for entity in writable)
+    assert all(entity.available for entity in safe_read_only)
+
+    for unload_call in entry.async_on_unload.call_args_list:
+        unload_call.args[0]()
+
+
 async def test_managed_client_controls_are_gated_and_verify_readback(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -1017,10 +1300,7 @@ async def test_managed_client_controls_are_gated_and_verify_readback(
     )
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    hub._capabilities = hub.capabilities | {  # noqa: SLF001
-        "authenticated_json",
-        "clients",
-    }
+    _add_exact_feature_families(hub, "clients")
     client = {
         "id": "aa:bb:cc:dd:ee:ff",
         "source_kind": "addmdevice",
@@ -1325,6 +1605,7 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
             "nat": {"port_forward_rules": []},
         }
     )
+    assert tracker.available
     assert not tracker.is_connected
     assert tracker.state == STATE_NOT_HOME
     assert tracker.hostname is None
@@ -1333,6 +1614,9 @@ async def test_dynamic_rule_and_client_tracker_use_stable_ids(
     assert tracker.extra_state_attributes == {}
     assert not rule.is_on
     assert not client_switch.is_on
+
+    hub._merge_data({"clients": {"items": None}})  # noqa: SLF001
+    assert not tracker.available
 
 
 async def test_tracker_setup_requires_capability_and_stable_id(
@@ -1376,6 +1660,7 @@ async def test_firmware_update_metadata_is_read_only_without_command(
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     await hub.async_setup()
     _attach_coordinators(hass, hub)
+    _add_exact_feature_families(hub, "system")
     hub._merge_data(  # noqa: SLF001 - platform contract fixture
         {
             "system": {

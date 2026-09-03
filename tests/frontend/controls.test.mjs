@@ -5,6 +5,9 @@ import test from "node:test";
 import {
   CLIENT_NAME_PATTERN,
   SELECT_CONTROL_OPTIONS,
+  controlConfirmationPhrase,
+  controlConfirmationPolicyMatches,
+  controlUnavailableReason,
   isSupportedSelectControl,
   isSupportedTextControl,
   managementControlAvailable,
@@ -13,6 +16,7 @@ import {
   switchControlServiceCall,
   textControlConstraints,
   textControlServiceCall,
+  typedConfirmationMatches,
   validateTextControlValue,
 } from "../../custom_components/speedport_smart/frontend/controls.js";
 
@@ -62,6 +66,81 @@ test("switch confirmation keeps the exact state transition the user approved", (
   assert.equal(
     switchControlServiceCall({ ...meta, control: false }, "on", "on"),
     undefined,
+  );
+});
+
+test("typed confirmation is fixed to the reviewed main Wi-Fi transition", () => {
+  const meta = {
+    confirmation: "typed",
+    control: true,
+    domain: "switch",
+    entity_id: "switch.speedport_wifi",
+    translation_key: "wifi",
+  };
+
+  assert.equal(controlConfirmationPhrase(meta, "on"), "TURN OFF WI-FI");
+  assert.equal(controlConfirmationPhrase(meta, "off"), "TURN ON WI-FI");
+  assert.equal(
+    controlConfirmationPhrase({ ...meta, translation_key: "factory_reset" }, "on"),
+    undefined,
+  );
+  assert.equal(
+    controlConfirmationPhrase({ ...meta, confirmation: "confirm" }, "on"),
+    undefined,
+  );
+  assert.equal(typedConfirmationMatches("TURN OFF WI-FI", "TURN OFF WI-FI"), true);
+  assert.equal(typedConfirmationMatches("TURN OFF WI-FI", "turn off wi-fi"), false);
+  assert.equal(typedConfirmationMatches(undefined, ""), false);
+});
+
+test("confirmation policy changes and direction races fail closed", () => {
+  const meta = {
+    confirmation: "typed",
+    control: true,
+    domain: "switch",
+    entity_id: "switch.speedport_wifi",
+    risk: "lockout",
+    translation_key: "wifi",
+  };
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      meta,
+      "on",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    true,
+  );
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      meta,
+      "off",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    false,
+  );
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      { ...meta, confirmation: "confirm" },
+      "on",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    false,
+  );
+  assert.equal(
+    controlConfirmationPolicyMatches(
+      { ...meta, risk: "destructive" },
+      "on",
+      "typed",
+      "lockout",
+      "TURN OFF WI-FI",
+    ),
+    false,
   );
 });
 
@@ -196,14 +275,32 @@ test("client rename rejects a state changed after confirmation", () => {
   );
 });
 
-test("management backoff disables mutations but preserves recovery", () => {
+test("management backoff disables mutations but preserves read-only actions", () => {
   assert.equal(
     managementControlAvailable(CLIENT_NAME_META, "blocked", false),
     false,
   );
   assert.equal(
     managementControlAvailable(
-      { translation_key: "retry_protected_data" },
+      {
+        control: true,
+        domain: "button",
+        entity_id: "button.speedport_retry_protected_data",
+        translation_key: "retry_protected_data",
+      },
+      "blocked",
+      false,
+    ),
+    true,
+  );
+  assert.equal(
+    managementControlAvailable(
+      {
+        control: true,
+        domain: "button",
+        entity_id: "button.speedport_capture_read_only_inventory",
+        translation_key: "capture_read_only_inventory",
+      },
       "blocked",
       false,
     ),
@@ -213,6 +310,85 @@ test("management backoff disables mutations but preserves recovery", () => {
     managementControlAvailable(CLIENT_NAME_META, "available", true),
     true,
   );
+});
+
+test("unavailable reasons accept only reviewed backend codes and safe fallbacks", () => {
+  const wpsMeta = {
+    control: true,
+    domain: "button",
+    entity_id: "button.speedport_wps",
+    translation_key: "wps",
+  };
+  const reasons = [
+    [
+      PRIVACY_SELECT_META,
+      selectState("off", SELECT_CONTROL_OPTIONS.internet_privacy_level_control),
+      "capability_not_proven",
+    ],
+    [
+      RECEIVER_LED_SELECT_META,
+      selectState("use_leds", SELECT_CONTROL_OPTIONS.receiver_led_mode_control),
+      "firmware_not_supported",
+    ],
+    [wpsMeta, { attributes: {}, state: "unknown" }, "disabled_by_setting"],
+    [wpsMeta, { attributes: {}, state: "unknown" }, "wps_in_progress"],
+  ];
+
+  for (const [meta, state, reason] of reasons) {
+    state.attributes.control_unavailable_reason = reason;
+    assert.equal(
+      controlUnavailableReason(meta, state, "available", true),
+      reason,
+    );
+  }
+  assert.equal(
+    controlUnavailableReason(
+      wpsMeta,
+      {
+        attributes: { control_unavailable_reason: "router_internal_error" },
+        state: "unknown",
+      },
+      "available",
+      true,
+    ),
+    undefined,
+  );
+  assert.equal(
+    controlUnavailableReason(PRIVACY_SELECT_META, undefined, "available", true),
+    "state_readback_unavailable",
+  );
+  assert.equal(
+    controlUnavailableReason(
+      PRIVACY_SELECT_META,
+      selectState("off", SELECT_CONTROL_OPTIONS.internet_privacy_level_control),
+      "blocked",
+      false,
+    ),
+    "management_session_unavailable",
+  );
+});
+
+test("read-only action bypass rejects colliding entity domains", () => {
+  for (const key of [
+    "capture_read_only_inventory",
+    "retry_protected_data",
+  ]) {
+    for (const domain of ["switch", "text", "update"]) {
+      assert.equal(
+        managementControlAvailable(
+          {
+            control: true,
+            domain,
+            entity_id: `${domain}.speedport_${key}`,
+            translation_key: key,
+          },
+          "available",
+          true,
+        ),
+        false,
+      );
+    }
+  }
 });
 
 test("typed control allowlist rejects missing permission and unrelated text", () => {

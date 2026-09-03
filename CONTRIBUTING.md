@@ -55,9 +55,10 @@ Speedport endpoints vary by model and firmware. A new capability needs:
 
 1. sanitized evidence that the endpoint and value exist
 2. protocol handling at the narrowest appropriate client layer
-3. normalization into a stable semantic field
+3. normalization into a stable semantic field or a bounded private projection
 4. capability detection based on real evidence
-5. an entity only when the source is usable
+5. an entity only for suitable usable state; private records and credentials
+   belong in their reviewed administrator flow, not entity attributes
 6. tests for supported, absent, and temporarily failing behavior
 7. documentation of validated hardware and firmware
 
@@ -66,24 +67,49 @@ material, public IP addresses, MAC addresses, phone numbers, SSIDs, client
 names, serial numbers, SIM identifiers, VPN data, and other household
 information with unmistakably synthetic values.
 
+Raw HAR files, browser network logs, copied cURL requests, and packet captures
+are equally sensitive and must never be attached to an issue or pull request.
+For one explicitly authorized reversible scalar operation, follow the
+[offline control-capture workflow](docs/PROTOCOL_DISCOVERY.md#user-operated-reversible-control-capture)
+and submit only its reviewed sanitized JSON. A complete report is evidence for
+manual review, not permission to generate a runtime command.
+
 Read-only discovery comes first. A router-changing contribution also requires
 a specific allowlisted command, capability proof, serialized execution, a
-post-action state refresh, clear user-facing wording, and explicit maintainer
-review. Do not add arbitrary endpoint execution, factory reset, credential
-changes, secret export, or another destructive shortcut.
+complete independent readback or an honest unverified/reconnect outcome, clear
+user-facing wording, and explicit maintainer review. Keep destructive actions,
+credential changes and private files within their dedicated administrator
+contracts: expiring requester/target-bound confirmation, fresh preflight,
+authorization immediately before mutation, one write without replay, and owned
+session cleanup. Do not add arbitrary endpoint execution or shortcuts around
+these boundaries. Offline fixtures and read-only captures do not certify live
+mutation, rollback, hardware recovery or secret persistence.
 
 ## Home Assistant behavior
 
 - Keep the domain **speedport_smart** unchanged.
 - Use config entries; do not add YAML configuration.
-- Preserve unique IDs and entity-registry compatibility.
+- Preserve unique IDs and entity-registry compatibility. An intentional
+  retirement needs an exact allowlisted migration and documented automation
+  impact; do not remove entities merely because a read temporarily fails.
 - Prefer Home Assistant device classes, state classes, units, and translations
   over custom presentation logic.
-- Keep all user-facing text in **strings.json**, every integration translation,
-  and the English and German panel dictionaries in sync.
+- Keep translated user-facing text in **strings.json**, every integration
+  translation, and the English and German panel dictionaries in sync. Use the
+  existing translation seams for new copy.
+- The newer administration editors currently use English. Document this limit;
+  passing integration translation checks does not prove all editor copy is
+  translated.
 - Keep runtime dependencies inside the integration manifest and package all
   required runtime files under **custom_components/speedport_smart**.
 - Do not make a router call from the frontend panel.
+- Keep private administrator payloads on the bounded, authenticated `no-store`
+  HTTP adapter, never WebSocket frames or browser storage. Ordinary telemetry
+  and its Recorder history use Home Assistant's normal APIs.
+- Page entry may read current settings or a private call category, but never
+  apply a setting, clear records or start a download. Test late-result isolation,
+  draft/session invalidation and in-flight outcomes across navigation and
+  permission changes.
 
 ## Pull requests
 
@@ -94,7 +120,8 @@ A pull request should:
 - update tests and documentation with behavior
 - include sanitized screenshots for panel changes
 - pass Ruff, mypy, translations, pytest, Hassfest, and HACS validation
-- preserve both the minimum and current Home Assistant CI compatibility lanes
+- preserve both the minimum and pinned-current Home Assistant CI compatibility
+  lanes; report tested versions rather than implying the latest release passed
 - avoid unrelated formatting or generated-file churn
 - update the **Unreleased** changelog when user-visible behavior changes
 

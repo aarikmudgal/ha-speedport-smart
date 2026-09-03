@@ -115,8 +115,10 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
 
     @property
     def available(self) -> bool:
-        """Remain available only with explicit router presence readback."""
-        return super().available and self._connected is not None
+        """Treat absence from a fresh client list as explicit not-home state."""
+        if not super().available:
+            return False
+        return self._item is None or self._connected is not None
 
     @property
     def is_connected(self) -> bool:
@@ -148,7 +150,13 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
         item = self._item
         if item is None:
             return None
-        raw = item.get("ipv4") or item.get("ip") or item.get("ipv6")
+        raw = (
+            item.get("ipv4")
+            or item.get("ip")
+            or item.get("ipv6")
+            or item.get("ipv6_gua")
+            or item.get("ipv6_ula")
+        )
         return str(raw) if raw else None
 
     @property
@@ -166,8 +174,16 @@ class SpeedportClientTracker(SpeedportEntity, TrackerEntity):
         if item is None:
             return {}
         allowed = (
+            "reserved_ipv4",
             "ipv6",
+            "ipv6_ula",
+            "ipv6_gua",
             "medium",
+            "wifi_generation",
+            "wifi_standard",
+            "has_web_ui",
+            "web_ui_port",
+            "web_ui_scheme",
             "signal_dbm",
             "link_speed_bps",
             "access_point",

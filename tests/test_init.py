@@ -188,6 +188,56 @@ async def test_setup_enables_only_integration_disabled_entities_without_commands
         getattr(mock_speedport_client, method_name).assert_not_awaited()
 
 
+async def test_setup_removes_retired_router_controls(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Setup cleans retired beta router controls from the entity registry."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    for dependency in ("frontend", "http", "panel_custom", "websocket_api"):
+        mock_component(hass, dependency)
+    registry = er.async_get(hass)
+    retired = registry.async_get_or_create(
+        "button",
+        DOMAIN,
+        "router_restart_dsl",
+        config_entry=entry,
+        translation_key="restart_dsl",
+    )
+    preserved = registry.async_get_or_create(
+        "button",
+        DOMAIN,
+        "router_restart_dsl_lookalike",
+        config_entry=entry,
+        translation_key="restart_dsl",
+    )
+
+    with (
+        patch(
+            "custom_components.speedport_smart.async_register_panel",
+            AsyncMock(),
+        ),
+        patch(
+            "custom_components.speedport_smart.SpeedportClient",
+            return_value=mock_speedport_client,
+        ),
+        patch(
+            "custom_components.speedport_smart._create_isolated_session",
+            return_value=MagicMock(),
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            AsyncMock(),
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert registry.async_get(retired.entity_id) is None
+    assert registry.async_get(preserved.entity_id) is not None
+
+
 def test_entity_migration_respects_disable_new_entities_preference(
     hass: HomeAssistant,
 ) -> None:

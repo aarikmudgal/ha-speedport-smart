@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -14,9 +15,11 @@ from .const import DOMAIN
 from .coordinator import PollGroup
 from .entity import SpeedportEntity
 from .platform_helpers import (
+    MISSING,
+    command_unavailable_reason,
     coordinator,
-    supported,
     wps_in_progress,
+    wps_lifecycle_known,
     wps_started_or_completed,
 )
 
@@ -60,15 +63,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         entity_category=EntityCategory.CONFIG,
     ),
     SpeedportButtonEntityDescription(
-        key="restart_dsl",
-        translation_key="restart_dsl",
-        data_path="dsl.state",
-        capability="dsl",
-        coordinator_group=PollGroup.NORMAL,
-        command="dsl_restart",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportButtonEntityDescription(
         key="reboot_router",
         translation_key="reboot_router",
         data_path="router.model",
@@ -76,33 +70,6 @@ BUTTON_DESCRIPTIONS: tuple[SpeedportButtonEntityDescription, ...] = (
         coordinator_group=PollGroup.SLOW,
         command="reboot",
         verify_after_command=False,
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportButtonEntityDescription(
-        key="update_ddns",
-        translation_key="update_ddns",
-        data_path="ddns.enabled",
-        capability="ddns",
-        coordinator_group=PollGroup.SLOW,
-        command="ddns_update",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportButtonEntityDescription(
-        key="restart_vpn",
-        translation_key="restart_vpn",
-        data_path="vpn.enabled",
-        capability="vpn",
-        coordinator_group=PollGroup.SLOW,
-        command="wireguard_restart",
-        entity_category=EntityCategory.CONFIG,
-    ),
-    SpeedportButtonEntityDescription(
-        key="optimize_mesh",
-        translation_key="optimize_mesh",
-        data_path="mesh.enabled",
-        capability="mesh",
-        coordinator_group=PollGroup.SLOW,
-        command="mesh_optimize",
         entity_category=EntityCategory.CONFIG,
     ),
 )
@@ -116,7 +83,12 @@ async def async_setup_entry(
     """Set up supported action buttons when router controls are enabled."""
     del hass
     hub = entry.runtime_data
-    async_add_entities([SpeedportRetryProtectedDataButton(hub)])
+    async_add_entities(
+        [
+            SpeedportRetryProtectedDataButton(hub),
+            SpeedportCaptureReadOnlyInventoryButton(hub),
+        ]
+    )
     if not hub.controls_enabled:
         return
     known: set[str] = set()
@@ -127,9 +99,7 @@ async def async_setup_entry(
         for description in BUTTON_DESCRIPTIONS:
             if description.key in known:
                 continue
-            if not hub.supports_command(description.command) or not supported(
-                hub, description.capability, description.data_path
-            ):
+            if not hub.supports_command(description.command):
                 continue
             known.add(description.key)
             entities.append(SpeedportCommandButton(hub, description))
@@ -168,8 +138,8 @@ class SpeedportCommandButton(SpeedportEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Remain unavailable while protected management access is backed off."""
-        return super().available and self.hub.management_controls_available
+        """Require the exact current firmware, capability, and session contract."""
+        return self._control_unavailable_reason() is None
 
     async def async_press(self) -> None:
         """Execute action through its declared hub verification policy."""
@@ -190,6 +160,58 @@ class SpeedportCommandButton(SpeedportEntity, ButtonEntity):
         ):
             raise _verification_error()
 
+    def _control_unavailable_reason(self) -> str | None:
+        """Explain the first failed control-safety or readback gate."""
+        raw = self.hub.get(self.entity_description.data_path, MISSING)
+        state_available = raw is not MISSING and raw is not None
+        readback_supported = True
+        prerequisite_reason: str | None = None
+        if self.entity_description.key == "wps":
+            status_available = (
+                self.hub.has_capability("wps_status")
+                and not self.hub.has_endpoint_error("wps_status")
+                and wps_lifecycle_known(raw)
+            )
+            state_available = status_available
+            readback_supported = status_available
+            start_available = self.hub.get("wifi.wps_start_available", MISSING)
+            if wps_in_progress(raw):
+                prerequisite_reason = "wps_in_progress"
+            elif start_available is True:
+                # Stable WLANAccess proves prerequisites; WPSStatus must still
+                # prove the current lifecycle before this action is available.
+                pass
+            elif start_available is False:
+                observed_reason = self.hub.get("wifi.wps_unavailable_reason")
+                prerequisite_reason = (
+                    observed_reason
+                    if observed_reason
+                    in {
+                        "disabled_by_firmware",
+                        "disabled_by_setting",
+                        "incompatible_encryption",
+                        "ssid_hidden",
+                        "wifi_off",
+                    }
+                    else "wps_prerequisite_unavailable"
+                )
+            else:
+                prerequisite_reason = "wps_prerequisite_unavailable"
+        return command_unavailable_reason(
+            self.hub,
+            self.entity_description.command,
+            coordinator_available=self.coordinator.last_update_success,
+            state_available=state_available,
+            readback_supported=readback_supported,
+            prerequisite_reason=prerequisite_reason,
+        )
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, str]:
+        """Expose a safe reason code when the control is unavailable."""
+        reason = self._control_unavailable_reason()
+        return {} if reason is None else {"control_unavailable_reason": reason}
+
 
 class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):
     """Safely retry read-only protected access after browser logout."""
@@ -209,6 +231,26 @@ class SpeedportRetryProtectedDataButton(SpeedportEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Perform read-only rediscovery and schedule a clean entry reload."""
         await self.hub.async_retry_protected_data()
+
+
+class SpeedportCaptureReadOnlyInventoryButton(SpeedportEntity, ButtonEntity):
+    """Explicitly inspect every known safe read-only capability candidate."""
+
+    _attr_translation_key = "capture_read_only_inventory"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+
+    def __init__(self, hub: SpeedportHub) -> None:
+        """Initialize outside the router control gate."""
+        super().__init__(
+            hub,
+            coordinator(hub, PollGroup.NORMAL),
+            "capture_read_only_inventory",
+        )
+
+    async def async_press(self) -> None:
+        """Capture value-free schemas without reloading the config entry."""
+        await self.hub.async_capture_candidate_inventory()
 
 
 def _verification_error() -> HomeAssistantError:

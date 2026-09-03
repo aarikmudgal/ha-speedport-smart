@@ -1,6 +1,9 @@
 {
   "entity": {
     "sensor": {
+      "internet_connected_since": {
+        "default": "mdi:clock-start"
+      },
       "wan_polling_mode": {
         "default": "mdi:tune-variant"
       },
@@ -15,6 +18,18 @@
       },
       "wan_last_sample": {
         "default": "mdi:clock-check-outline"
+      },
+      "endpoint_failures": {
+        "default": "mdi:alert-circle-outline"
+      },
+      "fast_polling_health": {
+        "default": "mdi:timer-sync-outline"
+      },
+      "normal_polling_health": {
+        "default": "mdi:timer-check-outline"
+      },
+      "slow_polling_health": {
+        "default": "mdi:timer-sand"
       },
       "internet_privacy_level": {
         "default": "mdi:shield-account-outline"
@@ -42,6 +57,39 @@
       },
       "wifi_schedule_daily_to": {
         "default": "mdi:clock-end"
+      },
+      "wifi_schedule_weekly": {
+        "default": "mdi:calendar-week"
+      },
+      "lan_ipv4_address": {
+        "default": "mdi:ip-network"
+      },
+      "lan_subnet_mask": {
+        "default": "mdi:ip-outline"
+      },
+      "dhcp_pool_size": {
+        "default": "mdi:ip-network-outline"
+      },
+      "ddns_status": {
+        "default": "mdi:dns"
+      },
+      "ddns_provider": {
+        "default": "mdi:dns-outline"
+      },
+      "mesh_parent": {
+        "default": "mdi:source-branch"
+      },
+      "mesh_device_type": {
+        "default": "mdi:access-point-network"
+      },
+      "mesh_linked_lan_ports": {
+        "default": "mdi:ethernet"
+      },
+      "connection_medium": {
+        "default": "mdi:connection"
+      },
+      "powerline_mode": {
+        "default": "mdi:transmission-tower"
       },
       "receiver_mode": {
         "default": "mdi:access-point-network"
@@ -73,6 +121,12 @@
       "usb_storage_free": {
         "default": "mdi:database-outline"
       },
+      "media_server_folders": {
+        "default": "mdi:folder-multiple"
+      },
+      "media_server_active_folders": {
+        "default": "mdi:folder-check"
+      },
       "dns_rebind_exceptions": {
         "default": "mdi:dns-outline"
       },
@@ -85,8 +139,14 @@
       "qos_prioritized_clients": {
         "default": "mdi:priority-high"
       },
+      "dect_handsets": {
+        "default": "mdi:phone-wireless"
+      },
       "dect_repeaters": {
         "default": "mdi:phone-wireless"
+      },
+      "phonebook_entries": {
+        "default": "mdi:contacts-outline"
       },
       "pbx_configured_clients": {
         "default": "mdi:phone-switch"
@@ -132,11 +192,30 @@
           "unavailable": "mdi:account-off",
           "unknown": "mdi:account-question"
         }
+      },
+      "link_speed": {
+        "default": "mdi:speedometer"
+      },
+      "download_link_speed": {
+        "default": "mdi:download-network-outline"
+      },
+      "upload_link_speed": {
+        "default": "mdi:upload-network-outline"
+      },
+      "wifi_generation": {
+        "default": "mdi:wifi-cog"
+      },
+      "wifi_standard": {
+        "default": "mdi:wifi-settings"
       }
     },
     "binary_sensor": {
+      "wifi_enabled": { "default": "mdi:wifi" },
       "wifi_wps_enabled": { "default": "mdi:wifi-plus" },
+      "lan_ipv6_enabled": { "default": "mdi:ip-network" },
       "wifi_wps_disabled_by_firmware": { "default": "mdi:wifi-alert" },
+      "uses_dhcp": { "default": "mdi:router-network" },
+      "web_interface_available": { "default": "mdi:web" },
       "guest_wifi_wps_enabled": { "default": "mdi:wifi-star" },
       "wifi_allow_all_devices": { "default": "mdi:account-multiple-check" },
       "wifi_2_4_visible": { "default": "mdi:eye-outline" },
@@ -150,9 +229,6 @@
       "usb_tethering_enabled": { "default": "mdi:usb-port" },
       "usb_tethering_connected": { "default": "mdi:usb-port" },
       "usb_printer_connected": { "default": "mdi:printer" },
-      "nas_enabled": { "default": "mdi:nas" },
-      "nas_secure": { "default": "mdi:shield-lock-outline" },
-      "nas_read_only": { "default": "mdi:file-lock-outline" },
       "port_blocking_enabled": { "default": "mdi:shield-lock-outline" },
       "dect_scan_active": { "default": "mdi:phone-sync" },
       "dect_smart_home_enabled": { "default": "mdi:home-automation" },
@@ -160,9 +236,14 @@
       "firmware_update_planned": { "default": "mdi:calendar-clock" },
       "firmware_automatic_updates": { "default": "mdi:update" },
       "remote_support_active": { "default": "mdi:lifebuoy" },
-      "easy_support_enabled": { "default": "mdi:lifebuoy" }
+      "easy_support_enabled": { "default": "mdi:lifebuoy" },
+      "mesh_wifi_enabled": { "default": "mdi:wifi" },
+      "paging": { "default": "mdi:phone-ring" }
     },
     "button": {
+      "capture_read_only_inventory": {
+        "default": "mdi:database-search-outline"
+      },
       "retry_protected_data": {
         "default": "mdi:account-sync"
       }

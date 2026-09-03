@@ -153,7 +153,7 @@ def resolve_release(
             msg = f"Stable releases are only allowed from main, not {branch!r}"
             raise ValueError(msg)
         version = base_version
-        release_name = f"{INTEGRATION_NAME} v{version}"
+        release_name = f"v{version}"
         prerelease = False
     else:
         if FEATURE_BRANCH.fullmatch(branch) is None:
@@ -164,7 +164,7 @@ def resolve_release(
         if run_attempt is None or run_attempt < 1:
             raise ValueError("Beta releases require a positive GitHub run attempt")
         version = f"{base_version}-beta.{run_number}.{run_attempt}"
-        release_name = f"{INTEGRATION_NAME} v{version} ({branch})"
+        release_name = f"v{version}"
         prerelease = True
 
     return ReleaseMetadata(
@@ -204,6 +204,28 @@ def validate_stable_changelog(root: Path, version: str) -> None:
         raise ValueError(msg)
 
 
+def validate_stable_release_notes(root: Path, version: str) -> None:
+    """Require safe, nonempty versioned UTF-8 notes before stable publication."""
+    documentation = root.resolve() / "docs"
+    releases = documentation / "releases"
+    notes_path = releases / f"{version}.md"
+    for path in (documentation, releases, notes_path):
+        if path.is_symlink():
+            msg = f"Stable release notes path must not contain a symlink: {path}"
+            raise ValueError(msg)
+    if not notes_path.is_file():
+        msg = f"Stable release notes must be a regular file: {notes_path}"
+        raise ValueError(msg)
+    try:
+        notes = notes_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as err:
+        msg = f"Stable release notes must be readable UTF-8: {notes_path}"
+        raise ValueError(msg) from err
+    if not notes.strip():
+        msg = f"Stable release notes must not be empty: {notes_path}"
+        raise ValueError(msg)
+
+
 def resolve_repository_release(
     root: Path,
     *,
@@ -223,6 +245,7 @@ def resolve_repository_release(
     )
     if metadata.channel == "stable":
         validate_stable_changelog(root, base_version)
+        validate_stable_release_notes(root, base_version)
     return metadata
 
 

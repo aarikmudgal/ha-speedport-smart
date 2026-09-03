@@ -1,197 +1,193 @@
 # Router management support
 
-Telekom Speedport Smart exposes a control only when the integration has an
-exact request contract and the connected router reports the required source
-data. A source-code descriptor alone does not create an entity.
+Telekom Speedport Smart provides native Home Assistant controls for simple
+operations and a structured **Administration** view for complex, private and
+destructive operations. Every router command has a fixed implementation. The
+dashboard cannot submit arbitrary router endpoints, SOAP actions or JSON forms.
+The administration editors use English while retaining Home Assistant's
+light/dark theme.
 
-Version 0.2 targets the public behavior documented for a Speedport Smart 4R
-Typ A with firmware `010152.5.0.001.0`. This document combines repository code
-and tests with static review of public manuals, firmware history, public web
-resources, and non-official implementations. That static review is not live
-router verification. Other models and firmware versions may expose a smaller
-set.
+The current write contracts target **Speedport Smart 4R Typ A, firmware
+`010152.5.0.001.0`**. A matching model is not sufficient by itself: the current
+router response must also prove the required capability, target and form shape.
+Other firmware remains read-only unless explicitly reviewed.
 
-## Evidence classes
+## Coverage and evidence
 
-| Class | Version 0.2 meaning |
+The [complete capability matrix](MANAGEMENT_CAPABILITY_MATRIX.md) lists supported
+areas, partial implementations, read-only reporting and unresolved contracts.
+It is the coverage reference. Navigation accounts for all 69 screens in the
+[observed native-page audit](NATIVE_ADMIN_NAVIGATION.md), but a page's presence
+is not a promise that every native option has an executable Home Assistant
+equivalent.
+
+| Status | Meaning |
 | --- | --- |
-| Implemented read-only | A discovered response is normalized and exposed without sending a setting request. |
-| Implemented writable | An allowlisted request has a complete endpoint and form contract, positive acknowledgement handling, independent readback where the action permits it, and stable target identity when it addresses a row. |
-| Staged guarded writable | The current firmware proves one exact scalar endpoint, field, value domain, and read source. The beta control additionally requires a fresh pre-read, positive acknowledgement, and matching post-write readback at runtime, but still needs one user-authorized change and rollback before promotion. |
-| Firmware-evidenced but blocked | Public firmware material names a page, field, endpoint candidate, or request shape, but at least one required proof is missing. No control is exposed. |
-| Destructive, private, or deferred | The operation can erase configuration, interrupt recovery, or reveal credentials or key material, or it lacks a safe Home Assistant interaction model. It is excluded from version 0.2. |
+| Implemented control | An exact firmware request is implemented with input validation, confirmation, conflict checks and the appropriate result policy. |
+| Implemented read-only | A reviewed value or private query is available without applying settings. |
+| Partial | Some operations in the feature are implemented; the matrix names what remains unproven. |
+| Not exposed | A safe, complete local contract was not established. No speculative command is available. |
+| Live write untested | The implementation has static evidence and offline tests, but the owner has not yet completed a change/readback/rollback test. |
 
-No write is promoted as proven without a complete endpoint, form,
-acknowledgement, readback, and stable-identity contract. Static reconnaissance
-alone never creates a generic request or form. Three exact, reversible scalar
-controls are staged for an explicit user roundtrip; they retain strict runtime
-acknowledgement and readback gates and never retry a rejected or ambiguous
-request.
+**No router-setting mutations were executed during development validation.**
+The expanded 0.3.0 administration controls are implementations awaiting owner
+testing, not a live certification. Read-only captures establish available
+fields and identities; they do not establish that a write succeeds.
 
-## Implemented controls
+Detailed implementation evidence is recorded by area:
 
-Version 0.2 enables write contracts only for the reviewed Speedport Smart 4R
-Typ A firmware `010152.5.0.001.0`, and only when the current response also
-proves the required capability. An unknown or newly updated firmware remains
-read-only until its write contract is reviewed.
+- [Internet and network](ADMIN_NETWORK_EVIDENCE.md)
+- [Telephony and storage](ADMIN_TELEPHONY_STORAGE_EVIDENCE.md)
+- [System and maintenance](ADMIN_SYSTEM_EVIDENCE.md)
+- [Call history](ADMIN_CALL_HISTORY_EVIDENCE.md)
 
-| Home Assistant control | Router request | Verification | Notes |
-| --- | --- | --- | --- |
-| Internet reconnect button | `data/Connect.json`, `req_connect=reconnect` | Normal polling resumes after the connection returns | Interrupts the Internet connection |
-| Router reboot button | `data/Reboot.json`, `reboot_device=true` | Polling resumes after the router returns | Interrupts the router and local network |
-| Wi-Fi switch | `data/Modules.json`, `use_wlan=0` or `1` | Fresh `wifi.enabled` state | Can disconnect Home Assistant when it uses Wi-Fi |
-| Guest Wi-Fi switch | `data/Modules.json`, `wlan_guest_active=0` or `1` | Fresh `wifi.guest.enabled` state | Changes only the guest radio state |
-| Office Wi-Fi switch | `data/Modules.json`, `wlan_office_active=0` or `1` | Fresh `wifi.office.enabled` state | Available only on firmware that exposes office Wi-Fi |
-| WPS button | `data/WLANAccess.json`, `wlan_add=on` and `wps_key=connect` | Refreshes `data/WPSStatus.json` | Opens the router's normal WPS window |
-| Existing port-forward switch | Fresh `data/PortuwMain.json` rule with the same ID, name, and non-state rule fingerprint, then `portuw_active=0` or `1` | Fresh state for the same unchanged rule semantics | Does not create, edit, delete, or mutate a reused or retargeted rule ID |
-| Client name text entity | Fresh complete managed-device row with only `mdevice_name` changed | Same row kind, row ID, required MAC address, and new name | Accepts 1 to 28 letters, numbers, or hyphens |
-| Fixed DHCP switch | Fresh complete managed-device row with only `mdevice_fix_dhcp` changed | Same row and fresh fixed-DHCP flag | Keeps all current address fields unchanged |
-| Hybrid bonding switch (staged) | Fresh `data/LTE.json`, then only `use_bonding=0` or `1` | Positive acknowledgement plus fresh `hybrid.enabled` | May interrupt Internet traffic; requires user change/readback/rollback validation |
-| Internet privacy select (staged) | Fresh `data/IPPrivacy.json`, then only `lan_privacy_policy=0`, `1`, or `2` | Positive acknowledgement plus fresh `internet.privacy_level` | Options are Off, Level 1, and Level 2; requires user change/readback/rollback validation |
-| Receiver LED mode select (staged) | Fresh `data/LTE.json`, then only `ex5g_led_mode=0`, `1`, or `2` | Positive acknowledgement plus fresh `receiver.led_mode` | Options are Use LEDs, switch off after timeout, and Do not use LEDs; requires user change/readback/rollback validation |
+## Native controls and structured editors
 
-Stateful switches skip a request when the router already reports the desired
-state. After a request, the integration performs one serialized readback and
-raises a Home Assistant error if the expected value is missing or different.
-Reboot and Internet reconnect cannot use an immediate readback because the
-requested action deliberately breaks the connection.
+Native entities cover simple actions such as Wi-Fi enablement, Internet
+reconnect, reboot, WPS, supported Hybrid/receiver/privacy settings, existing
+port-forward activation, client naming and fixed DHCP. These remain available
+through normal Home Assistant services and automations. Dashboard confirmation
+does not intercept service calls made elsewhere; configure automations carefully.
 
-Client rename and fixed DHCP preserve the complete current row returned by
-`data/DeviceList.json`. Both require the same stable row ID and nonempty MAC
-address. The integration rejects incomplete rows, unknown form fields,
-duplicate matches, changed identities, and unsupported row types before sending
-a request.
+The Administration view adds closed editors for supported Internet/LAN settings,
+Wi-Fi settings and schedules, network rules, prioritization, telephony,
+phonebooks, VPN peers, storage shares, receivers and system settings. Complex
+records and secrets are not split into unrelated native entities: they are read
+and edited together so required fields and dependencies remain consistent.
 
-The staged scalar controls reject missing, duplicated, nested, wrong-type,
-case-shifted, or out-of-range current values before a POST. Their entities are
-created only for the exact reviewed model and firmware, only when the matching
-read capability and current state exist, and only when management controls are
-enabled. The dashboard sends standard Home Assistant switch/select service
-calls; it never receives router endpoints, field names, or numeric codes.
+To use a structured editor:
 
-## Implemented read-only coverage
+1. Open the relevant top tab and left-menu page in **Administration**. Supported
+   page-local forms load their current state automatically.
+2. Select an existing target if required; its current record then loads. Use
+   **Refresh** for another read, and wait for a successful load before editing.
+3. Change the intended fields. Secret fields require explicit entry when the
+   firmware does not safely provide a reusable value.
+4. Review the warning and enter the requested confirmation phrase.
+5. Save once, then inspect the reported result before trying anything again.
 
-Read-only fields do not imply a matching write. In particular:
+Opening a page or loading a target does not apply a setting. Routine polling,
+inventory discovery, setup, reload and diagnostics never execute controls.
+Unsupported or currently unavailable actions stay disabled with a reason.
+Temporarily losing a management
+session does not turn an unsupported feature into a supported one.
 
-- `wlan_band=0`, `1`, and `2` mean both bands, 2.4 GHz only, and 5 GHz only.
-  Dedicated per-radio fields remain authoritative when present.
-- `use_dyndns` is interpreted as DDNS enablement.
-- `vpn_status` is interpreted as VPN profile enablement, not tunnel
-  connectivity. Connectivity requires a separate connection field.
-- Client `access_possible` is exposed as read-only Internet-access allowance.
-  It is not inverted into an unproven pause state or writable switch.
+## Confirmation, conflicts and outcomes
 
-| Area | Current read-only coverage |
+Settings approvals expire after 120 seconds. They bind the administrator, active
+Home Assistant login session, router entry, setting, target and current private
+revision. Targeted administrator actions use their separate 60-second grants.
+Execution rechecks the same identity and state under the router operation lock.
+Active administrator/session authorization is checked immediately before the
+router mutation, including after waits for locks or authentication.
+Changed or incomplete records require a fresh load; stale forms are not merged
+silently. A consumed or expired approval cannot be reused.
+
+At most one mutation is sent for each approved operation. Where supported,
+independent read-only verification runs at bounded intervals of approximately
+0, 0.5, 1 and 2 seconds. Verification never repeats the mutation. Explicit router
+rejection, transport uncertainty and a mismatching result are different outcomes.
+
+| Result | What to do |
 | --- | --- |
-| Internet, WAN, DSL, and Hybrid | Connection state, addressing, uptime, DSL metrics, WAN totals, packets, errors, live rate, and utilization |
-| Wi-Fi | Correct global and per-band state, channels, client counts, guest and office state, and Mesh topology |
-| LAN, DHCP, and DNS | Clients, presence, signal, links, DHCP state, leases, LAN ports, and client access allowance when returned |
-| Mesh and Powerline | Topology and node metrics |
-| Telephony and DECT | Registration, lines, calls, handsets, IP phones, and phonebook counts when exposed |
-| USB and NAS | Device state, mount state, capacity, free space, media state, and temperature when exposed |
-| DDNS, VPN, parental controls, and security | DDNS enablement and status; VPN profile enablement, connection, type, and peer state; parental profile state; firewall, rebind-protection, and remote-management state when exposed |
-| System, energy, update, and notifications | Uptime, health, temperature, firmware, and update metadata when exposed |
-| Mobile and 5G | Connection, radio type, signal measurements, band, frequency, cell, and receiver state when exposed |
+| Verified | The supported independent readback matches the requested result. |
+| Secret not independently verified | The firmware accepted the action, but it does not expose proof of the secret itself. Check the affected service manually. |
+| Reconnect required | The operation can intentionally interrupt access. Wait for the router or service to return and inspect its state. |
+| Outcome unknown / manual verification required | Do not assume failure or success. Check the router before issuing another action. |
+| Rejected, stale or unavailable | Reload the current state and resolve the stated prerequisite before proceeding. |
 
-## Firmware-evidenced but blocked
+Online phonebook linking has two separate approvals. After account validation,
+the dashboard asks whether to merge or replace existing entries and requires a
+second typed confirmation. It never chooses that destructive policy implicitly.
+The final result does not claim cloud synchronization is complete.
 
-Public firmware material can narrow investigation but cannot satisfy a write
-contract by itself. Blockers below are exact missing proof categories:
+## Private data and files
 
-The offline corpus currently contains 73 candidate request contracts. Thirty-five
-have a resolved endpoint and 38 do not; none satisfies every required proof.
-The scanner also cannot be trusted to identify every secret field, so it is
-never used to generate runtime schemas or a generic router editor.
+Private settings, target lists, phonebooks, call history and command results use
+authenticated, administrator-only HTTP requests with `no-store` responses.
+They do not use Home Assistant's WebSocket payload logging path.
+Permission-filtered integration metadata and ordinary Home Assistant entity
+telemetry and traffic history may still use WebSocket APIs. Private records and
+credentials are not copied into entity attributes, Recorder, diagnostics or
+browser storage.
 
-| Area | Static evidence | Blocking proof |
-| --- | --- | --- |
-| Client Internet pause/resume | `access_possible` reports whether access is allowed. | `ENDPOINT`, `FORM`, `ACK`, and independent `READBACK`; the read-only allowance must not be treated as an inverse pause command. |
-| Per-band Wi-Fi changes | `wlan_band` proves read semantics for both, 2.4 GHz-only, and 5 GHz-only modes. | Complete shared `FORM`, positive `ACK`, independent per-band `READBACK`, and disconnect recovery. |
-| DDNS changes | `DDNS.json` and `DynDNS.json` plus `use_dyndns` provide endpoint and state candidates. | Exact save `ENDPOINT`, complete provider `FORM`, `ACK`, independent `READBACK`, and `SECRET` handling for credentials. |
-| VPN and WireGuard changes | `VPN.json`, `WireGuard.json`, `vpn_status`, and peer rows provide endpoint and state candidates. | Exact save `ENDPOINT`, complete `FORM`, `ACK`, separate enabled/connected `READBACK`, stable peer `IDENTITY`, and private-key or pre-shared-key `SECRET` handling. |
-| UPnP, parental controls, and media server | Read-only fields and source descriptors exist. | Exact write `ENDPOINT`, complete `FORM`, `ACK`, and independent `READBACK`. |
-| Mesh and Powerline rename or identify | Static resources suggest row forms and identify start/stop shapes. | Complete hidden `FORM`, stable node `IDENTITY`, `ACK`, and bounded lifetime plus independent `READBACK`. |
-| Creation, editing, or deletion of structured records | Firmware pages expose clients, port rules, schedules, peers, shares, and telephony records. | Stable target `IDENTITY`, complete collection `FORM`, conflict behavior, `ACK`, and full-list `READBACK`; deletion also needs recovery and confirmation. |
+Opening **Missed calls**, **Received calls** or **Dialed outgoing calls**
+automatically reads that category into the private page. **Refresh** repeats
+only that read. CSV export and clearing remain explicit actions; opening a
+page never clears records or records them in Home Assistant history.
 
-`ENDPOINT` includes method, path, authentication, token, and Referer. `FORM`
-includes every submitted and hidden field, allowed value, and dependency. `ACK`
-means an explicit positive success response. `READBACK` is a fresh independent
-state source. `IDENTITY` means one stable, unambiguous target. `SECRET` means
-credentials or key material must never become entity state, attributes,
-diagnostics, logs, or dashboard data.
+Use **HTTPS for Home Assistant** when entering credentials or retrieving private
+files. Router HTTPS and Home Assistant HTTPS are separate connections; enabling
+one does not encrypt the other. Do not configure external proxies or debugging
+middleware to log request or response bodies.
 
-Mesh and Powerline rename need proof of every hidden field in their
-authenticated save forms. Mesh identify has a start and stop request shape, but
-it remains deferred until the firmware provides a dependable lifetime and
-readback contract. It will be a bounded action, not a persistent switch.
+The panel supports reviewed backup/restore and firmware-file transfers,
+phonebook import/export, private system-log download and Router-Pass download.
+File uploads bind a confirmation to the exact size and digest. Transfer grants
+are short-lived and single-use. A configuration backup, phonebook, Router-Pass,
+system log or VPN configuration may contain highly sensitive information; store
+downloads privately and never attach them to a public issue.
 
-## Destructive, private, or deferred operations
+Router-Pass is a locally generated text card from fresh Wi-Fi settings. An
+optional router password entered for that card is sent to Home Assistant only
+for file generation; it is not sent to or verified by the router. VPN credential
+downloads are exposed only in the private result of the supported verified
+operation and expire from the panel instead of becoming persistent entities.
 
-Version 0.2 does not expose:
+Changing routers or administration pages, leaving Administration, logging out,
+losing permission or disconnecting the panel clears private views and drafts.
+Ordinary WAN telemetry updates preserve an editor in progress. A changed
+management session invalidates idle drafts; if a write is already dispatched,
+its result is retained while the other page forms are cleared and refreshed.
+After upgrading, hard-refresh the dashboard: old private WebSocket commands
+are retired and do not execute router operations. A stale client can still
+send a payload through Home Assistant's logging path before that rejection.
 
-- factory reset, configuration restore, or storage erase
-- router, Wi-Fi, SIP, NAS, VPN, APN, or SIM credential changes
-- private keys, pre-shared keys, recovery data, or secret export
-- SIM PIN or PUK operations
-- firewall disable
-- arbitrary JSON, SOAP, or endpoint execution
-- destructive client, Mesh, telephone, or storage deletion
+## Entity retirements
 
-These operations either risk unrecoverable loss, expose secrets through Home
-Assistant, or cannot be verified safely.
+Version 0.3.0 removes only exact, integration-owned registry matches for:
 
-## Structured admin operation contract
+- the `router_event` event entity
+- router-global NAS binary sensors `nas_enabled`, `nas_read_only`, `nas_secure`
+- buttons `optimize_mesh`, `restart_dsl`, `restart_vpn`, `update_ddns`
+- switches `ddns`, `media_server`, `parental_controls`, `upnp`, `vpn`
 
-A structured editor will be added only with its first fully proven operation;
-the integration does not ship an empty generic executor. Native scalar and
-bounded action entities continue to use ordinary Home Assistant services.
-List, secret, upload, delete, reset, and maintenance operations must instead
-use an admin-only, typed transaction with these invariants:
+These retired entities are not revived as placeholders. Supported structured
+operations belong in their guarded administration pages; an unsupported action
+does not acquire a replacement merely because its old entity was removed.
+Update automations or dashboard cards that reference these entities. Other
+entity identities and integration options are retained; no integration-specific
+history wipe runs. Home Assistant controls its normal Recorder retention.
 
-1. A static internal descriptor binds one exact operation to its model,
-   firmware, capability, input schema, direct client method, risk class,
-   identity rules, sensitive fields, and readback verifier. A request can
-   never supply an endpoint, Referer, method, router command, or arbitrary
-   field name.
-2. The backend requires a Home Assistant administrator and entry-scoped
-   control permission. It resolves a loaded integration entry, never a
-   user-supplied host or address.
-3. A prepare phase performs a fresh read, validates the target and complete
-   typed payload, and returns a short-lived, single-use challenge bound to the
-   user, entry, operation, target, pre-state revision, and payload digest.
-4. Execute consumes the challenge before mutation, repeats schema, identity,
-   capability, session, and stale-state checks under the integration operation
-   lock, sends one exact request, requires a positive acknowledgement, performs
-   an independent readback, and always releases its router session. It never
-   retries an ambiguous write.
-5. Reversible edits require an explicit apply confirmation. Delete operations
-   require the exact target phrase. Reset, mode, restore, upload, and other
-   maintenance operations additionally require the exact router phrase plus
-   proven backup and recovery prerequisites. Frontend confirmation alone is
-   never an authorization boundary.
-6. Secrets are write-only one-shot inputs with explicit keep-existing or
-   replace semantics. They never enter config-entry options, entity state,
-   attributes, coordinator data, diagnostics, logs, Repair issues, WebSocket
-   results, or dashboard state. Private downloads use authenticated,
-   no-store, expiring, single-use delivery bound to the requesting admin.
+## Password changes and destructive operations
 
-Successful structured operations return only a fixed verified status and an
-opaque revision. Unknown operations, extra fields, changed targets, expired or
-reused challenges, missing acknowledgements, and mismatched readback fail
-closed. No generic Home Assistant service is provided; a proven operation that
-needs automation receives its own named admin service and static schema.
+Router password changes use isolated authentication sessions. Home Assistant's
+stored credential is replaced only after the new password logs in successfully
+and identifies the same router. If the outcome is uncertain, protected password
+retries are suspended until reauthentication; this avoids repeatedly trying a
+credential that may no longer be valid. Public and independent WAN sources can
+continue when their own access remains available.
 
-## Development and testing policy
+Factory reset, configuration restore, firmware updates, network-mode changes,
+receiver restoration and record deletion are explicit administrator operations.
+They include the relevant typed phrase and recovery/readiness checks. They can
+interrupt Internet access, disconnect Home Assistant, invalidate credentials or
+erase working configuration. Back up settings and ensure physical recovery
+access before testing them. No automatic rollback is attempted.
 
-Setup, discovery, polling, diagnostics, dashboard rendering, and automated
-tests never change router settings. A write runs only after a Home Assistant
-user invokes its specific entity or service. Development validation against a
-physical router is limited to read requests plus the router's required login
-and logout lifecycle.
+## Remaining boundaries
 
-The first validation of a staged control is always user-driven: record the
-current value, change exactly one setting, require a positive acknowledgement,
-read the same state independently, restore the original value, and read it a
-second time. A failed or ambiguous acknowledgement is never retried. Internet,
-Wi-Fi, telephony, firmware, LAN-address, or rebooting operations require an
-appropriate maintenance window and recovery path.
+Read coverage and write eligibility are separate. A feature without a proven
+write may still expose reviewed read-only information. Unknown fields are not
+automatically normalized or rendered simply because a JSON response contains
+them. Incomplete collection schemas, undocumented flags and actions without a
+complete bound form remain partial or unavailable as described in the matrix.
+
+Examples include undocumented LAN IPv6 semantics, SIM PIN/PUK operations,
+unproven routing-exception creation forms and NAS directory browsing/creation
+without a proven directory-list contract. There is no generic raw-command
+escape hatch. Filling these gaps requires new evidence, not fabricated values
+or unconfirmed writes on a user's router.
+
+For session contention and safe recovery, see [support](../SUPPORT.md). For
+installation and versioned releases, see [the release process](RELEASING.md).

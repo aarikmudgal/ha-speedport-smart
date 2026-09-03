@@ -108,6 +108,7 @@ def mock_speedport_client(
 ) -> MagicMock:
     """Return async protocol-client double."""
     client = MagicMock(spec=SpeedportClient)
+    client.configuration_url = "http://speedport.ip"
     client.router_info = router_info
     client.capabilities = capability_report
     client.last_management_error = None

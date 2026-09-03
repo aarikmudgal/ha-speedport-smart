@@ -33,6 +33,19 @@ def test_normalize_public_status() -> None:
     assert status.wan_upload_capacity_bps == 39_967_000
 
 
+def test_normalize_public_status_does_not_relabel_unrelated_fields() -> None:
+    """Local-domain and router-mode fields cannot impersonate model/WAN state."""
+    status = normalize_status(
+        {
+            "domain_name": "speedport.ip",
+            "router_state": "DECTUPD",
+        }
+    )
+
+    assert status.info.model == "Speedport"
+    assert status.internet_state is None
+
+
 def test_select_bonding_over_lte_subset() -> None:
     """Aggregate Hybrid interface wins, preventing LTE double count."""
     interfaces = [

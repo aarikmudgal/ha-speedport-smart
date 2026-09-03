@@ -33,9 +33,15 @@ Include:
 - any mitigation already tested
 
 Do not send a router password, session cookie, login challenge, private key,
-raw router response, full packet capture, public IP address, phone number, MAC
-address, SSID, serial number, client list, SIM identifier, or VPN secret.
-Coordinate privately before sending material that cannot be fully sanitized.
+raw router response, HAR file, browser network log, copied cURL request, full
+packet capture, public IP address, phone number, MAC address, SSID, serial
+number, client list, SIM identifier, or VPN secret. Coordinate privately before
+sending material that cannot be fully sanitized.
+
+The repository's offline control-capture sanitizer accepts raw HAR only through
+standard input and emits structural evidence without raw values. Its output
+still requires manual review before sharing. Never assume a browser's built-in
+HAR redaction is sufficient.
 
 The maintainer will acknowledge reports when available, investigate, coordinate
 a fix and disclosure, and credit reporters who want attribution. No response or
@@ -52,6 +58,37 @@ The integration:
 - redacts diagnostics before export
 - never runs router-changing commands during setup, polling, discovery,
   diagnostics, retry, or reload
+
+Normal login follows the router firmware's fixed
+`SHA-256(challenge:password)` wire protocol. The result is a transient login
+proof, not a stored password hash, and the integration cannot substitute a
+password KDF without becoming incompatible with the router. Keep Home
+Assistant and the router on a trusted local network.
+
+Native entity services use normal Home Assistant permissions. Panel confirmation
+does not intercept an automation or another caller invoking those services.
+Structured writes, secret changes and destructive operations instead require
+authenticated administrator-only HTTP routes, closed firmware-specific contracts and fresh
+requester/target-bound approvals. Approvals are short-lived and single-use;
+active authorization is checked again immediately before mutation. Writes are
+not automatically retried, and incomplete proof is not reported as success.
+
+Private settings, identifiers, contacts, call records and results use bounded
+`no-store` HTTP responses, not Home Assistant's WebSocket payload logging path.
+Opening a native administration page can automatically read its private data;
+it never automatically saves, clears or exports it. In-memory panel data is
+cleared when its view or authorization scope ends and is not copied into entity state,
+Recorder, diagnostics or persistent browser storage. Ordinary telemetry and its
+Home Assistant history are separate. After upgrades, hard-refresh the panel:
+retired private WebSocket commands reject before router work, but a stale client
+can still send its payload through core logging before rejection.
+
+Use Home Assistant HTTPS for credentials and private files. Router HTTPS does
+not secure the browser-to-Home-Assistant connection. Disable request/response
+body logging in proxies and debugging middleware. Backups, Router-Pass cards,
+phonebooks, VPN files and private system logs are sensitive downloads, not
+sanitized diagnostics. A stable integration release does not certify untested
+live writes; consult the [firmware and evidence limits](docs/MANAGEMENT.md).
 
 Local network compromise, a compromised Home Assistant instance, physical
 router access, router firmware vulnerabilities, and unsafe automations invoking

@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, call, patch
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
@@ -18,14 +18,23 @@ from custom_components.speedport_smart.api import (
     SpeedportAuthenticationError,
     SpeedportClient,
     SpeedportCommandRejectedError,
+    SpeedportInvalidCredentialsError,
+    SpeedportLoginLockedError,
     encode_payload,
 )
 from custom_components.speedport_smart.api.exceptions import (
+    SpeedportConnectionError,
+    SpeedportDecodeError,
     SpeedportProtocolError,
     SpeedportSessionBusyError,
     SpeedportUnsupportedError,
 )
-from custom_components.speedport_smart.models import WanInterface
+from custom_components.speedport_smart.models import (
+    CapabilityReport,
+    RouterInfo,
+    RouterStatus,
+    WanInterface,
+)
 from custom_components.speedport_smart.normalizers import normalize_feature_payload
 
 
@@ -166,6 +175,190 @@ def _busy_fault() -> str:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "referer", "body", "expected"),
+    [
+        (
+            "data/IPPrivacy.json",
+            "html/content/internet/con_privacy.html",
+            '{"lan_privacy_policy":"2"}',
+            {"lan_privacy_policy": "2"},
+        ),
+        (
+            "data/LTE.json",
+            "html/content/internet/lte_mode.html",
+            '{"ex5g_led_mode":"1"}',
+            {"ex5g_led_mode": "1"},
+        ),
+        (
+            "data/WLANAccess.json",
+            "html/content/network/wlan_wps.html",
+            '{"use_wps":"1","disabled_wps":"0"}',
+            {"use_wps": "1", "disabled_wps": "0"},
+        ),
+        (
+            "data/WLANAccess.json",
+            "html/content/network/wlan_access.html",
+            '{"wlan_allow_all":"0"}',
+            {"wlan_allow_all": "0"},
+        ),
+    ],
+)
+async def test_authenticated_json_get_uses_page_token(
+    endpoint: str,
+    referer: str,
+    body: str,
+    expected: dict[str, str],
+) -> None:
+    """Reviewed page-scoped reads include the current token as `_tn`."""
+    session = _FakeSession()
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload(body))
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    result = await client.get_json(
+        endpoint,
+        authenticated=True,
+        referer=referer,
+    )
+
+    assert result == expected
+    assert len(session.requests) == 2
+    assert session.requests[0][1] == f"http://speedport.ip/{referer}"
+    endpoint_request = session.requests[1]
+    parsed = urlsplit(endpoint_request[1])
+    assert parsed.path == f"/{endpoint}"
+    query = parse_qs(parsed.query)
+    assert set(query) == {"_tn", "_time", "_rand"}
+    assert query["_tn"] == ["123456"]
+    assert endpoint_request[2]["headers"]["Referer"] == (
+        f"http://speedport.ip/{referer}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page",
+    [
+        "<html><body>no token</body></html>",
+        '<input name="httoken" value="not-decimal">',
+        f'<input name="httoken" value="{"1" * 33}">',
+    ],
+)
+async def test_page_token_read_fails_closed_before_endpoint_get(page: str) -> None:
+    """Missing or invalid page tokens never degrade to an unscoped read."""
+    session = _FakeSession()
+    session.add(page)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    with pytest.raises(SpeedportUnsupportedError):
+        await client.get_json(
+            "data/IPPrivacy.json",
+            authenticated=True,
+            referer="html/content/internet/con_privacy.html",
+        )
+
+    assert len(session.requests) == 1
+    assert session.requests[0][1].endswith("/html/content/internet/con_privacy.html")
+
+
+@pytest.mark.asyncio
+async def test_page_token_read_classifies_login_page_as_expired_session() -> None:
+    """An expired token-page session gets one auth recovery and one retry."""
+    session = _FakeSession()
+    session.add('<html><a href="login/index.html">Login</a></html>')
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"ex5g_led_mode":"Timer"}'))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._session_cleanup_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    async def _logout() -> None:
+        client._clear_session_state()  # noqa: SLF001
+
+    async def _login() -> None:
+        client._authenticated = True  # noqa: SLF001
+        client._login_key = DEFAULT_KEY  # noqa: SLF001
+        client._session_cleanup_key = DEFAULT_KEY  # noqa: SLF001
+
+    logout = AsyncMock(side_effect=_logout)
+    login = AsyncMock(side_effect=_login)
+    with (
+        patch.object(client, "_logout_unlocked", logout),
+        patch.object(client, "_login_unlocked", login),
+    ):
+        result = await client.get_json(
+            "data/LTE.json",
+            authenticated=True,
+            referer="html/content/internet/lte_mode.html",
+        )
+
+    assert result == {"ex5g_led_mode": "Timer"}
+    logout.assert_awaited_once_with()
+    login.assert_awaited_once_with()
+    assert client.is_authenticated
+    assert client._session_cleanup_key == DEFAULT_KEY  # noqa: SLF001
+    assert len(session.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_global_authenticated_json_get_does_not_fetch_page_token() -> None:
+    """Shared protected endpoints keep their existing one-request read path."""
+    session = _FakeSession()
+    session.add(encode_payload('{"secure":"value"}'))
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    result = await client.get_json(
+        "data/SecureStatus.json",
+        authenticated=True,
+        referer="html/content/overview/index.html",
+    )
+
+    assert result == {"secure": "value"}
+    assert len(session.requests) == 1
+    query = parse_qs(urlsplit(session.requests[0][1]).query)
+    assert set(query) == {"_time", "_rand"}
+
+
+@pytest.mark.asyncio
+async def test_wps_status_poll_does_not_fetch_page_token() -> None:
+    """The transaction endpoint stays tokenless, matching the firmware poller."""
+    session = _FakeSession()
+    session.add(encode_payload("{}"))
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._authenticated = True  # noqa: SLF001
+    client._login_key = DEFAULT_KEY  # noqa: SLF001
+    client._encrypted_mode = True  # noqa: SLF001
+
+    result = await client.get_json(
+        "data/WPSStatus.json",
+        authenticated=True,
+        referer="html/content/network/wlan_wps.html",
+    )
+
+    assert result == {}
+    assert len(session.requests) == 1
+    parsed = urlsplit(session.requests[0][1])
+    assert parsed.path == "/data/WPSStatus.json"
+    assert set(parse_qs(parsed.query)) == {"_time", "_rand"}
+
+
 def _unsupported_parameter_fault() -> str:
     return (
         '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -198,6 +391,352 @@ def test_client_has_no_public_arbitrary_json_write_boundary() -> None:
     client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
 
     assert not hasattr(client, "post_json")
+
+
+@pytest.mark.parametrize(
+    ("host", "use_https", "expected"),
+    [
+        ("speedport.ip", False, "http://speedport.ip"),
+        ("speedport.ip", True, "https://speedport.ip"),
+        ("https://192.0.2.1:444", False, "https://192.0.2.1:444"),
+        ("http://[2001:db8::1]:8080", False, "http://[2001:db8::1]:8080"),
+    ],
+)
+def test_configuration_url_matches_normalized_router_web_endpoint(
+    host: str,
+    use_https: object,
+    expected: str,
+) -> None:
+    """Device links retain the selected scheme, explicit port, and IPv6 syntax."""
+    assert isinstance(use_https, bool)
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        host,
+        use_https=use_https,
+    )
+
+    assert client.configuration_url == expected
+
+
+@pytest.mark.asyncio
+async def test_feature_read_records_value_free_schema_without_extra_request() -> None:
+    """One successful feature GET records only its already-returned structure."""
+    session = _FakeSession()
+    session.add(
+        encode_payload(
+            '{"wlan_active":"private-value","rows":['
+            '{"enabled":true,"channel":11}],"empty":[],"matrix":[[true]]}'
+        )
+    )
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["wifi"] = EndpointCapability(  # noqa: SLF001
+        "wifi",
+        "data/WLANBasic.json",
+        referer="html/content/network/wlan_basic.html",
+    )
+
+    result = await client.get_feature_data("wifi")
+
+    assert result == {
+        "wlan_active": "private-value",
+        "rows": [{"enabled": True, "channel": 11}],
+        "empty": [],
+        "matrix": [[True]],
+    }
+    assert len(session.requests) == 1
+    assert session.responses == []
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in client.observed_feature_schema["wifi"]
+    } == {
+        ("wlan_active", "string"),
+        ("rows", "array"),
+        ("rows[]", "object"),
+        ("rows[].enabled", "boolean"),
+        ("rows[].channel", "integer"),
+        ("empty", "array"),
+        ("matrix", "array"),
+        ("matrix[]", "array"),
+        ("matrix[][]", "boolean"),
+    }
+    rendered = repr(client.observed_feature_schema)
+    assert "speedport.ip" not in rendered
+    assert "data/WLANBasic.json" not in rendered
+    assert "html/content/network/wlan_basic.html" not in rendered
+
+
+def test_observed_schema_rejects_identifiers_values_and_is_immutable() -> None:
+    """PII-like names and all scalar values stay outside immutable snapshots."""
+    session = _FakeSession()
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["wifi"] = EndpointCapability(  # noqa: SLF001
+        "wifi", "data/WLANBasic.json"
+    )
+    client.observe_feature_data(
+        "wifi",
+        {
+            "wlan_active": "private-credential-value",
+            "rows": [
+                {
+                    "state": True,
+                    "item[37]": None,
+                    "aa:bb:cc:dd:ee:ff": "mac-key",
+                    "aa_bb_cc_dd_ee_ff": "separated-mac-key",
+                    "aabbccddeeff": "compact-mac-key",
+                    "192.0.2.12": "ip-key",
+                    "host_192_0_2_12": "embedded-ip-key",
+                    "private@example.test": "email-key",
+                    "row_1": "short-row-id",
+                    "device_aabbccdd": "hex-device-id",
+                    "row_123456789": "long-number-key",
+                    "source_row_id": "row-id-field",
+                    "auth_token": "credential-field",
+                    "endpoint": "data/private.json",
+                    "router_password": "password-field",
+                    "raw_payload": "raw-field",
+                    "synthetic_user": "opaque-user-label",
+                    "livingroom": "opaque-device-label",
+                    "living_room": "underscore-device-label",
+                    "wifi_alice": "prefixed-user-label",
+                    "MixedCase": "dynamic-label",
+                    "user-label": "dynamic-label",
+                }
+            ],
+            "values": ["one", "two", "three"],
+        },
+    )
+
+    snapshot = client.observed_feature_schema
+    rendered = repr(snapshot)
+    paths = {descriptor["path"] for descriptor in snapshot["wifi"]}
+
+    assert "wlan_active" in paths
+    assert "rows[].state" in paths
+    assert "rows[].item[]" in paths
+    assert "values[]" in paths
+    for forbidden in (
+        "private-credential-value",
+        "aa:bb:cc:dd:ee:ff",
+        "aa_bb_cc_dd_ee_ff",
+        "aabbccddeeff",
+        "192.0.2.12",
+        "host_192_0_2_12",
+        "private@example.test",
+        "row_1",
+        "device_aabbccdd",
+        "123456789",
+        "source_row_id",
+        "auth_token",
+        "endpoint",
+        "router_password",
+        "raw_payload",
+        "data/private.json",
+        "synthetic_user",
+        "livingroom",
+        "living_room",
+        "wifi_alice",
+        "MixedCase",
+        "user-label",
+        "one",
+        "two",
+        "three",
+        "[37]",
+    ):
+        assert forbidden not in rendered
+    assert session.requests == []
+
+    with pytest.raises(TypeError):
+        snapshot["wifi"] = ()  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot["wifi"][0]["path"] = "changed"  # type: ignore[index]
+
+    client.observe_feature_data("wifi", {"wlan_visible": False})
+    assert "wlan_visible" not in {descriptor["path"] for descriptor in snapshot["wifi"]}
+    assert "wlan_visible" in {
+        descriptor["path"] for descriptor in client.observed_feature_schema["wifi"]
+    }
+
+
+def test_policy_schema_records_only_fixed_value_free_contract_names() -> None:
+    """DNS/QoS structure is discoverable without domains or client identity."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["dns_rebind"] = EndpointCapability(  # noqa: SLF001
+        "dns_rebind", "data/DNSExcept.json"
+    )
+    client._selected_endpoints["qos"] = EndpointCapability(  # noqa: SLF001
+        "qos", "data/QOS.json"
+    )
+
+    client.observe_feature_data(
+        "dns_rebind",
+        {"adddnsexcept": [{"hostname": "private-service.example"}]},
+    )
+    client.observe_feature_data(
+        "qos",
+        {
+            "qos_pc[1]": "1",
+            "hostname": "private-client",
+            "mac": "aa:bb:cc:dd:ee:ff",
+        },
+    )
+
+    dns_paths = {
+        descriptor["path"]
+        for descriptor in client.observed_feature_schema["dns_rebind"]
+    }
+    qos_paths = {
+        descriptor["path"] for descriptor in client.observed_feature_schema["qos"]
+    }
+    assert dns_paths == {"adddnsexcept", "adddnsexcept[]"}
+    assert qos_paths == {"qos_pc[]"}
+    rendered = repr(client.observed_feature_schema)
+    for private_value in (
+        "private-service.example",
+        "private-client",
+        "aa:bb:cc:dd:ee:ff",
+        "hostname",
+        "mac",
+    ):
+        assert private_value not in rendered
+
+
+def test_telephony_schema_keeps_only_safe_inventory_shapes() -> None:
+    """Repeater membership and counts are visible without telephony identity."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["dect"] = EndpointCapability(  # noqa: SLF001
+        "dect", "data/DECTStation.json"
+    )
+
+    client.observe_feature_data(
+        "dect",
+        {
+            "addrepeater": [{"id": "private-repeater-id", "name": "Private"}],
+            "num_entries": 42,
+            "dect_pin": "1234",
+            "phone_number": "+49 30 123456",
+        },
+    )
+
+    assert {
+        descriptor["path"] for descriptor in client.observed_feature_schema["dect"]
+    } == {"addrepeater", "addrepeater[]", "num_entries"}
+    rendered = repr(client.observed_feature_schema)
+    for forbidden in (
+        "private-repeater-id",
+        "Private",
+        "dect_pin",
+        "phone_number",
+        "+49 30 123456",
+    ):
+        assert forbidden not in rendered
+
+
+def test_observed_schema_inventory_is_strictly_bounded() -> None:
+    """Depth, field count, array samples and key length have hard limits."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    client._selected_endpoints["wifi"] = EndpointCapability(  # noqa: SLF001
+        "wifi", "data/WLANBasic.json"
+    )
+    deep: dict[str, Any] = {}
+    cursor = deep
+    for _index in range(10):
+        child: dict[str, Any] = {}
+        cursor["rows"] = child
+        cursor = child
+    sampled_fields = (
+        "active",
+        "available",
+        "bond",
+        "call",
+        "channel",
+        "connected",
+        "count",
+        "enabled",
+        "energy",
+    )
+    client.observe_feature_data(
+        "wifi",
+        {
+            "deep": deep,
+            "rows": [{field: True} for field in sampled_fields],
+            "wide": {field: index for index, field in enumerate(sampled_fields)},
+            f"field_{'x' * 65}": True,
+        },
+    )
+
+    fields = client.observed_feature_schema["wifi"]
+    paths = {descriptor["path"] for descriptor in fields}
+
+    assert len(fields) <= 128
+    assert all(path.count(".") + path.count("[]") + 1 <= 6 for path in paths)
+    assert "rows[].enabled" in paths
+    assert "rows[].energy" not in paths
+    assert not any("x" * 65 in path for path in paths)
+
+    client._selected_endpoints["mesh"] = EndpointCapability(  # noqa: SLF001
+        "mesh", "data/Mesh.json"
+    )
+    client.observe_feature_data(
+        "mesh",
+        {
+            **{f"unsafe-label-{index}": True for index in range(300)},
+            "late_field": True,
+        },
+    )
+    assert client.observed_feature_schema["mesh"] == ()
+
+
+def test_all_default_probe_candidate_metadata_is_privacy_safe() -> None:
+    """Every built-in candidate can be named without host or response data."""
+    session = _FakeSession()
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+
+    for family, candidates in DEFAULT_FEATURE_CANDIDATES.items():
+        for candidate in candidates:
+            client._observe_candidate_data(family, candidate, {})  # noqa: SLF001
+
+    snapshot = client.observed_candidate_schema
+    assert set(snapshot) == set(DEFAULT_FEATURE_CANDIDATES)
+    for family, candidates in DEFAULT_FEATURE_CANDIDATES.items():
+        assert {
+            (
+                candidate["endpoint"],
+                candidate["authenticated"],
+                candidate["referer"],
+            )
+            for candidate in snapshot[family]
+        } == {
+            (candidate.endpoint, candidate.authenticated, candidate.referer)
+            for candidate in candidates
+        }
+        assert all(candidate["schema"] == () for candidate in snapshot[family])
+
+    assert "speedport.ip" not in repr(snapshot)
+    assert session.requests == []
+
+
+def test_observed_candidate_schema_metadata_is_strictly_bounded() -> None:
+    """Candidate diagnostics cap entries globally and within each family."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+
+    for family_index in range(24):
+        family = f"candidate_{family_index}"
+        for endpoint_index in range(10):
+            candidate = EndpointCapability(
+                family,
+                f"data/Candidate{family_index}_{endpoint_index}.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+            )
+            client._observe_candidate_data(  # noqa: SLF001
+                family,
+                candidate,
+                {"energy": True},
+            )
+
+    snapshot = client.observed_candidate_schema
+    assert sum(len(candidates) for candidates in snapshot.values()) == 128
+    assert all(len(candidates) <= 8 for candidates in snapshot.values())
 
 
 @pytest.mark.asyncio
@@ -248,6 +787,228 @@ async def test_boolean_controls_reject_non_booleans_before_router_io(
 
     get_json.assert_not_awaited()
     post_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "field"),
+    [
+        ("execute_wifi_set_enabled", "use_wlan"),
+        ("set_guest_wifi", "wlan_guest_active"),
+        ("set_office_wifi", "wlan_office_active"),
+    ],
+)
+async def test_wifi_control_fresh_reads_then_posts_only_exact_target_field(
+    method: str,
+    field: str,
+) -> None:
+    """Wi-Fi writes prove current state and leave unrelated module fields alone."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    timeline = AsyncMock()
+    get_json = AsyncMock(
+        return_value={
+            "use_wlan": "0",
+            "wlan_guest_active": "0",
+            "wlan_office_active": "0",
+            "unrelated_module_field": "preserve",
+        }
+    )
+    post_json = AsyncMock(return_value={"status": "ok"})
+    timeline.attach_mock(get_json, "get")
+    timeline.attach_mock(post_json, "post")
+
+    with (
+        patch.object(client, "_get_json_unlocked", get_json),
+        patch.object(client, "_post_json_unlocked", post_json),
+    ):
+        result = await getattr(client, method)(enabled=True)
+
+    assert result == {"status": "ok"}
+    assert timeline.mock_calls == [
+        call.get(
+            "data/Modules.json",
+            authenticated=True,
+            referer="html/content/overview/index.html",
+        ),
+        call.post(
+            "data/Modules.json",
+            {field: "1"},
+            authenticated=True,
+            referer="html/content/overview/index.html",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "field"),
+    [
+        ("execute_wifi_set_enabled", "use_wlan"),
+        ("set_guest_wifi", "wlan_guest_active"),
+        ("set_office_wifi", "wlan_office_active"),
+    ],
+)
+@pytest.mark.parametrize("failure", ["unavailable", "ambiguous"])
+async def test_wifi_control_blocks_unproven_fresh_state_before_post(
+    method: str,
+    field: str,
+    failure: str,
+) -> None:
+    """Missing or ambiguous exact readback blocks every Wi-Fi mutation."""
+    readback = {"other": "1"}
+    if failure == "ambiguous":
+        readback = {field: "0", field.upper(): "0"}
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    post_json = AsyncMock()
+
+    with (
+        patch.object(
+            client,
+            "_get_json_unlocked",
+            AsyncMock(return_value=readback),
+        ),
+        patch.object(client, "_post_json_unlocked", post_json),
+        pytest.raises(SpeedportUnsupportedError),
+    ):
+        await getattr(client, method)(enabled=True)
+
+    post_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method",
+    [
+        "execute_wifi_set_enabled",
+        "set_guest_wifi",
+        "set_office_wifi",
+    ],
+)
+async def test_wifi_control_blocks_stale_authenticated_read_before_post(
+    method: str,
+) -> None:
+    """An expired protected pre-read is propagated without any Wi-Fi POST."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    post_json = AsyncMock()
+
+    with (
+        patch.object(
+            client,
+            "_get_json_unlocked",
+            AsyncMock(side_effect=SpeedportAuthenticationError("stale session")),
+        ),
+        patch.object(client, "_post_json_unlocked", post_json),
+        pytest.raises(SpeedportAuthenticationError),
+    ):
+        await getattr(client, method)(enabled=True)
+
+    post_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_guarded_scalar_pre_read_recovers_once_before_single_post() -> None:
+    """Guarded writes reuse bounded GET recovery, then submit only once."""
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+    client._session_cleanup_key = b"1" * 32  # noqa: SLF001
+    get_json = AsyncMock(
+        side_effect=[
+            SpeedportAuthenticationError("stale protected pre-read"),
+            {"use_wlan": "0"},
+        ]
+    )
+    post_json = AsyncMock(return_value={"status": "ok"})
+    logout = AsyncMock()
+
+    with (
+        patch.object(client, "_get_json_unlocked", get_json),
+        patch.object(client, "_post_json_unlocked", post_json),
+        patch.object(client, "_logout_unlocked", logout),
+    ):
+        result = await client.execute_wifi_set_enabled(enabled=True)
+
+    assert result == {"status": "ok"}
+    assert get_json.await_count == 2
+    logout.assert_awaited_once_with()
+    post_json.assert_awaited_once_with(
+        "data/Modules.json",
+        {"use_wlan": "1"},
+        authenticated=True,
+        referer="html/content/overview/index.html",
+    )
+
+
+@pytest.mark.asyncio
+async def test_guarded_scalar_second_pre_read_failure_is_bounded_without_post() -> None:
+    """A failed guarded GET retry stops before every state-changing request."""
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+    get_json = AsyncMock(
+        side_effect=[
+            SpeedportDecodeError("bad public preflight"),
+            SpeedportAuthenticationError("retry also failed"),
+        ]
+    )
+    post_json = AsyncMock()
+    logout = AsyncMock()
+
+    with (
+        patch.object(client, "_get_json_unlocked", get_json),
+        patch.object(client, "_post_json_unlocked", post_json),
+        patch.object(client, "_logout_unlocked", logout),
+        pytest.raises(SpeedportAuthenticationError),
+    ):
+        await client.execute_wifi_set_enabled(enabled=True)
+
+    assert get_json.await_count == 2
+    logout.assert_not_awaited()
+    post_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "field"),
+    [
+        ("execute_wifi_set_enabled", "use_wlan"),
+        ("set_guest_wifi", "wlan_guest_active"),
+        ("set_office_wifi", "wlan_office_active"),
+    ],
+)
+async def test_wifi_control_command_failure_is_never_replayed(
+    method: str,
+    field: str,
+) -> None:
+    """A failed Wi-Fi POST is attempted exactly once after its fresh pre-read."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    get_json = AsyncMock(return_value={field: "1"})
+    post_json = AsyncMock(
+        side_effect=SpeedportAuthenticationError("stale command response")
+    )
+
+    with (
+        patch.object(client, "_get_json_unlocked", get_json),
+        patch.object(client, "_post_json_unlocked", post_json),
+        pytest.raises(SpeedportAuthenticationError),
+    ):
+        await getattr(client, method)(enabled=False)
+
+    get_json.assert_awaited_once_with(
+        "data/Modules.json",
+        authenticated=True,
+        referer="html/content/overview/index.html",
+    )
+    post_json.assert_awaited_once_with(
+        "data/Modules.json",
+        {field: "0"},
+        authenticated=True,
+        referer="html/content/overview/index.html",
+    )
 
 
 @pytest.mark.asyncio
@@ -351,6 +1112,74 @@ async def test_guarded_scalar_control_noops_after_fresh_matching_state(
         result = await getattr(client, method)(**kwargs)
 
     assert result == {"status": "unchanged"}
+    post_json.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("read_value", "requested_mode", "expected_status", "expected_post"),
+    [
+        ("On", 2, "ok", "2"),
+        ("Timer", 1, "unchanged", None),
+        ("Off", 0, "ok", "0"),
+    ],
+)
+async def test_receiver_led_control_canonicalizes_exact_symbolic_readback(
+    read_value: str,
+    requested_mode: int,
+    expected_status: str,
+    expected_post: str | None,
+) -> None:
+    """Symbolic firmware reads compare safely while writes stay numeric."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    post_json = AsyncMock(return_value={"status": "ok"})
+    with (
+        patch.object(
+            client,
+            "_get_json_unlocked",
+            AsyncMock(return_value={"ex5g_led_mode": read_value}),
+        ),
+        patch.object(client, "_post_json_unlocked", post_json),
+    ):
+        result = await client.set_receiver_led_mode(requested_mode)
+
+    assert result == {"status": expected_status}
+    if expected_post is None:
+        post_json.assert_not_awaited()
+    else:
+        post_json.assert_awaited_once_with(
+            "data/LTE.json",
+            {"ex5g_led_mode": expected_post},
+            authenticated=True,
+            referer="html/content/internet/lte_mode.html",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "readback",
+    [
+        {"ex5g_led_mode": "timer"},
+        {"ex5g_led_mode": "Always"},
+        {"EX5G_LED_MODE": "Timer"},
+        {"ex5g_led_mode": "Timer", "EX5G_LED_MODE": "Timer"},
+        {"receiver": {"ex5g_led_mode": "Timer"}},
+        {"ex5g_led_mode": ["Timer"]},
+    ],
+)
+async def test_receiver_led_control_rejects_unproven_fresh_readback(
+    readback: dict[str, object],
+) -> None:
+    """Unknown, ambiguous, or non-root LED state blocks every write."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    post_json = AsyncMock()
+    with (
+        patch.object(client, "_get_json_unlocked", AsyncMock(return_value=readback)),
+        patch.object(client, "_post_json_unlocked", post_json),
+        pytest.raises(SpeedportUnsupportedError),
+    ):
+        await client.set_receiver_led_mode(1)
+
     post_json.assert_not_awaited()
 
 
@@ -989,6 +1818,121 @@ async def test_busy_fault_retries_with_same_serial_owner() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cached_names", [False, True])
+async def test_runtime_dsl_read_surfaces_first_busy_fault(
+    *, cached_names: bool
+) -> None:
+    """Scheduled DSL reads stop at the first busy response without sleeping."""
+    session = _FakeSession()
+    session.add(_busy_fault(), status=500)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    if cached_names:
+        client._dsl_parameter_names = (  # noqa: SLF001
+            "Device.DSL.Channel.1.DownstreamCurrRate",
+        )
+
+    with (
+        patch("custom_components.speedport_smart.api.client.asyncio.sleep") as sleep,
+        pytest.raises(SpeedportSessionBusyError),
+    ):
+        await client.get_dsl_metrics(busy_retries=0)
+
+    sleep.assert_not_awaited()
+    assert len(session.requests) == 1
+    assert session.max_active == 1
+    assert not client._lock.locked()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_dsl_read_preserves_default_four_busy_retries() -> None:
+    """Omitted per-call policy retains all four serialized constructor retries."""
+    session = _FakeSession()
+    for _ in range(5):
+        session.add(_busy_fault(), status=500)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+
+    def assert_owned(_delay: float) -> None:
+        assert client._lock.locked()  # noqa: SLF001
+
+    with (
+        patch(
+            "custom_components.speedport_smart.api.client.asyncio.sleep",
+            side_effect=assert_owned,
+        ) as sleep,
+        pytest.raises(SpeedportSessionBusyError),
+    ):
+        await client.get_dsl_metrics()
+
+    assert sleep.await_args_list == [call(0.5), call(1.0), call(2.0), call(4.0)]
+    assert len(session.requests) == 5
+    assert session.max_active == 1
+    assert not client._lock.locked()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_leaf", [False, True])
+async def test_dsl_optional_fallback_propagates_retry_policy(
+    *, busy_leaf: bool
+) -> None:
+    """Leaf isolation and the cached supported-name read share the override."""
+    rate_name = "Device.DSL.Channel.1.DownstreamCurrRate"
+    optional_name = "Device.DSL.Line.1.DownstreamNoiseMargin"
+    unsupported = _busy_fault().replace("9801", "9005")
+    session = _FakeSession()
+    session.add(unsupported, status=500)
+    session.add(_soap_response((rate_name, "100000", "unsignedInt")))
+    session.add(_busy_fault() if busy_leaf else unsupported, status=500)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._dsl_parameter_names = (rate_name, optional_name)  # noqa: SLF001
+
+    with patch("custom_components.speedport_smart.api.client.asyncio.sleep") as sleep:
+        if busy_leaf:
+            with pytest.raises(SpeedportSessionBusyError):
+                await client.get_dsl_metrics(busy_retries=0)
+            assert client._dsl_parameter_names == (  # noqa: SLF001
+                rate_name,
+                optional_name,
+            )
+        else:
+            metrics = await client.get_dsl_metrics(busy_retries=0)
+            assert metrics.downstream_current_bps == 100_000_000
+            assert client._dsl_parameter_names == (rate_name,)  # noqa: SLF001
+            session.add(_busy_fault(), status=500)
+            with pytest.raises(SpeedportSessionBusyError):
+                await client.get_dsl_metrics(busy_retries=0)
+            assert optional_name not in session.requests[-1][2]["data"]
+        sleep.assert_not_awaited()
+
+    assert len(session.requests) == (3 if busy_leaf else 4)
+    assert session.max_active == 1
+    assert not client._lock.locked()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_runtime_dsl_reads_remain_serialized() -> None:
+    """A zero retry policy never bypasses the shared client request owner."""
+    session = _FakeSession()
+    for rate in (100000, 110000):
+        session.add(
+            _soap_response(
+                ("Device.DSL.Channel.1.DownstreamCurrRate", str(rate), "unsignedInt")
+            ),
+            delay=0.001,
+        )
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+
+    first, second = await asyncio.gather(
+        client.get_dsl_metrics(busy_retries=0),
+        client.get_dsl_metrics(busy_retries=0),
+    )
+
+    assert first.downstream_current_bps == 100_000_000
+    assert second.downstream_current_bps == 110_000_000
+    assert len(session.requests) == 2
+    assert session.max_active == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_wan_read_can_surface_first_busy_fault() -> None:
     """Adaptive polling observes the first 9801 instead of an internal retry burst."""
     session = _FakeSession()
@@ -1369,7 +2313,10 @@ async def test_modern_login_and_authenticated_decode(
     }
     proof_form = _decode_form(proof_request[2]["data"], challenge_key)
     assert proof_form["showpw"] == "0"
-    assert len(proof_form["password"]) == 64
+    assert (
+        proof_form["password"]
+        == "f4634568116c65c091b65da570d81b9614117d11abc2c8fe3940eb43b04fc774"  # noqa: S105
+    )
     proof_plaintext = (
         AESCCM(challenge_key, tag_length=16)
         .decrypt(challenge_key[:8], bytes.fromhex(proof_request[2]["data"]), None)
@@ -1381,8 +2328,398 @@ async def test_modern_login_and_authenticated_decode(
 
 
 @pytest.mark.asyncio
+async def test_first_authenticated_get_recovers_once_from_status_decode() -> None:
+    """A bad public Status frame is retried locally without a blind logout."""
+    session = _FakeSession()
+    challenge = "20" * 32
+    challenge_key = bytes.fromhex(challenge)
+    unknown_key = "21" * 32
+    session.add(encode_payload('{"device_name":"stale"}', unknown_key))
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload(f'{{"challenge":"{challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', challenge_key))
+    session.add(encode_payload('{"secure":"fresh"}', challenge_key))
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"status":"ok"}', challenge_key))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+
+    with patch(
+        "custom_components.speedport_smart.api.client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await client.get_json(
+            "data/SecureStatus.json",
+            authenticated=True,
+        )
+
+        assert result == {"secure": "fresh"}
+        status_gets = [
+            request
+            for request in session.requests
+            if request[0] == "GET" and "/data/Status.json?" in request[1]
+        ]
+        login_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Login.json")
+        ]
+        assert len(status_gets) == 2
+        assert len(login_posts) == 2
+        assert _decode_form(login_posts[0][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert client._session_cleanup_key == challenge_key  # noqa: SLF001
+
+        await client.close()
+
+    assert _decode_form(session.requests[-1][2]["data"], challenge_key) == {
+        "httoken": "123456",
+        "logout": "byby",
+    }
+    assert session.responses == []
+
+
+@pytest.mark.asyncio
+async def test_first_authenticated_get_recovers_once_from_challenge_decode() -> None:
+    """A bad challenge frame gets one fresh preflight without blind logout."""
+    session = _FakeSession()
+    challenge = "22" * 32
+    challenge_key = bytes.fromhex(challenge)
+    unknown_key = "23" * 32
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload('{"challenge":"stale"}', unknown_key))
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload(f'{{"challenge":"{challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', challenge_key))
+    session.add(encode_payload('{"secure":"fresh"}', challenge_key))
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"status":"ok"}', challenge_key))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+
+    with patch(
+        "custom_components.speedport_smart.api.client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await client.get_json(
+            "data/SecureStatus.json",
+            authenticated=True,
+        )
+
+        assert result == {"secure": "fresh"}
+        status_gets = [
+            request
+            for request in session.requests
+            if request[0] == "GET" and "/data/Status.json?" in request[1]
+        ]
+        login_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Login.json")
+        ]
+        assert len(status_gets) == 2
+        assert len(login_posts) == 3
+        assert _decode_form(login_posts[0][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert _decode_form(login_posts[1][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert "password" in _decode_form(login_posts[2][2]["data"], challenge_key)
+
+        await client.close()
+
+    assert _decode_form(session.requests[-1][2]["data"], challenge_key) == {
+        "httoken": "123456",
+        "logout": "byby",
+    }
+    assert session.responses == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_kind", ["decode", "login-page", "unauthorized"])
+async def test_first_authenticated_get_recovers_once_with_fresh_session(
+    failure_kind: str,
+) -> None:
+    """A stale first protected read is released and retried on a fresh login."""
+    session = _FakeSession()
+    first_challenge = "21" * 32
+    second_challenge = "22" * 32
+    first_key = bytes.fromhex(first_challenge)
+    second_key = bytes.fromhex(second_challenge)
+    unknown_key = "23" * 32
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload(f'{{"challenge":"{first_challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', first_key))
+    if failure_kind == "decode":
+        session.add(encode_payload('{"secure":"stale"}', unknown_key))
+    elif failure_kind == "login-page":
+        session.add("<html>login/index.html</html>")
+    else:
+        session.add("unauthorized", status=401)
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"status":"ok"}', first_key))
+    session.add(encode_payload(f'{{"challenge":"{second_challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', second_key))
+    session.add(encode_payload('{"secure":"fresh"}', second_key))
+    session.add("<script>var _httoken = 654321;</script>")
+    session.add(encode_payload('{"status":"ok"}', second_key))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+
+    with patch(
+        "custom_components.speedport_smart.api.client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await client.get_json(
+            "data/SecureStatus.json",
+            authenticated=True,
+        )
+
+        assert result == {"secure": "fresh"}
+        assert client.is_authenticated
+        assert client._login_key == second_key  # noqa: SLF001
+        assert client._session_cleanup_key == second_key  # noqa: SLF001
+        protected_gets = [
+            request
+            for request in session.requests
+            if request[0] == "GET" and "/data/SecureStatus.json?" in request[1]
+        ]
+        assert len(protected_gets) == 2
+        login_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Login.json")
+        ]
+        assert len(login_posts) == 5
+        assert _decode_form(login_posts[0][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert "password" in _decode_form(login_posts[1][2]["data"], first_key)
+        assert _decode_form(login_posts[2][2]["data"], first_key) == {
+            "httoken": "123456",
+            "logout": "byby",
+        }
+        assert _decode_form(login_posts[3][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert "password" in _decode_form(login_posts[4][2]["data"], second_key)
+
+        await client.close()
+
+    assert not client.is_authenticated
+    assert client._session_cleanup_key is None  # noqa: SLF001
+    final_logout = session.requests[-1]
+    assert final_logout[0] == "POST"
+    assert _decode_form(final_logout[2]["data"], second_key) == {
+        "httoken": "654321",
+        "logout": "byby",
+    }
+    assert session.responses == []
+
+
+@pytest.mark.asyncio
+async def test_first_authenticated_get_recovers_from_ambiguous_login_proof() -> None:
+    """A proof decode failure is released before one fresh login and protected GET."""
+    session = _FakeSession()
+    first_challenge = "24" * 32
+    second_challenge = "25" * 32
+    first_key = bytes.fromhex(first_challenge)
+    second_key = bytes.fromhex(second_challenge)
+    unknown_key = "26" * 32
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload(f'{{"challenge":"{first_challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', unknown_key))
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"status":"ok"}', first_key))
+    session.add(encode_payload(f'{{"challenge":"{second_challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', second_key))
+    session.add(encode_payload('{"secure":"fresh"}', second_key))
+    session.add("<script>var _httoken = 654321;</script>")
+    session.add(encode_payload('{"status":"ok"}', second_key))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+
+    with patch(
+        "custom_components.speedport_smart.api.client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        result = await client.get_json(
+            "data/SecureStatus.json",
+            authenticated=True,
+        )
+
+        assert result == {"secure": "fresh"}
+        login_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Login.json")
+        ]
+        assert len(login_posts) == 5
+        assert _decode_form(login_posts[2][2]["data"], first_key) == {
+            "httoken": "123456",
+            "logout": "byby",
+        }
+        assert _decode_form(login_posts[3][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        protected_gets = [
+            request
+            for request in session.requests
+            if request[0] == "GET" and "/data/SecureStatus.json?" in request[1]
+        ]
+        assert len(protected_gets) == 1
+        assert client._session_cleanup_key == second_key  # noqa: SLF001
+
+        await client.close()
+
+    assert _decode_form(session.requests[-1][2]["data"], second_key) == {
+        "httoken": "654321",
+        "logout": "byby",
+    }
+    assert session.responses == []
+
+
+@pytest.mark.asyncio
+async def test_get_recovery_is_bounded_and_retains_cleanup_ownership() -> None:
+    """A failed retry is not repeated and its tentative session remains releasable."""
+    session = _FakeSession()
+    first_challenge = "31" * 32
+    second_challenge = "32" * 32
+    first_key = bytes.fromhex(first_challenge)
+    second_key = bytes.fromhex(second_challenge)
+    unknown_key = "33" * 32
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload(f'{{"challenge":"{first_challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', first_key))
+    session.add(encode_payload('{"secure":"stale-one"}', unknown_key))
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"status":"ok"}', first_key))
+    session.add(encode_payload(f'{{"challenge":"{second_challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', second_key))
+    session.add(encode_payload('{"secure":"stale-two"}', unknown_key))
+    session.add("<script>var _httoken = 654321;</script>")
+    session.add(encode_payload('{"status":"ok"}', second_key))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+
+    with patch(
+        "custom_components.speedport_smart.api.client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        with pytest.raises(SpeedportAuthenticationError):
+            await client.get_json("data/SecureStatus.json", authenticated=True)
+
+        protected_gets = [
+            request
+            for request in session.requests
+            if request[0] == "GET" and "/data/SecureStatus.json?" in request[1]
+        ]
+        login_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Login.json")
+        ]
+        assert len(protected_gets) == 2
+        assert len(login_posts) == 5
+        assert _decode_form(login_posts[0][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert _decode_form(login_posts[3][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert not client.is_authenticated
+        assert client._session_cleanup_key == second_key  # noqa: SLF001
+
+        await client.close()
+
+    assert client._session_cleanup_key is None  # noqa: SLF001
+    assert _decode_form(session.requests[-1][2]["data"], second_key) == {
+        "httoken": "654321",
+        "logout": "byby",
+    }
+    assert session.responses == []
+
+
+@pytest.mark.asyncio
+async def test_authenticated_command_failure_is_never_retried() -> None:
+    """A stale state-changing POST retains cleanup ownership without a replay."""
+    session = _FakeSession()
+    challenge = "41" * 32
+    challenge_key = bytes.fromhex(challenge)
+    unknown_key = "42" * 32
+    session.add(encode_payload('{"device_name":"Speedport Smart 4R"}'))
+    session.add(encode_payload(f'{{"challenge":"{challenge}"}}'))
+    session.add(encode_payload('{"login":"success"}', challenge_key))
+    session.add(encode_payload('{"use_wlan":"1"}', challenge_key))
+    session.add("<script>var _httoken = 123456;</script>")
+    session.add(encode_payload('{"status":"unknown"}', unknown_key))
+    session.add("<script>var _httoken = 654321;</script>")
+    session.add(encode_payload('{"status":"ok"}', challenge_key))
+    client = SpeedportClient(  # type: ignore[arg-type]
+        session,
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+
+    with patch(
+        "custom_components.speedport_smart.api.client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        with pytest.raises(SpeedportAuthenticationError):
+            await client.execute_wifi_set_enabled(enabled=False)
+
+        command_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Modules.json")
+        ]
+        login_posts = [
+            request
+            for request in session.requests
+            if request[0] == "POST" and request[1].endswith("/data/Login.json")
+        ]
+        assert len(command_posts) == 1
+        assert _decode_form(command_posts[0][2]["data"], challenge_key) == {
+            "httoken": "123456",
+            "use_wlan": "0",
+        }
+        assert len(login_posts) == 2
+        assert _decode_form(login_posts[0][2]["data"], DEFAULT_KEY) == {
+            "getChallenge": "1"
+        }
+        assert not client.is_authenticated
+        assert client._session_cleanup_key == challenge_key  # noqa: SLF001
+
+        await client.close()
+
+    assert client._session_cleanup_key is None  # noqa: SLF001
+    assert _decode_form(session.requests[-1][2]["data"], challenge_key) == {
+        "httoken": "654321",
+        "logout": "byby",
+    }
+    assert session.responses == []
+
+
+@pytest.mark.asyncio
 async def test_authenticated_decode_failure_is_released_on_close() -> None:
-    """Losing protected decode state retains only enough ownership to log out."""
+    """Without reusable credentials, decode failure remains owned for close."""
     session = _FakeSession()
     challenge = "22" * 32
     unknown_key = "33" * 32
@@ -1397,6 +2734,9 @@ async def test_authenticated_decode_failure_is_released_on_close() -> None:
         "speedport.ip",
         password="router-password",  # noqa: S106
     )
+
+    await client.login()
+    client._password = None  # noqa: SLF001
 
     with pytest.raises(SpeedportAuthenticationError):
         await client.get_json("data/SecureStatus.json", authenticated=True)
@@ -1466,6 +2806,43 @@ async def test_rejected_login_raises_typed_error() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        SpeedportInvalidCredentialsError("invalid credentials"),
+        SpeedportLoginLockedError(retry_after=30),
+        SpeedportSessionBusyError("another session owns access"),
+    ],
+    ids=["invalid-credentials", "login-locked", "session-busy"],
+)
+async def test_protected_get_does_not_retry_nonrecoverable_login_gate(
+    error: Exception,
+) -> None:
+    """Credential, cooldown, and external-owner gates never allocate a retry."""
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+    )
+    get_json = AsyncMock(side_effect=error)
+    logout = AsyncMock()
+
+    with (
+        patch.object(client, "_get_json_unlocked", get_json),
+        patch.object(client, "_logout_unlocked", logout),
+        pytest.raises(type(error)),
+    ):
+        await client.get_json("data/SecureStatus.json", authenticated=True)
+
+    get_json.assert_awaited_once_with(
+        "data/SecureStatus.json",
+        authenticated=True,
+        referer=None,
+    )
+    logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_close_without_proof_never_sends_blind_logout() -> None:
     """A client that never submitted proof has no authority to end a session."""
     session = _FakeSession()
@@ -1523,6 +2900,11 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "data/WLANBasicAss.json",
             "html/content/network/wlan_name_enc.html",
         ),
+        (
+            "wifi_schedule",
+            "data/WLANBasic.json",
+            "html/content/network/wlan_basic.html",
+        ),
         ("lan", "data/LAN.json", "html/content/network/lan.html"),
         (
             "clients",
@@ -1551,6 +2933,16 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "html/content/network/wlan_access.html",
         ),
         (
+            "wps",
+            "data/WLANAccess.json",
+            "html/content/network/wlan_wps.html",
+        ),
+        (
+            "wps_status",
+            "data/WPSStatus.json",
+            "html/content/network/wlan_wps.html",
+        ),
+        (
             "wifi_environment",
             "data/WLANEnviron.json",
             "html/content/network/wlan_environ.html",
@@ -1564,6 +2956,11 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
         ("lte", "data/LTE.json", "html/content/internet/lte_mode.html"),
         ("5g", "data/LTE.json", "html/content/internet/lte_mode.html"),
         ("receiver", "data/LTE.json", "html/content/internet/lte_mode.html"),
+        (
+            "receiver_led",
+            "data/LTE.json",
+            "html/content/internet/lte_mode.html",
+        ),
         (
             "mesh",
             "data/SecureStatus.json",
@@ -1612,9 +3009,19 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "html/content/config/problem_handling_dect.html",
         ),
         (
+            "dect_repeater",
+            "data/DECTRepeater.json",
+            "html/content/phone/phone_dect_repeater.html",
+        ),
+        (
+            "vpn_details",
+            "data/VPN.json",
+            "html/content/internet/vpn.html",
+        ),
+        (
             "analog",
             "data/PhonePlugs.json",
-            "html/content/phone/phone_analog.html",
+            "html/content/phone/phone_devices.html",
         ),
         (
             "phonebook",
@@ -1631,6 +3038,11 @@ async def test_rejected_owned_logout_never_falls_back_to_public_key() -> None:
             "usb",
             "data/NASDevice.json",
             "html/content/network/nas_overview.html",
+        ),
+        (
+            "media_server",
+            "data/NASMediacenter.json",
+            "html/content/network/nas_mediacenter.html",
         ),
         (
             "usb_tethering",
@@ -1671,6 +3083,328 @@ def test_speedport_smart_4r_candidates_prefer_proven_firmware_routes(
     assert candidate.authenticated is True
 
 
+def test_inventory_only_endpoint_policy_is_explicit_and_fail_closed() -> None:
+    """Unimplemented families cannot enter setup polling by accident."""
+    inventory_only = {
+        "wifi_environment",
+        "mesh_firmware",
+        "mesh_update",
+        "mesh_reboot_status",
+        "dect_settings",
+        "analog",
+        "logs",
+        "system_services",
+        "energy",
+        "internet_configuration",
+        "telephony_configuration",
+        "lte_log",
+        "backup_restore",
+    }
+
+    assert inventory_only <= set(DEFAULT_FEATURE_CANDIDATES)
+    for family in inventory_only:
+        assert all(
+            candidate.automatic_probe is False
+            for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+        )
+    inventory_excluded = {"wifi_environment", "mesh_update"}
+    assert all(
+        candidate.inventory_safe is False
+        for family in inventory_excluded
+        for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+    )
+    assert all(
+        candidate.inventory_safe is True
+        for family in inventory_only - inventory_excluded
+        for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "supported"),
+    [
+        ({"addipclient": []}, True),
+        ({}, False),
+        ({"pbx": []}, False),
+        ({"not_addipclient": []}, False),
+    ],
+    ids=[
+        "empty-client-list",
+        "empty-response",
+        "ambiguous-pbx-marker",
+        "substring-collision",
+    ],
+)
+async def test_pbx_clients_automatic_probe_requires_exact_evidence(
+    payload: dict[str, object],
+    supported: bool,  # noqa: FBT001
+) -> None:
+    """The safe IPClients GET proves only its exact response family."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["pbx_clients"][0]
+    assert candidate.automatic_probe is True
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"pbx_clients": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(return_value=payload)),
+    ):
+        report = await client.probe_capabilities()
+
+    assert ("pbx_clients" in report.feature_endpoints) is supported
+
+
+@pytest.mark.asyncio
+async def test_phonebook_probe_accepts_empty_firmware_book_shape() -> None:
+    """An empty but structurally valid PhoneBook response proves support."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["phonebook"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"phonebook": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"addbookentry": [], "num_entries": 0}),
+        ),
+    ):
+        report = await client.probe_capabilities()
+
+    assert report.feature_endpoints["phonebook"] == candidate
+
+
+@pytest.mark.asyncio
+async def test_phonebook_probe_rejects_substring_only_evidence() -> None:
+    """A colliding key cannot prove the exact PhoneBook response family."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["phonebook"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"phonebook": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"not_num_entries": 0}),
+        ),
+    ):
+        report = await client.probe_capabilities()
+
+    assert "phonebook" not in report.feature_endpoints
+
+
+def test_target_firmware_inventory_gets_have_exact_safety_contracts() -> None:
+    """Firmware-proven GETs retain their exact authenticated safety policy."""
+    expected = {
+        (
+            "internet_configuration",
+            "data/InternetConnection.json",
+        ): "html/content/phone/phone_internet.html",
+        (
+            "internet_configuration",
+            "data/INetIP.json",
+        ): "html/content/internet/connection.html",
+        (
+            "telephony_configuration",
+            "data/IPPhone.json",
+        ): "html/content/phone/phone_internet.html",
+        (
+            "telephony_configuration",
+            "data/IPPhoneNumbers.json",
+        ): "html/content/phone/phone_internet.html",
+        (
+            "telephony_configuration",
+            "data/PhoneNumberAssignment.json",
+        ): "html/content/phone/phone_number.html",
+        (
+            "pbx_clients",
+            "data/IPClients.json",
+        ): "html/content/phone/phone_ippbx.html",
+        (
+            "nas_folders",
+            "data/NASFolder.json",
+        ): "html/content/network/nas_share.html",
+        (
+            "lte_log",
+            "data/LTElog.json",
+        ): "html/content/internet/lte_mode.html",
+        (
+            "backup_restore",
+            "data/BackupRestore.json",
+        ): "html/content/config/save_settings.html",
+    }
+
+    families = {family for family, _endpoint in expected}
+    candidates = {
+        (family, candidate.endpoint): candidate
+        for family in families
+        for candidate in DEFAULT_FEATURE_CANDIDATES[family]
+    }
+    assert set(candidates) == set(expected)
+    for key, referer in expected.items():
+        candidate = candidates[key]
+        assert candidate.referer == referer
+        assert candidate.authenticated is True
+        assert candidate.automatic_probe is (key[0] in {"pbx_clients", "nas_folders"})
+        assert candidate.inventory_safe is (key[0] != "nas_folders")
+        assert candidate.evidence_keys
+
+
+def test_action_dynamic_and_unsupported_routes_are_absent_from_inventory() -> None:
+    """Firmware names alone never authorize actions, dynamic reads, or 404 aliases."""
+    excluded = {
+        "data/ActiveNode.json",
+        "data/Connect.json",
+        "data/DiskDirectoryEntry.json",
+        "data/NewDirectoryEntry.json",
+        "data/PhoneBookEntry.json",
+        "data/PhoneBookImport.json",
+        "data/Reboot.json",
+        "data/Wire.json",
+        "data/WLAN.json",
+        "data/WLANGuest.json",
+    }
+    configured = {
+        candidate.endpoint
+        for candidates in DEFAULT_FEATURE_CANDIDATES.values()
+        for candidate in candidates
+    }
+
+    assert configured.isdisjoint(excluded)
+
+
+def test_backup_restore_uses_reachable_target_page_not_response_alias() -> None:
+    """The firmware graph binds this GET to save_settings, not backup_restore."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["backup_restore"][0]
+
+    assert candidate.endpoint == "data/BackupRestore.json"
+    assert candidate.referer == "html/content/config/save_settings.html"
+    assert candidate.referer != "html/content/config/backup_restore.html"
+
+
+def test_new_inventory_schemas_retain_shapes_but_no_router_values() -> None:
+    """Sensitive telephony and NAS responses emit allowlisted shapes only."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    phone = next(
+        candidate
+        for candidate in DEFAULT_FEATURE_CANDIDATES["telephony_configuration"]
+        if candidate.endpoint == "data/IPPhoneNumbers.json"
+    )
+    nas = DEFAULT_FEATURE_CANDIDATES["nas_folders"][0]
+
+    client._observe_candidate_data(  # noqa: SLF001 - value-free policy regression
+        "telephony_configuration",
+        phone,
+        {
+            "addipnumber": [
+                {
+                    "ip_number": "+49-PRIVATE",
+                    "number_status": "registered-private",
+                    "password": "PRIVATE-SIP-PASSWORD",
+                }
+            ]
+        },
+    )
+    client._observe_candidate_data(  # noqa: SLF001 - value-free policy regression
+        "nas_folders",
+        nas,
+        {
+            "nas_folder_name": "PRIVATE-FOLDER",
+            "nas_secure": True,
+            "nas_user_name": "PRIVATE-USER",
+        },
+    )
+
+    snapshot = client.observed_candidate_schema
+    rendered = repr(snapshot)
+    assert "addipnumber[].number_status" in rendered
+    assert "nas_folder_name" in rendered
+    assert "nas_secure" in rendered
+    assert "PRIVATE" not in rendered
+    assert "password" not in rendered
+    assert "nas_user_name" not in rendered
+
+
+def test_lan_inventory_retains_only_shapes_for_undocumented_ipv6_flags() -> None:
+    """Technical LAN option fields remain value-free in discovery metadata."""
+    client = SpeedportClient(_FakeSession(), "speedport.ip")  # type: ignore[arg-type]
+    candidate = next(
+        item
+        for item in DEFAULT_FEATURE_CANDIDATES["lan"]
+        if item.endpoint == "data/LAN.json"
+    )
+
+    client._observe_candidate_data(  # noqa: SLF001 - value-free policy regression
+        "lan",
+        candidate,
+        {"lan_ip_v6_pext": "PRIVATE-1", "lan_ip_v6_arec": "PRIVATE-0"},
+    )
+
+    schema = client.observed_candidate_schema["lan"][0]["schema"]
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in schema  # type: ignore[union-attr]
+    } == {
+        ("lan_ip_v6_arec", "string"),
+        ("lan_ip_v6_pext", "string"),
+    }
+    assert "PRIVATE" not in repr(schema)
+
+
+def test_unreviewed_endpoint_capability_defaults_are_fail_closed() -> None:
+    """An omitted safety policy cannot schedule or inventory a new endpoint."""
+    candidate = EndpointCapability("unknown", "data/Unknown.json")
+
+    assert candidate.automatic_probe is False
+    assert candidate.inventory_safe is False
+
+
+def test_reviewed_builtin_read_endpoints_retain_explicit_policy() -> None:
+    """Known setup and inventory reads stay enabled through the reviewed factory."""
+    automatic = DEFAULT_FEATURE_CANDIDATES["internet"][0]
+    inventory_only = DEFAULT_FEATURE_CANDIDATES["energy"][0]
+
+    assert automatic.automatic_probe is True
+    assert automatic.inventory_safe is True
+    assert inventory_only.automatic_probe is False
+    assert inventory_only.inventory_safe is True
+
+
 @pytest.mark.parametrize(
     ("family", "endpoint"),
     [
@@ -1684,6 +3418,8 @@ def test_speedport_smart_4r_candidates_prefer_proven_firmware_routes(
         ("ddns", "data/DDNS.json"),
         ("vpn", "data/WireGuard.json"),
         ("vpn", "data/Wireguard.json"),
+        ("vpn_details", "data/WireGuard.json"),
+        ("vpn_details", "data/Wireguard.json"),
         ("pbx", "data/PhoneSettings.json"),
         ("dect", "data/PhoneSettings.json"),
         ("usb", "data/NASMediacenter.json"),
@@ -1699,6 +3435,1049 @@ def test_documented_cross_firmware_aliases_are_never_primary(
     )
 
     assert endpoint in endpoints[1:]
+
+
+def test_analog_endpoint_keeps_both_proven_referer_contracts() -> None:
+    """The same endpoint is retried under both captured firmware page contexts."""
+    assert tuple(
+        (candidate.endpoint, candidate.referer)
+        for candidate in DEFAULT_FEATURE_CANDIDATES["analog"]
+    ) == (
+        ("data/PhonePlugs.json", "html/content/phone/phone_devices.html"),
+        ("data/PhonePlugs.json", "html/content/phone/phone_analog.html"),
+    )
+
+
+def test_detail_endpoint_families_poll_beyond_summary_evidence() -> None:
+    """A confirmed summary endpoint cannot shadow independent detail reads."""
+    assert DEFAULT_FEATURE_CANDIDATES["wifi"][0].endpoint == "data/SecureStatus.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["wifi_schedule"][0].endpoint == "data/WLANBasic.json"
+    )
+    assert DEFAULT_FEATURE_CANDIDATES["vpn"][0].endpoint == "data/SecureStatus.json"
+    assert DEFAULT_FEATURE_CANDIDATES["vpn_details"][0].endpoint == "data/VPN.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["mesh_topology"][0].endpoint
+        == "data/DeviceList.json"
+    )
+    assert DEFAULT_FEATURE_CANDIDATES["dect"][0].endpoint == "data/DECTStation.json"
+    assert DEFAULT_FEATURE_CANDIDATES["dect_status"][0].endpoint == "data/DECTInfo.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["dect_repeater"][0].endpoint
+        == "data/DECTRepeater.json"
+    )
+    assert DEFAULT_FEATURE_CANDIDATES["usb"][0].endpoint == "data/NASDevice.json"
+    assert (
+        DEFAULT_FEATURE_CANDIDATES["media_server"][0].endpoint
+        == "data/NASMediacenter.json"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detail_result", ["success", "empty", "unsupported"])
+async def test_probe_keeps_summary_and_independent_detail_families(
+    detail_result: str,
+) -> None:
+    """Capability probing evaluates detail evidence after summary confirmation."""
+    overview = "html/content/overview/index.html"
+    candidates = {
+        "wifi": (
+            EndpointCapability(
+                "wifi",
+                "data/SecureStatus.json",
+                authenticated=True,
+                referer=overview,
+                evidence_keys=("wlan_active",),
+                automatic_probe=True,
+            ),
+        ),
+        "wifi_schedule": (
+            EndpointCapability(
+                "wifi_schedule",
+                "data/WLANBasic.json",
+                authenticated=True,
+                referer="html/content/network/wlan_basic.html",
+                evidence_keys=("wlan_timerule",),
+                automatic_probe=True,
+            ),
+        ),
+        "vpn": (
+            EndpointCapability(
+                "vpn",
+                "data/SecureStatus.json",
+                authenticated=True,
+                referer=overview,
+                evidence_keys=("vpn_active",),
+                automatic_probe=True,
+            ),
+        ),
+        "vpn_details": (
+            EndpointCapability(
+                "vpn_details",
+                "data/VPN.json",
+                authenticated=True,
+                referer="html/content/internet/vpn.html",
+                evidence_keys=("addpeer",),
+                automatic_probe=True,
+            ),
+        ),
+        "dect": (
+            EndpointCapability(
+                "dect",
+                "data/DECTStation.json",
+                authenticated=True,
+                referer="html/content/phone/phone_dect_mobiles.html",
+                evidence_keys=("dect", "handset"),
+                automatic_probe=True,
+            ),
+        ),
+        "dect_repeater": (
+            EndpointCapability(
+                "dect_repeater",
+                "data/DECTRepeater.json",
+                authenticated=True,
+                referer="html/content/phone/phone_dect_repeater.html",
+                evidence_keys=("addrepeater",),
+                automatic_probe=True,
+            ),
+        ),
+        "usb": (
+            EndpointCapability(
+                "usb",
+                "data/NASDevice.json",
+                authenticated=True,
+                referer="html/content/network/nas_overview.html",
+                evidence_keys=("addnasdevice",),
+                automatic_probe=True,
+            ),
+        ),
+        "media_server": (
+            EndpointCapability(
+                "media_server",
+                "data/NASMediacenter.json",
+                authenticated=True,
+                referer="html/content/network/nas_mediacenter.html",
+                evidence_keys=("addnasmediareplay",),
+                automatic_probe=True,
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        base_payloads: dict[str, dict[str, object]] = {
+            "data/SecureStatus.json": {
+                "wlan_active": "1",
+                "vpn_active": "1",
+            },
+            "data/DECTStation.json": {"adddect": [{"id": "handset-1"}]},
+            "data/NASDevice.json": {"addnasdevice": [{"id": "usb-1"}]},
+        }
+        if endpoint in base_payloads:
+            return base_payloads[endpoint]
+        if detail_result == "unsupported":
+            raise SpeedportUnsupportedError("detail endpoint unavailable")
+        if detail_result == "empty":
+            return {}
+        return {
+            "data/WLANBasic.json": {"wlan_timerule": "1"},
+            "data/VPN.json": {"addpeer": [{"connected": "1"}]},
+            "data/DECTRepeater.json": {"addrepeater": [{"id": "1"}]},
+            "data/NASMediacenter.json": {
+                "addnasmediareplay": [{"mediareplay_active": "1"}]
+            },
+        }[endpoint]
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(side_effect=feature_payload)) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    summary_families = {"status", "wifi", "vpn", "dect", "usb"}
+    detail_families = {
+        "wifi_schedule",
+        "vpn_details",
+        "dect_repeater",
+        "media_server",
+    }
+    assert summary_families <= set(report.feature_endpoints)
+    if detail_result == "success":
+        assert detail_families <= set(report.feature_endpoints)
+    else:
+        assert detail_families.isdisjoint(report.feature_endpoints)
+        assert detail_families <= set(report.failures)
+    assert report.authenticated_json is True
+    assert get.await_count == 7
+
+
+@pytest.mark.asyncio
+async def test_probe_retries_one_empty_page_token_control_read() -> None:
+    """One transient empty exact response cannot suppress a control until reload."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["connection_privacy"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"connection_privacy": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(
+        side_effect=({}, {"lan_privacy_policy": "2"}),
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert report.feature_endpoints["connection_privacy"] == candidate
+    assert "connection_privacy" not in report.failures
+    assert get_json.await_args_list == [
+        call(
+            "data/IPPrivacy.json",
+            authenticated=True,
+            referer="html/content/internet/con_privacy.html",
+        ),
+        call(
+            "data/IPPrivacy.json",
+            authenticated=True,
+            referer="html/content/internet/con_privacy.html",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_probe_stops_after_one_empty_page_token_retry() -> None:
+    """A persistently empty reviewed response gets only one bounded retry."""
+    candidate = DEFAULT_FEATURE_CANDIDATES["connection_privacy"][0]
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"connection_privacy": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(return_value={})
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert "connection_privacy" not in report.feature_endpoints
+    assert "connection_privacy" in report.failures
+    assert get_json.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_shares_one_empty_retry_across_endpoint_families() -> None:
+    """Families sharing one endpoint cannot multiply its bounded retry."""
+    candidates = {
+        family: (DEFAULT_FEATURE_CANDIDATES[family][0],)
+        for family in ("mobile", "receiver_led")
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(return_value={})
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert {"mobile", "receiver_led"}.isdisjoint(report.feature_endpoints)
+    assert get_json.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_probe_does_not_retry_empty_unreviewed_read() -> None:
+    """Decoded-empty retries never widen beyond reviewed tokenized endpoints."""
+    candidate = EndpointCapability(
+        "unreviewed",
+        "data/Unreviewed.json",
+        authenticated=True,
+        referer="html/content/config/unreviewed.html",
+        evidence_keys=("unreviewed",),
+        automatic_probe=True,
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"unreviewed": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    get_json = AsyncMock(return_value={})
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", get_json),
+    ):
+        report = await client.probe_capabilities()
+
+    assert "unreviewed" not in report.feature_endpoints
+    assert "unreviewed" in report.failures
+    get_json.assert_awaited_once_with(
+        "data/Unreviewed.json",
+        authenticated=True,
+        referer="html/content/config/unreviewed.html",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("family", "payload"),
+    [
+        ("wifi_schedule", {"wlan_time_active": "1"}),
+        ("dect_repeater", {"use_dect": "1"}),
+        ("media_server", {"use_usb": "1"}),
+    ],
+)
+async def test_probe_rejects_detail_evidence_the_normalizer_does_not_consume(
+    family: str,
+    payload: dict[str, object],
+) -> None:
+    """Detail capability evidence must prove at least one owned output field."""
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={family: (DEFAULT_FEATURE_CANDIDATES[family][0],)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(return_value=payload)),
+    ):
+        report = await client.probe_capabilities()
+
+    assert family not in report.feature_endpoints
+    assert family in report.failures
+
+
+@pytest.mark.asyncio
+async def test_probe_skips_inventory_only_candidates_without_failure() -> None:
+    """Setup reads only automatic candidates and leaves explicit ones untouched."""
+    automatic = EndpointCapability(
+        "automatic",
+        "data/Automatic.json",
+        evidence_keys=("automatic",),
+        automatic_probe=True,
+    )
+    explicit = EndpointCapability(
+        "explicit",
+        "data/Explicit.json",
+        evidence_keys=("explicit",),
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        endpoint_candidates={
+            "automatic": (automatic,),
+            "explicit": (explicit,),
+        },
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"automatic": {"available": True}}),
+        ) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    get.assert_awaited_once_with(
+        "data/Automatic.json",
+        authenticated=False,
+        referer=None,
+    )
+    assert "automatic" in report.feature_endpoints
+    assert "explicit" not in report.feature_endpoints
+    assert "explicit" not in report.failures
+    assert "explicit" not in client.observed_candidate_schema
+
+
+@pytest.mark.asyncio
+async def test_probe_records_only_safe_successful_candidate_schemas() -> None:
+    """Probe diagnostics retain successful structures, never values or failures."""
+    candidates = {
+        "energy": (
+            EndpointCapability(
+                "energy",
+                "data/EnergyPreview.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("power",),
+                automatic_probe=True,
+            ),
+            EndpointCapability(
+                "energy",
+                "data/Energy.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("energy",),
+                automatic_probe=True,
+            ),
+            EndpointCapability(
+                "energy",
+                "data/EnergyUnused.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("energy",),
+                automatic_probe=True,
+            ),
+        ),
+        "logs": (
+            EndpointCapability(
+                "logs",
+                "data/SystemMessages.json",
+                authenticated=True,
+                referer="html/content/config/system_messages.html",
+                evidence_keys=("message",),
+                automatic_probe=True,
+            ),
+        ),
+        "unsafe_metadata": (
+            EndpointCapability(
+                "unsafe_metadata",
+                "data/aabbccddeeff.json",
+                authenticated=True,
+                referer="html/content/config/energy.html",
+                evidence_keys=("energy",),
+                automatic_probe=True,
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        if endpoint == "data/EnergyPreview.json":
+            return {
+                "status": "private-value",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "hostname": "private-client",
+                        "aa:bb:cc:dd:ee:ff": "private-mac-key",
+                    }
+                ],
+                "router_password": "private-password",
+            }
+        if endpoint == "data/Energy.json":
+            return {
+                "energy": {"enabled": True, "id": "private-identifier"},
+                "serial_number": "private-serial",
+            }
+        if endpoint == "data/SystemMessages.json":
+            raise SpeedportUnsupportedError("endpoint unavailable")
+        if endpoint == "data/aabbccddeeff.json":
+            return {"energy": True}
+        raise AssertionError(f"Unexpected candidate read: {endpoint}")
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(side_effect=feature_payload)) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    snapshot = client.observed_candidate_schema
+    assert "energy" in report.feature_endpoints
+    assert "logs" in report.failures
+    assert tuple(snapshot) == ("energy",)
+    assert get.await_count == 4
+    assert "data/EnergyUnused.json" not in {
+        call_args.args[0] for call_args in get.await_args_list
+    }
+    assert [candidate["endpoint"] for candidate in snapshot["energy"]] == [
+        "data/EnergyPreview.json",
+        "data/Energy.json",
+    ]
+    assert snapshot["energy"][0]["referer"] == "html/content/config/energy.html"
+    assert snapshot["energy"][0]["authenticated"] is True
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in snapshot["energy"][0]["schema"]  # type: ignore[union-attr]
+    } == {
+        ("status", "string"),
+        ("rows", "array"),
+        ("rows[]", "object"),
+        ("rows[].enabled", "boolean"),
+    }
+    assert {
+        (descriptor["path"], descriptor["shape"])
+        for descriptor in snapshot["energy"][1]["schema"]  # type: ignore[union-attr]
+    } == {
+        ("energy", "object"),
+        ("energy.enabled", "boolean"),
+    }
+    rendered = repr(snapshot)
+    for forbidden in (
+        "private-value",
+        "private-client",
+        "private-mac-key",
+        "private-password",
+        "private-identifier",
+        "private-serial",
+        "hostname",
+        "router_password",
+        "serial_number",
+        "aa:bb:cc:dd:ee:ff",
+        "data/SystemMessages.json",
+        "data/EnergyUnused.json",
+        "data/aabbccddeeff.json",
+    ):
+        assert forbidden not in rendered
+
+    with pytest.raises(TypeError):
+        snapshot["energy"][0]["endpoint"] = "changed"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        snapshot["energy"][0]["schema"][0]["path"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_is_fresh_bounded_and_state_neutral() -> (
+    None
+):
+    """Explicit inventory reads each exact candidate contract once and nothing else."""
+    shared_referer = "html/content/config/energy.html"
+    candidates = {
+        "energy": (
+            EndpointCapability(
+                "energy",
+                "data/EnergyPreview.json",
+                authenticated=False,
+                evidence_keys=("preview",),
+                inventory_safe=True,
+            ),
+            EndpointCapability(
+                "energy",
+                "data/Energy.json",
+                authenticated=True,
+                referer=shared_referer,
+                evidence_keys=("energy",),
+                inventory_safe=True,
+            ),
+        ),
+        "system_logs": (
+            EndpointCapability(
+                "system_logs",
+                "data/Energy.json",
+                authenticated=True,
+                referer=shared_referer,
+                evidence_keys=("logs",),
+                inventory_safe=True,
+            ),
+            EndpointCapability(
+                "system_logs",
+                "data/SystemMessages.json",
+                authenticated=True,
+                referer="html/content/config/system_messages.html",
+                evidence_keys=("messages",),
+                inventory_safe=True,
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    selected = EndpointCapability(
+        "wifi",
+        "data/WLANBasic.json",
+        authenticated=True,
+    )
+    selected_endpoints = {"wifi": selected}
+    capability_report = CapabilityReport(
+        status_json=True,
+        tr064=True,
+        wan_counters=True,
+        authenticated_json=True,
+        feature_endpoints=selected_endpoints,
+    )
+    wan_interface = WanInterface(index=5, alias="BONDING", status="Up")
+    client._selected_endpoints = selected_endpoints  # noqa: SLF001
+    client._capabilities = capability_report  # noqa: SLF001
+    client._wan_interface = wan_interface  # noqa: SLF001
+
+    async def read_candidate(endpoint: str, **_: object) -> dict[str, object]:
+        return {
+            "data/EnergyPreview.json": {"preview": {"available": True}},
+            "data/Energy.json": {"energy": {"enabled": True}},
+            "data/SystemMessages.json": {"messages": [{"level": "info"}]},
+        }[endpoint]
+
+    with (
+        patch.object(client, "logout", AsyncMock()) as logout,
+        patch.object(client, "login", AsyncMock()) as login,
+        patch.object(client, "get_json", AsyncMock(side_effect=read_candidate)) as get,
+        patch.object(client, "get_status", AsyncMock()) as get_status,
+        patch.object(client, "get_wan_counters", AsyncMock()) as get_wan_counters,
+        patch.object(client, "_post_reviewed_command", AsyncMock()) as post_command,
+    ):
+        result = await client.capture_candidate_inventory()
+
+    assert result.attempted == 3
+    assert result.succeeded == 3
+    assert result.unsupported == 0
+    assert result.failed == 0
+    assert result.observed == 4
+    assert result.excluded == 0
+    assert [call.args[0] for call in get.await_args_list] == [
+        "data/EnergyPreview.json",
+        "data/Energy.json",
+        "data/SystemMessages.json",
+    ]
+    assert logout.await_count == 2
+    login.assert_awaited_once_with()
+    get_status.assert_not_awaited()
+    get_wan_counters.assert_not_awaited()
+    post_command.assert_not_awaited()
+    assert client._selected_endpoints is selected_endpoints  # noqa: SLF001
+    assert client.capabilities is capability_report
+    assert client._wan_interface is wan_interface  # noqa: SLF001
+    assert {
+        (family, candidate["endpoint"], candidate["referer"])
+        for family, observed in client.observed_candidate_schema.items()
+        for candidate in observed
+    } == {
+        ("energy", "data/EnergyPreview.json", None),
+        ("energy", "data/Energy.json", shared_referer),
+        ("system_logs", "data/Energy.json", shared_referer),
+        (
+            "system_logs",
+            "data/SystemMessages.json",
+            "html/content/config/system_messages.html",
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_inventory_skips_quarantined_candidates_and_login() -> None:
+    """Omitted, action-like, and unsafe candidates are never inventoried."""
+    safe = EndpointCapability(
+        "safe",
+        "data/Safe.json",
+        inventory_safe=True,
+    )
+    omitted = EndpointCapability("omitted", "data/Omitted.json")
+    quarantined = EndpointCapability(
+        "mesh_update",
+        "data/FwCheckForUpdateMesh.json",
+        authenticated=True,
+        automatic_probe=False,
+        inventory_safe=False,
+    )
+    unsafe_metadata = EndpointCapability(
+        "unsafe_metadata",
+        "data/aabbccddeeff.json",
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={
+            "safe": (safe,),
+            "omitted": (omitted,),
+            "mesh_update": (quarantined,),
+            "unsafe_metadata": (unsafe_metadata,),
+        },
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()) as logout,
+        patch.object(client, "login", AsyncMock()) as login,
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"safe": {"available": True}}),
+        ) as get,
+    ):
+        result = await client.capture_candidate_inventory()
+
+    get.assert_awaited_once_with(
+        "data/Safe.json",
+        authenticated=False,
+        referer=None,
+    )
+    login.assert_not_awaited()
+    assert logout.await_count == 2
+    assert result.attempted == 1
+    assert result.succeeded == 1
+    assert result.observed == 1
+    assert result.excluded == 3
+    assert "omitted" not in client.observed_candidate_schema
+    assert "mesh_update" not in client.observed_candidate_schema
+    assert "unsafe_metadata" not in client.observed_candidate_schema
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_isolates_noncritical_failures() -> None:
+    """Unsupported and isolated protocol failures produce accurate safe counts."""
+    candidates = {
+        "energy": tuple(
+            EndpointCapability(
+                "energy", f"data/Energy{index}.json", inventory_safe=True
+            )
+            for index in range(3)
+        )
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(), "speedport.ip", endpoint_candidates=candidates
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(
+                side_effect=[
+                    {"energy": {"enabled": True}},
+                    SpeedportUnsupportedError("not exposed"),
+                    SpeedportProtocolError("isolated malformed response"),
+                ]
+            ),
+        ),
+    ):
+        result = await client.capture_candidate_inventory()
+
+    assert result.attempted == 3
+    assert result.succeeded == 1
+    assert result.unsupported == 1
+    assert result.failed == 1
+    assert result.observed == 1
+    assert [
+        candidate["endpoint"]
+        for candidate in client.observed_candidate_schema["energy"]
+    ] == ["data/Energy0.json"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_keeps_referer_contracts_separate() -> None:
+    """The same endpoint under distinct firmware pages is read and recorded twice."""
+    candidates = {
+        "lan": (
+            EndpointCapability(
+                "lan",
+                "data/LAN.json",
+                authenticated=True,
+                referer="html/content/network/lan.html",
+                inventory_safe=True,
+            ),
+        ),
+        "dhcp": (
+            EndpointCapability(
+                "dhcp",
+                "data/LAN.json",
+                authenticated=True,
+                referer="html/content/network/dhcp.html",
+                inventory_safe=True,
+            ),
+        ),
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"lan": {"enabled": True}}),
+        ) as get,
+    ):
+        result = await client.capture_candidate_inventory()
+
+    assert result.attempted == 2
+    assert result.succeeded == 2
+    assert get.await_count == 2
+    assert [call.kwargs["referer"] for call in get.await_args_list] == [
+        "html/content/network/lan.html",
+        "html/content/network/dhcp.html",
+    ]
+    assert client.observed_candidate_schema["lan"][0]["referer"] == (
+        "html/content/network/lan.html"
+    )
+    assert client.observed_candidate_schema["dhcp"][0]["referer"] == (
+        "html/content/network/dhcp.html"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "critical_error",
+    [
+        SpeedportAuthenticationError("authenticated session failed"),
+        SpeedportDecodeError("encrypted response authentication failed"),
+        SpeedportConnectionError("router unavailable"),
+        SpeedportSessionBusyError("router session busy"),
+    ],
+    ids=["authentication", "decode", "connection", "session-busy"],
+)
+async def test_explicit_candidate_inventory_retains_previous_snapshot_on_failure(
+    critical_error: Exception,
+) -> None:
+    """A critical read failure cannot publish a partial or mixed inventory."""
+    previous = EndpointCapability(
+        "energy",
+        "data/Energy.json",
+        authenticated=True,
+        referer="html/content/config/energy.html",
+        inventory_safe=True,
+    )
+    candidates = {
+        "energy": (
+            EndpointCapability(
+                "energy",
+                "data/EnergyPreview.json",
+                authenticated=False,
+                inventory_safe=True,
+            ),
+            previous,
+        )
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._observe_candidate_data(  # noqa: SLF001
+        "energy",
+        previous,
+        {"energy": {"previous": True}},
+    )
+    before = repr(client.observed_candidate_schema)
+
+    with (
+        patch.object(client, "logout", AsyncMock()) as logout,
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(
+                side_effect=[
+                    {"preview": {"new": True}},
+                    critical_error,
+                ]
+            ),
+        ),
+        pytest.raises(type(critical_error)),
+    ):
+        await client.capture_candidate_inventory()
+
+    assert repr(client.observed_candidate_schema) == before
+    assert logout.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_inventory_commits_only_after_final_logout() -> None:
+    """A failed session release leaves the prior schema snapshot untouched."""
+    candidate = EndpointCapability("energy", "data/Energy.json", inventory_safe=True)
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        endpoint_candidates={"energy": (candidate,)},
+    )
+    client._observe_candidate_data(  # noqa: SLF001
+        "energy", candidate, {"energy": {"previous": True}}
+    )
+    before = repr(client.observed_candidate_schema)
+
+    with (
+        patch.object(
+            client,
+            "logout",
+            AsyncMock(side_effect=[None, SpeedportConnectionError("logout failed")]),
+        ),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"energy": {"new": True}}),
+        ),
+        pytest.raises(SpeedportConnectionError),
+    ):
+        await client.capture_candidate_inventory()
+
+    assert repr(client.observed_candidate_schema) == before
+
+
+@pytest.mark.asyncio
+async def test_probe_replaces_candidate_schema_snapshot() -> None:
+    """A repeated probe must not retain fields absent from the latest response."""
+    candidate = EndpointCapability(
+        "energy",
+        "data/Energy.json",
+        authenticated=True,
+        referer="html/content/config/energy.html",
+        evidence_keys=("energy",),
+        automatic_probe=True,
+    )
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates={"energy": (candidate,)},
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    client._observe_candidate_data(  # noqa: SLF001 - seed the previous probe
+        "energy",
+        candidate,
+        {"energy": {"enabled": True}},
+    )
+    first = client.observed_candidate_schema
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"energy": {"available": True}}),
+        ),
+    ):
+        await client.probe_capabilities()
+        second = client.observed_candidate_schema
+
+    assert {
+        descriptor["path"]
+        for descriptor in first["energy"][0]["schema"]  # type: ignore[union-attr]
+    } == {"energy", "energy.enabled"}
+    assert {
+        descriptor["path"]
+        for descriptor in second["energy"][0]["schema"]  # type: ignore[union-attr]
+    } == {"energy", "energy.available"}
+
+
+@pytest.mark.asyncio
+async def test_probe_receiver_accepts_exact_flat_status_evidence() -> None:
+    """Receiver fields cannot normalize into a capability-hidden data root."""
+    referer = "html/content/internet/lte_mode.html"
+    candidates = {
+        family: (
+            EndpointCapability(
+                family,
+                "data/LTE.json",
+                authenticated=True,
+                referer=referer,
+                evidence_keys=DEFAULT_FEATURE_CANDIDATES[family][0].evidence_keys,
+                automatic_probe=True,
+            ),
+        )
+        for family in ("mobile", "receiver")
+    }
+    client = SpeedportClient(  # type: ignore[arg-type]
+        _FakeSession(),
+        "speedport.ip",
+        password="router-password",  # noqa: S106
+        endpoint_candidates=candidates,
+    )
+    client._last_status = RouterStatus(  # noqa: SLF001 - non-network probe fixture
+        info=RouterInfo(model="Speedport Smart 4R")
+    )
+    payload = {
+        "auto_external_modem": "1",
+        "extwan_typ": "3",
+        "use_lte": "1",
+        "auto_update": "1",
+    }
+
+    with (
+        patch.object(client, "logout", AsyncMock()),
+        patch.object(
+            client, "get_wan_counters", AsyncMock(side_effect=SpeedportUnsupportedError)
+        ),
+        patch.object(client, "login", AsyncMock()),
+        patch.object(client, "get_json", AsyncMock(return_value=payload)) as get,
+    ):
+        report = await client.probe_capabilities()
+
+    assert {"mobile", "receiver"} <= set(report.feature_endpoints)
+    assert get.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1742,6 +4521,7 @@ async def test_capability_requires_matching_nonempty_data(
                     "internet",
                     "data/Test.json",
                     evidence_keys=("internet",),
+                    automatic_probe=True,
                 ),
             )
         },
@@ -1767,6 +4547,7 @@ async def test_protected_decode_failure_keeps_public_report() -> None:
                     "data/WLAN.json",
                     authenticated=True,
                     evidence_keys=("wifi",),
+                    automatic_probe=True,
                 ),
             )
         },

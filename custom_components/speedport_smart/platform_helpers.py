@@ -21,16 +21,57 @@ _MIN_PHONE_LABEL_DIGITS = 5
 _WPS_IN_PROGRESS_STATES = frozenset(
     {"active", "connecting", "in_progress", "running", "started"}
 )
-_WPS_COMPLETED_STATES = frozenset({"configured", "success"})
+_WPS_INACTIVE_TERMINAL_STATES = frozenset({"configured", "failed", "success"})
+_WPS_SUCCESSFUL_TERMINAL_STATES = frozenset({"configured", "success"})
+_WPS_LIFECYCLE_STATES = (
+    _WPS_IN_PROGRESS_STATES | _WPS_INACTIVE_TERMINAL_STATES | {"idle"}
+)
+
+
+def command_unavailable_reason(
+    hub: SpeedportHub,
+    command: str,
+    *,
+    coordinator_available: bool,
+    state_available: bool,
+    readback_supported: bool = True,
+    prerequisite_reason: str | None = None,
+) -> str | None:
+    """Return one bounded reason why a reviewed control cannot run."""
+    decision = hub.command_decision(command)
+    gates = (
+        (decision.configured, "controls_disabled"),
+        (decision.contract_known, "contract_unavailable"),
+        (decision.surface_allowed, "control_surface_unavailable"),
+        (decision.firmware_supported, "firmware_not_supported"),
+        (decision.handler_available, "command_handler_unavailable"),
+        (decision.authenticated_capability, "authenticated_access_unavailable"),
+        (decision.session_available, "management_session_unavailable"),
+    )
+    for passed, reason in gates:
+        if not passed:
+            return reason
+    if prerequisite_reason is not None:
+        return prerequisite_reason
+    if not decision.capability_supported:
+        return "capability_not_proven"
+    if not coordinator_available:
+        return "polling_unavailable"
+    if not state_available:
+        return "state_readback_unavailable"
+    if not readback_supported:
+        return "state_readback_unsupported"
+    return None
 
 
 def supported(
     hub: SpeedportHub,
-    capability: str,
+    capability: str | tuple[str, ...],
     data_path: str | tuple[str | int, ...] | None,
 ) -> bool:
     """Return whether capability and optional value exist."""
-    if not hub.has_capability(capability):
+    capabilities = (capability,) if isinstance(capability, str) else capability
+    if not any(hub.has_capability(item) for item in capabilities):
         return False
     return data_path is None or hub.get(data_path, MISSING) is not MISSING
 
@@ -125,7 +166,8 @@ def wps_in_progress(raw: Any) -> bool:
 def wps_started_or_completed(raw: Any) -> bool:
     """Return whether fresh readback proves WPS started or completed."""
     return wps_in_progress(raw) or (
-        isinstance(raw, str) and raw.strip().casefold() in _WPS_COMPLETED_STATES
+        isinstance(raw, str)
+        and raw.strip().casefold() in _WPS_SUCCESSFUL_TERMINAL_STATES
     )
 
 
@@ -133,9 +175,14 @@ def as_wps_active(raw: Any) -> bool:
     """Map WPS lifecycle readback to the active-window binary sensor."""
     if wps_in_progress(raw):
         return True
-    if isinstance(raw, str) and raw.strip().casefold() in _WPS_COMPLETED_STATES:
+    if isinstance(raw, str) and raw.strip().casefold() in _WPS_INACTIVE_TERMINAL_STATES:
         return False
     return as_bool(raw)
+
+
+def wps_lifecycle_known(raw: Any) -> bool:
+    """Return whether WPSStatus supplied one reviewed current lifecycle state."""
+    return isinstance(raw, str) and raw.strip().casefold() in _WPS_LIFECYCLE_STATES
 
 
 def as_datetime(raw: Any) -> datetime:
@@ -288,8 +335,10 @@ def speedport_child_device(
     default_names = {
         "client": "Network client",
         "dect_handset": "DECT handset",
+        "dect_repeater": "DECT repeater",
         "ip_phone": "IP phone",
         "mesh_node": "Mesh node",
+        "powerline_node": "Powerline device",
         "receiver": "5G/LTE receiver",
         "telephone_line": "Telephone line",
         "usb_device": "USB device",

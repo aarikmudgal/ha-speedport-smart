@@ -18,8 +18,9 @@ function focusable(dataset = {}, options = {}) {
   };
 }
 
-function detail(open, summary = focusable()) {
+function detail(open, summary = focusable(), detailId = undefined) {
   return {
+    dataset: detailId === undefined ? {} : { detailId },
     open,
     querySelector(selector) {
       return selector === "summary" ? summary : undefined;
@@ -34,6 +35,8 @@ function root({
   moreInfo = [],
   routers = [],
   refresh = [],
+  adminRefresh = [],
+  views = [],
 }) {
   const matches = {
     details,
@@ -41,6 +44,8 @@ function root({
     "[data-more-info]": moreInfo,
     "[data-router]": routers,
     "[data-refresh]": refresh,
+    "[data-admin-refresh]": adminRefresh,
+    "[data-view]": views,
   };
   return {
     activeElement,
@@ -103,4 +108,56 @@ test("every details state and focused summary survive replacement", () => {
   assert.deepEqual(newDetails.map((item) => item.open), [true, false, true]);
   assert.equal(restoreFocusState(newRoot, state), true);
   assert.deepEqual(newSummaries.map((item) => item.focusCount), [0, 1, 0]);
+});
+
+test("stable detail identity survives reordered nested administration sections", () => {
+  const internetSummary = focusable();
+  const networkSummary = focusable();
+  const state = captureRenderState(
+    root({
+      activeElement: networkSummary,
+      details: [
+        detail(true, internetSummary, "admin-area:internet"),
+        detail(false, networkSummary, "admin-area:network"),
+      ],
+    }),
+  );
+  const system = detail(true, focusable(), "admin-area:system");
+  const network = detail(true, focusable(), "admin-area:network");
+  const internet = detail(false, focusable(), "admin-area:internet");
+  const newRoot = root({ details: [system, network, internet] });
+
+  restoreDetailsState(newRoot, state);
+
+  assert.equal(system.open, true, "new stable section keeps its default state");
+  assert.equal(network.open, false);
+  assert.equal(internet.open, true);
+  assert.equal(restoreFocusState(newRoot, state), true);
+  assert.equal(network.querySelector("summary").focusCount, 1);
+});
+
+test("administrator refresh focus uses its stable data identity", () => {
+  const previous = focusable({ adminRefresh: "" });
+  const state = captureRenderState(root({ activeElement: previous }));
+  const current = focusable({ adminRefresh: "" });
+
+  assert.equal(
+    restoreFocusState(root({ adminRefresh: [current] }), state),
+    true,
+  );
+  assert.equal(current.focusCount, 1);
+});
+
+test("view switch restores focus to the selected view button", () => {
+  const previous = focusable({ view: "administration" });
+  const state = captureRenderState(root({ activeElement: previous }));
+  const dashboard = focusable({ view: "dashboard" });
+  const administration = focusable({ view: "administration" });
+
+  assert.equal(
+    restoreFocusState(root({ views: [dashboard, administration] }), state),
+    true,
+  );
+  assert.equal(dashboard.focusCount, 0);
+  assert.equal(administration.focusCount, 1);
 });

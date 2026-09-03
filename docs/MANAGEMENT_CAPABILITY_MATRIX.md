@@ -1,265 +1,232 @@
-# Version 0.2 management capability matrix
+# Router management capability matrix
 
-This document is a planning inventory for the Telekom Speedport Smart 4R Typ A. It separates implemented read-only behavior, implemented writes, firmware-evidenced but blocked work, and destructive or private work deferred from version 0.2. The **Coverage** column is the source of truth for each detailed row. A feature listed as `None` still needs protocol evidence and implementation.
+Current repository coverage, reviewed 3 September 2026, for **0.3.0 release
+preparation**; this does not claim that release is published. The reviewed
+write target is **Speedport Smart 4R Typ A, firmware 010152.5.0.001.0**; equivalent
+support on every Smart 4, 4R, 4R2 or firmware variant is not claimed.
 
-The router decides which menus exist. Contract type, provider, attached hardware, EasySupport state, Mesh devices, and firmware can all remove or add fields. Entities and actions must therefore be created from capabilities returned by the connected router, not from the model name alone.
+The panel provides broad bidirectional administration and navigation covering
+all **69 observed native screens**, documented in the
+[native-page audit](NATIVE_ADMIN_NAVIGATION.md). Complete observed navigation
+coverage is not complete operation support: the unsupported portions of partial
+families, missing operations and exclusions below remain unavailable.
+Registered editors can also be unavailable when the current router omits
+required fields, hardware, identity, capacity or provider prerequisites.
 
-This matrix is based on static review of public manuals, firmware history, downloaded public web resources, public reverse-engineering projects, and current repository code and tests. It does not claim live verification of the reconnaissance. Static firmware evidence never generates a generic write contract. Exact reversible scalar candidates may be staged behind strict pre-read, acknowledgement, post-readback, model, firmware, and capability gates, but remain explicitly unproven until a user-authorized change and rollback succeeds.
+## Coverage and live validation are separate
 
-## Sources and evidence
-
-Official sources:
-
-- [Speedport Smart 4R manual, April 2025](https://www.telekom.de/hilfe/downloads/bedienungsanleitung-speedport-smart-4r), 324 pages. Page references below refer to this manual.
-- [Speedport Smart 4R and 4R2 Typ A firmware history](https://www.telekom.de/hilfe/downloads/firmware-aenderungen-speedport-smart-4r-4r2-typ-a), checked for management changes published after the manual.
-- [Speedport Smart series support page](https://www.telekom.de/hilfe/geraete/router/speedport/smart-serie).
-- [Telekom manual configuration guide](https://www.telekom.de/hilfe/hilfe-bei-stoerungen/speedport-manuell-konfigurieren).
-
-Official developer and protocol sources:
-
-- [Broadband Forum TR-064 Issue 2](https://www.broadband-forum.org/pdfs/tr-064-2-0-0.pdf), the current LAN-side CPE configuration architecture.
-- [UPnP ConfigurationManagement:2](https://www.upnp.org/specs/dm/UPnP-dm-ConfigurationManagement-v2-Service-20120216.pdf) and [BasicManagement:2](https://upnp.org/specs/dm/UPnP-dm-BasicManagement-v2-Service.pdf), which define generic configuration and maintenance actions used by TR-064 Issue 2.
-- [Broadband Forum TR-181 Device:2](https://device-data-model.broadband-forum.org/), which defines standard router data-model objects and writable attributes, but not a Speedport endpoint catalogue.
-- [UPnP Internet Gateway Device 2](https://openconnectivity.org/developer/specifications/upnp-resources/upnp/internet-gateway-device-igd-v-2-0/), including standardized WAN, port-mapping, IPv6 pinhole, DHCP/LAN, routing, and WLAN service descriptions.
-- [Telekom's public developer catalogue](https://developer.telekom.com/en/products), which does not publish a Speedport-local management API.
-
-The official sources document the web interface and user-visible behavior. They do not publish the private `data/*.json` request contracts used by the interface. Endpoint evidence from the current repository and the following public projects is reverse-engineering evidence, not an official Telekom API:
-
-- [Andre0512/speedport-api](https://github.com/Andre0512/speedport-api/blob/main/speedport/api.py)
-- [FaserF/ha-speedport](https://github.com/FaserF/ha-speedport/blob/main/custom_components/speedport/api.py)
-
-Evidence labels used in the tables:
-
-| Label | Meaning |
+| Coverage | Meaning |
 | --- | --- |
-| `OFF` | The official manual documents the feature. This proves that the firmware UI has the feature, not its HTTP request contract. |
-| `SPEC` | An official protocol specification defines an action or writable object. This proves only that a conforming device may expose it. |
-| `ADVERTISED` | The connected router's device description and SCPD list the exact service, action, arguments, and control URL. Advertisement still does not prove authorization or successful execution. |
-| `REPO` | The current integration has an exact request implementation and state handling for the stated subset. |
-| `PUB` | A non-official public implementation or downloaded web resource suggests an endpoint or field. It remains a candidate until checked on the target firmware. |
-| `GET` | A sanitized, authenticated, read-only local response is still required. Login and logout requests are allowed; no setting or action request is sent. |
-| `FORM` | The complete save form, allowed values, dependencies, acknowledgement, and independent readback must be captured. A user may capture a browser save; the integration must not guess or send it. |
-| `ROUNDTRIP` | One explicit, user-authorized reversible change and restoration is required after `GET` and `FORM` are complete. |
-| `MAINT` | A user-authorized maintenance-window validation, current backup, and recovery procedure are required. |
-| `VARIANT` | Capability gating must be checked on another relevant model, firmware, provider, or hardware state. |
+| **Interactive** | Closed editor, command or private-file implementation present and registered; runtime preflight and outcome policy still apply. |
+| **Partial** | A named subset exists; other operations in the family are absent or blocked. |
+| **Read only** | Allowlisted returned state is displayed; no write claimed. |
+| **In progress** | Components exist, but wiring or end-to-end verification is incomplete. |
+| **Missing** | No usable integration implementation, even if a possible native request is known. |
+| **Excluded** | Physical/keypad/account-only, intentionally non-editable, unsupported or unbound behavior is not exposed as a local control. |
 
-## Developer/API evidence boundary
+**Interactive does not mean live-write validated.** No controlled live
+mutation/readback/restoration evidence is claimed here for the expanded 0.3.0
+families. Their metadata continues to mark live-write verification false.
 
-TR-064 Issue 2 uses the generic `ConfigurationManagement:2` actions
-`SetValues`, `CreateInstance`, `DeleteInstance`, and `SetAttributes`. The
-service specification marks these mutators optional, permits authorization to
-reject them, and allows LAN management to expose only a subset of the provider
-data model. `BasicManagement:2` similarly defines maintenance and diagnostic
-actions, but an action is not available merely because the standard names it.
-
-UPnP IGD defines service-specific actions such as WAN reconnect, port-mapping
-creation and deletion, IPv6 pinholes, DHCP/LAN setters, and WLAN setters. They
-are candidates only when this router advertises the matching service and SCPD.
-The live device description supplies `serviceType`, `SCPDURL`, and
-`controlURL`; the SCPD supplies the authoritative action and argument list.
-Advertisement is still below executable proof because authentication, current
-state, or firmware policy may reject a conforming action.
-
-No public Telekom developer manual was found for the Speedport
-`data/*.json` interface. The Smart 4R manual also does not publish a TR-064
-port, service list, SCPD, authentication scheme, or action catalogue. A Smart
-4 Plus manual documents TR-064 on TCP 5543 and 8443, but that is family context
-and is not evidence for Smart 4R Typ A. Proprietary JSON routes therefore stay
-firmware-specific and unsupported until independently proven.
-
-The current exact-firmware GET-only traversal is graph-complete but not
-write-complete: it inspected 49 pages and 54 assets and found 15 browser POST
-call sites, while retaining no complete save form. Static names and request
-shapes cannot prove authorization, positive acknowledgement, stable identity,
-or readback. A write becomes supported only after `ADVERTISED` or exact local
-route proof, a complete form, positive acknowledgement semantics, independent
-readback, and the required user-authorized roundtrip.
-
-Write blockers used below:
-
-| Blocker | Missing proof |
-| --- | --- |
-| `ENDPOINT` | Exact method, path, authentication, token, and Referer. |
-| `FORM` | Every submitted and hidden field, allowed value, dependency, and unrelated-field preservation rule. |
-| `ACK` | Explicit positive success acknowledgement and rejection semantics. |
-| `READBACK` | Fresh independent state source that proves the requested result. |
-| `IDENTITY` | One stable, unambiguous target that cannot silently become a reused or retargeted row. |
-| `SECRET` | Safe handling for credentials, private keys, pre-shared keys, recovery material, or one-time downloads without exposing them through Home Assistant state, attributes, diagnostics, logs, or the dashboard. |
-
-## Coverage and risk
-
-Coverage values:
-
-- `Write`: a current Home Assistant control sends a narrowly defined request.
-- `Partial`: part of the family can be changed; the remaining fields cannot.
-- `Read`: state is exposed when the router returns it, but no setting is changed.
-- `None`: no supported entity or action exists for this family.
-
-`Write` and `Partial` describe code coverage. The entity still requires management controls to be enabled for the config entry, an exact reviewed model and firmware write contract, and the current router response to prove the specific capability. Version 0.2's write allowlist is limited to Speedport Smart 4R Typ A firmware `010152.5.0.001.0`; unknown and newly updated firmware remains read-only until reviewed.
-
-## Version 0.2 decision summary
-
-| Class | Included scope | Decision |
+| Evidence layer | Established | Not established |
 | --- | --- | --- |
-| Implemented read-only | Public and protected status; WAN, DSL, Hybrid, mobile, Wi-Fi, clients, LAN, Mesh, telephony, storage, security, DDNS, VPN, and firmware fields when returned. This includes `wlan_band` per-band interpretation, `use_dyndns` enablement, `vpn_status` as profile enablement rather than connectivity, and client `access_possible` as Internet-access allowance. | Expose only normalized fields supported by a current response. Client access allowance remains read-only and is not inverted into a pause control. |
-| Implemented writable | Internet reconnect, router reboot, global/guest/prioritized Wi-Fi state, WPS start, existing port-forward state, client name, and fixed-DHCP flag. | Allowlisted only. Stateful requests require positive `ACK` and fresh `READBACK`; disruptive reconnect and reboot require positive `ACK` and natural polling recovery. Row writes also require strict `IDENTITY`. |
-| Staged guarded writable | Hybrid bonding, Telekom Internet privacy level, and 5G receiver LED behavior on the exact reviewed model and firmware. | One fixed scalar field per command; fresh exact pre-read, positive `ACK`, fresh semantic `READBACK`, no retry, and dashboard confirmation. Promotion still requires a user-driven change/readback/rollback/readback roundtrip. |
-| Firmware-evidenced but blocked | Per-band Wi-Fi changes, client access pause, DDNS, VPN/WireGuard, UPnP, parental controls, media server, Mesh/Powerline management, structured record creation/edit/delete, and other page-backed settings. | No control. Missing one or more of `ENDPOINT`, `FORM`, `ACK`, `READBACK`, `IDENTITY`, or `SECRET`; exact blockers are stated in the detailed rows or the summary below. |
-| Destructive, private, or deferred | Reset, restore, erase, credential or key changes, secret export, SIM PIN/PUK, firewall disable, destructive deletion, firmware upload, and mode changes that may make the router unreachable. | Excluded from version 0.2. Requires a separate recovery design and explicit authorization even if static firmware material shows a request shape. |
+| Native contract | Actual HTML actions, companion scripts, serializer, defaults and validators inspected. | Field lists alone are not complete requests; unbound handlers are not usable controls. |
+| Offline tests | Payloads, bounds, requester/target binding, preservation, API/session/file paths and frontend state. | Router acceptance, persistent credentials, connectivity or hardware recovery. |
+| Live read-only observations | Selected scalar forms, Wi-Fi/QoS device forms, parental profile, analog/global assignments and empty creation inventories. | Every populated schema, successful writes or other variants. |
+| Live writes/restoration | Not validated by this work; evidence captures sent no configuration mutation. | A live-validation claim needs an explicitly authorized reversible roundtrip or maintenance/recovery test; a stable version label does not provide that evidence. |
 
-Representative blocked families:
+Exact readback verifies requested readable state; an ACK alone cannot.
+Credential edits can leave secrets unverified. Router-password change instead
+requires independent new-password login before HA persistence. Link changes,
+resets and firmware installation may require reconnect/manual inspection:
+timers, missing rows and HTTP success do not prove recovery. Phonebook import
+acceptance/counters do not prove imported contents. Uncertain writes are never
+automatically replayed.
 
-| Family | Exact blocker |
-| --- | --- |
-| Client Internet pause/resume | `ENDPOINT`, `FORM`, `ACK`, and `READBACK`; `access_possible` is an allowance field, not proof of inverse pause semantics. |
-| Per-band Wi-Fi changes | Shared `FORM`, `ACK`, independent per-band `READBACK`, and disconnect recovery. |
-| DDNS changes | Save `ENDPOINT`, provider `FORM`, `ACK`, `READBACK`, and credential `SECRET` handling. |
-| VPN/WireGuard changes | Save `ENDPOINT`, complete `FORM`, `ACK`, distinct enabled/connected `READBACK`, peer `IDENTITY`, and key `SECRET` handling. |
-| Mesh/Powerline rename or identify | Hidden `FORM`, stable node `IDENTITY`, `ACK`, and bounded action `READBACK`. |
-| Structured create/edit/delete | Collection `FORM`, stable target `IDENTITY`, conflict semantics, `ACK`, and full-list `READBACK`; destructive deletion also needs recovery proof. |
+## Shared owners and privacy
 
-Risk labels:
+Closed registries are [`configuration.py`](../custom_components/speedport_smart/configuration.py),
+[`configuration_targets.py`](../custom_components/speedport_smart/configuration_targets.py),
+[`management.py`](../custom_components/speedport_smart/management.py), and
+[`admin_actions.py`](../custom_components/speedport_smart/admin_actions.py).
+They are not generic endpoint or JSON-payload editors.
 
-| Label | Meaning | Required Home Assistant surface |
-| --- | --- | --- |
-| `RO` | Read only | Sensor, binary sensor, diagnostic entity, or redacted download. |
-| `R` | Reversible setting | Switch, select, number, or text entity only when the current value and post-write readback are dependable. Structured records use a typed action or editor. |
-| `D` | Disrupts Internet, LAN, Wi-Fi, telephony, or router availability | Explicit action or button with a confirmation dialog, fresh precondition, no automatic retry, and a clear outage warning. |
-| `X` | Deletes data or configuration, resets a subsystem, or may make the router unreachable | Opt-in action with a typed confirmation matching the target, a current backup where possible, no implicit automation, and a documented recovery path. |
-| `S` | Contains a password, private key, phone number, contact, address, call record, or other sensitive data | Password field in setup, reauthentication, or an options flow. Never expose the secret in entity state, attributes, diagnostics, logs, issue text, or dashboard data. |
-| `C` | Conditional on provider, line type, attached hardware, or firmware | Create the control only after a current router response proves support. |
+Approvals bind administrator/login session, exact setting/target, typed values,
+dynamic choices and private dependency fingerprints. Fresh reads precede the
+one permitted write. Polling, queries and mutations share the runtime owner;
+cache/draft invalidation and cleanup belong to execution. File transfers also
+bind approved bytes, length and SHA-256 digest.
 
-Every state-changing request must be serialized through the integration's authenticated session owner. It must preserve all unrelated fields, require an explicit success acknowledgement, and verify the result with a fresh independent read. A missing field is not `false`; it means unsupported or temporarily unavailable. Disruptive actions are not retried automatically.
+Safe telemetry remains native when returned. Structured inventories use bounded
+administrator views. Private page-entry reads can load settings and the selected
+call category automatically; they are not background Recorder collection.
+Passwords, VPN files, contacts/call records, backups and private logs use private
+transactions, with explicit writes/downloads, not ordinary entity state,
+Recorder, diagnostics, logs or general panel snapshots. Router-Pass and
+Syslog files intentionally contain private information, not redacted diagnostics.
+Private browser data is cleared on close or view change. Sensitive panel
+transactions use authenticated administrator-only, no-store HTTP rather than
+Home Assistant WebSocket frames that core debug logging could capture.
 
-## Known non-official protocol evidence
+Exact legacy router-event, global-NAS and router-control entities are retired
+in 0.3.0; see [entity retirements](MANAGEMENT.md#entity-retirements). Their old
+presence is not evidence of a currently supported native command. Native entity
+services retain normal Home Assistant authorization and automation semantics;
+private administrator editors add their own requester-bound approvals.
 
-The current repository probes local JSON resources, many of which require authentication, including `Status.json`, `Overview.json`, `SecureStatus.json`, `Router.json`, `IPData.json`, `WLANBasic.json`, `WLANSettings.json`, `WPSStatus.json`, `DeviceList.json`, `HomeNetwork.json`, `LAN.json`, `PortuwMain.json`, `Portforwarding.json`, `WebnWalk.json`, `Mesh.json`, `DDNS.json`, `DynDNS.json`, `WireGuard.json`, `VPN.json`, `TimeRules.json`, `PhoneCalls.json`, `IPPhoneHandler.json`, `PhoneSettings.json`, `Phone.json`, `PhonePlugs.json`, `PhoneBook.json`, `SystemMessages.json`, `NASDevice.json`, `NASMediacenter.json`, `FirmwareUpdate.json`, and `Update.json`. Names differ between firmware versions, so these are candidates rather than a promised API.
+Detailed evidence: [network](ADMIN_NETWORK_EVIDENCE.md),
+[telephony/storage](ADMIN_TELEPHONY_STORAGE_EVIDENCE.md),
+[system/maintenance](ADMIN_SYSTEM_EVIDENCE.md), and
+[private call history](ADMIN_CALL_HISTORY_EVIDENCE.md).
+Code owners below are within `custom_components/speedport_smart/`.
 
-The implemented and explicitly staged write contracts are limited to:
+## Internet and routing
 
-| Current control | Non-official request evidence | Readback |
-| --- | --- | --- |
-| Internet reconnect | `POST data/Connect.json`, `req_connect=reconnect` | Polling resumes after the expected outage. |
-| Router reboot | `POST data/Reboot.json`, `reboot_device=true` | Polling resumes after the expected outage. |
-| Main Wi-Fi | `POST data/Modules.json`, `use_wlan=0/1` | Fresh `wifi.enabled`. |
-| Guest Wi-Fi | `POST data/Modules.json`, `wlan_guest_active=0/1` | Fresh `wifi.guest.enabled`. |
-| Prioritized Wi-Fi | `POST data/Modules.json`, `wlan_office_active=0/1` | Fresh `wifi.office.enabled`. |
-| Start WPS | `POST data/WLANAccess.json`, `wlan_add=on`, `wps_key=connect` | Fresh WPS status. |
-| Existing port-forward state | Fresh `GET data/PortuwMain.json`, then `POST` only for exactly one unchanged rule ID, name, and non-state semantics fingerprint with `portuw_active=0/1` | Fresh state for the same unchanged rule; deleted, reused, or retargeted IDs fail closed. |
-| Client name | Fresh full `DeviceList.json` managed-device row with only `mdevice_name` changed | Same row kind, row ID, required MAC address, and name. |
-| Fixed DHCP flag | Fresh full managed-device row with only `mdevice_fix_dhcp` changed | Same row and flag. The address itself is not changed. |
-| Hybrid bonding (staged) | Fresh `GET data/LTE.json`, then exact `use_bonding=0/1` only | Positive acknowledgement, fresh `hybrid.enabled`, then user rollback proof. |
-| Internet privacy level (staged) | Fresh `GET data/IPPrivacy.json`, then exact `lan_privacy_policy=0/1/2` only | Positive acknowledgement, fresh `internet.privacy_level`, then user rollback proof. |
-| Receiver LED mode (staged) | Fresh `GET data/LTE.json`, then exact `ex5g_led_mode=0/1/2` only | Positive acknowledgement, fresh `receiver.led_mode`, then user rollback proof. |
+| Capability | Coverage | Implemented subset and remaining limit | Owner |
+| --- | --- | --- | --- |
+| Reconnect Internet | Interactive | Confirmed command/deferred recovery; no promise of a different public address. | `management.py` |
+| ISP/PPPoE | Interactive | Manual Telekom, Zuhause Start, Other and eligible automatic Telekom branches; full active forms, explicit changed credentials. Not first-boot wizard or separate Internet-provider deletion. | `configuration_internet.py` |
+| MTU/VLAN/fixed IPv4 | Interactive | Exact active Other-provider branches, bounds and prerequisites. Saved settings do not prove connectivity. | Internet editor |
+| Preferred IPv4/IPv6 DNS | Interactive | Primary/secondary fields and toggles. Not LAN IPv6/ULA administration. | Internet editor |
+| Telekom privacy level | Interactive | Existing select and independently reported level. | `management.py` |
+| USB tethering | Interactive | Exact enable/forced switch and fresh prerequisites. Route changes require recovery; connected USB status alone is not active-route proof. | `configuration_network_controls.py` |
+| Tethering rescan/failover timing | Partial | Status reads exist. Native Check is GET refresh, not rescan POST; countdown is not editable failover timing. | Network evidence |
+| Bonding/receiver LEDs | Interactive | Exact flag/enum with physical identity; bonding requires EasySupport not to manage it. | Network controls; native commands |
+| Hybrid routing exceptions | Partial | Existing enable/disable/delete. Create/full destination/device editing still lacks complete conditional payload, create-sentinel and range-input proof. | `configuration_routing_exceptions.py` |
+| Port forwarding/redirection | Interactive | Parent create/edit/enable/delete and nested TCP/UDP range create/edit/delete; exact IDs, reserved ports, overlaps and siblings checked. Last-range removal requires parent delete; preset shortcuts not separately exposed. | `configuration_port_rules.py` |
+| Port blocking | Interactive | Full name/active/port-list/device rule create/edit/delete; not global firewall disable. | `configuration_port_blocking.py` |
+| Parental schedules/budgets | Interactive | Profiles, daily/weekly windows, shared/per-device budgets and exclusive assignments. | `configuration_parental.py` |
+| Per-device Internet pause | Missing | No independent pause endpoint. Disabling a parental profile removes restrictions; it is not pause. | Network evidence |
+| Dynamic DNS | Partial | Standard/custom settings, private credential/path preservation and provider deletion. No dedicated force-refresh/update POST proven. | Network editor/controls |
+| UPnP-IGD/mappings | Read only / excluded writes | Optional state/count only; no complete mapping view/identity or bound write schema. Generic standards are not substituted. | Normalizers; network evidence |
+| VPN | Partial | Peer enable/delete, creation in current WireGuard/IPsec mode, IPsec-only key rotation and one-time private creation/rotation download. No mode switch, import or existing WireGuard secret recovery/export. | `configuration_vpn.py` |
+| Receiver firmware/reset | Interactive | Offered update and separately confirmed factory reset with supported explicit eSIM-reset choice; fresh identity/offer and recovery attestations. Final installation/factory/eSIM state not immediately verified. | `system_actions.py` |
+| Independent eSIM lifecycle | Excluded | No profile download/add/select/enable/delete editor; reset's eSIM choice is separate. | System evidence |
 
-The static reconnaissance did not enable client Internet pause, DDNS, VPN,
-UPnP, parental-control, media-server, per-band Wi-Fi, Mesh, Powerline, or
-destructive writes.
+## Wi-Fi, LAN and devices
 
-Authentication uses the router web session and is required for protected data and all writes. Public implementations show challenge and proof login, an `httoken` tied to the session and page, AES-CCM protected responses, and explicit logout. This is `PUB` and `REPO` evidence, not an official protocol guarantee.
+| Capability | Coverage | Implemented subset and remaining limit | Owner |
+| --- | --- | --- | --- |
+| Client rename/fixed DHCP | Interactive | Existing identified-client name and fixed-DHCP flag; no arbitrary reservation-address CRUD inferred. | `management.py` |
+| Main/guest/prioritized Wi-Fi power | Interactive | Guarded on/off, main shutdown lockout handling. | Native commands |
+| Radio bands/modes/channels/power | Interactive | Complete form/branch constraints; configured and actual channels distinguished. | `configuration_network.py` |
+| Main Wi-Fi identity/security | Interactive | Per-band SSID/visibility, encryption/PMF/key/display-key policy and sibling-network preservation. | Network editor |
+| Wi-Fi schedules | Interactive | Disabled/daily/weekly modes, exact time fields and forced-disconnect choice. | Network editor |
+| Guest Wi-Fi settings | Interactive | Active, identity/security, lifetime/disconnect, display-key, WPS and Internet-access branches. | `configuration_wifi_extra.py` |
+| Prioritized/office settings | Interactive | Active, identity/security through its separate form; device inventory is not another settings write. | Wi-Fi extra editor |
+| Push-button WPS | Partial | Confirmed start/lifecycle refresh, not send-equals-paired; no general WPS-mode editor. | `management.py` |
+| Legacy WPS PIN | Excluded | Old handlers unbound in actual page; no guessed PIN request. | System evidence |
+| Wi-Fi environment scan | Missing | Channel telemetry does not implement user-triggered environment scan. | Registry absence |
+| Credential reset/QR printing | Partial | Key editing/private Router-Pass text exist; no display-reset action or QR-print parity. | Wi-Fi editor/file transfer |
+| Wi-Fi allowlist | Interactive | Exact SID/checked-state, whole inventory/identity readback and administrator-device lockout protection. | `configuration_device_selection.py` |
+| Priority devices | Interactive | Up to two devices, exact compounds and identity-preserving readback. | Device-selection editor |
+| VoIP priority flag | Interactive | Separate `Modules.json` flag with exact readback, preserving device membership and physical identity. Not part of device-choice form. | `configuration_small_controls.py` |
+| LAN IPv4/subnet | Interactive | Eleven-field command changes IPv4 only, preserves IPv6/DHCP. Reconnect required; no automatic host migration. | `lan_management.py`, network editor |
+| DHCP server/pool/lease | Interactive | Complete form/enums and fresh subnet/router/pool checks. | Network editor |
+| LAN IPv6/ULA | Read only / missing writes | Preserve/read reviewed returned fields. ULA grammar and `lan_ip_v6_pext`/`lan_ip_v6_arec` semantics remain undocumented. | LAN/network evidence |
+| DNS-rebind exceptions | Interactive | Domain create/edit/delete, exact IDs/capacity and sibling/protection preservation. | `configuration_network_rules.py` |
+| Global DNS-rebind flag | Interactive | Separate `Modules.json` setter and exact flag/exception preservation readback; disabling removes a security safeguard. | Small-control editor |
+| LAN links/speeds | Read only | Per-port/aggregate diagnostics; no arbitrary port-speed/mode setter. | Read contracts/entities |
+| Mesh topology/rename/delete | Partial | Topology/metrics, existing rename/disconnected-node delete. No general optimization/pairing request. | `configuration_mesh.py` |
+| Mesh identify | Interactive | Exact start/stop, manual-inspection outcome; closing does not auto-stop or prove blinking ended. | Mesh editor |
+| Mesh-wide maintenance | Interactive | Restart/reset/online/manual updates; not per-node restart. Recovery proof separate. | System actions/file transfer |
+| Powerline | Partial | Topology/rates and rename; no identify/pair/remove/optimization mutation proven. | `configuration_powerline.py` |
 
-## Overview and setup
+## Telephony and private histories
 
-| Family and manual pages | Documented settings and actions | Coverage | Risk and surface | Required state and readback | Evidence and exact next proof |
-| --- | --- | --- | --- | --- | --- |
-| Setup assistant, 50-61 and 64 | Run the assistant; configure Internet, telephony, phones, number assignment, and Wi-Fi; run the assistant again from Overview. | `None` | `D,S,C`; guided options flow, never a single button. | Current completion state, every current value, provider and hardware prerequisites, per-step validation, final connectivity. | `OFF`. `GET` every assistant step and its fetched JSON; `FORM` each step; `ROUNDTRIP` only on a spare or explicitly authorized router. |
-| Overview quick controls, 64-69 | Show Internet, line speed, telephone numbers, Wi-Fi name, Wi-Fi on/off, Wi-Fi password or QR code, security status, privacy level, and status information. | `Partial`: main Wi-Fi write; broad status read. Secrets and QR codes are not exposed. | `RO,R,S`. | Exact nonsecret status fields and fresh Wi-Fi state. Password and QR data must remain outside HA state. | `OFF,REPO,PUB`. `GET` Overview fields that are not normalized; security/privacy fields need `VARIANT`. |
+| Capability | Coverage | Implemented subset and remaining limit | Owner |
+| --- | --- | --- | --- |
+| Manual VoIP providers | Interactive | Create Telekom/Regio/Other with number, edit credentials, delete. Automatically managed providers excluded; persistence is not SIP registration. | Provider modules/admin actions |
+| Telephone numbers | Partial | Add to manual provider; activate/deactivate/delete and call options. Standalone existing-number digit editing missing. | Number/target modules/admin actions |
+| Incoming/outgoing/backup assignment | Interactive | Full exact matrices, branch prerequisites and sibling preservation. | `configuration_phone_assignments.py` |
+| Analog sockets | Interactive | Name/type, assignments and conditional call waiting. | `configuration_phone_targets.py` |
+| DECT base | Interactive | Enable/PIN/power/Eco with repeater restrictions. | `configuration_telephony.py` |
+| DECT handsets | Interactive | Enroll/page/disconnect and name/assignment/call-waiting editor. Physical pairing user-operated. | Admin actions/target editor |
+| DECT repeaters | Partial | Guarded enrollment/disconnect and attestations; no unrelated tuning inferred. | Admin actions |
+| IP phones/PBX | Interactive | Enable, exact-ID allocation, existing credentials/settings/assignments, private refresh/delete. No allocation replay on missing identity. | IP-phone/target modules |
+| Voice/dialing behavior | Interactive | VoSIP, HD Voice, dial delay, announcements, CLIR and busy/multiple-call behavior. | Telephony/basic/target editors |
+| Automatic number memory | Partial | Learning switch and one-shot learned-number clear. Clear always requires manual inspection: no learned-list/count/generation proof, no verified-deletion claim. No arbitrary entry editing. | Telephony/small-control editors |
+| Call aggregates | Read only | Safe returned count/last-call metadata, not private records. | Native normalizers/entities |
+| Private call view/CSV/clear | Interactive | Automatic private read on each native category-page entry; explicit Refresh, local CSV export and one-shot category clear. Complete selected collection required; global-only replies remain unavailable, not empty. No private records enter Recorder. | Call-history modules/view |
+| Local contacts | Interactive | Private search/detail and guarded create/edit/delete with complete readback; no general contact cache. | Phonebook modules |
+| Local books/handset assignment | Interactive | Create/rename/delete, assignment and update interval where fresh choices permit. Exact local indexes/capacity from current registries. | Account/assignment modules |
+| Phonebook import/export | Partial | Private native local-book transfers. Import counters/acceptance leave contents unverified; merge semantics/populated live transfers unvalidated. | File-transfer transaction |
+| Online book linking | Interactive | Multi-step account/link/session flow wired and tested offline; disconnect/rename/interval available. First registration alone is not completed linking/merging; live provider success remains unvalidated. | Phonebook link/flow/session modules |
+| Keypad-only functions | Excluded | No HTTP equivalent invented for keypad/service-code behavior. | Official manual |
 
-## Internet
+## Storage and services
 
-| Family and manual pages | Documented settings and actions | Coverage | Risk and surface | Required state and readback | Evidence and exact next proof |
-| --- | --- | --- | --- | --- | --- |
-| Provider access, 72-79 | Select Telekom, MagentaZuhause Regio, or another provider; set access number, co-user number, connection ID, provider name, username, password, MTU, VLAN ID 1-4094, and fixed-IP mode; save and test connection. | `Read`: connection and address state only. | `D,S,C`; reauthentication/options flow with password inputs and an outage confirmation. | Selected provider, all nonsecret current fields, whether secrets are masked or write-only, validation result, restored Internet state. | `OFF`. `GET` the Access data page and every fetched JSON; `FORM` all provider variants and masked-secret behavior; `ROUNDTRIP,MAINT,VARIANT`. |
-| USB tethering fallback, 80-81 | Show attached mobile-device support and Internet state; recheck hardware; automatically use fallback after a fault; switch immediately to fallback. | `Read`: mobile and USB state when returned. | `RO,D,C`; recheck button and confirmed failover action. | Device presence and support, primary/fallback state, transition result, telephony and MagentaTV limitations. | `OFF,PUB`. `GET` the USB tethering page and `WebnWalk.json`; `FORM` recheck and immediate-switch actions; `ROUNDTRIP,VARIANT` with attached hardware. |
-| Preferred DNS, 82 | Enable preferred DNSv4 and DNSv6 servers and enter server addresses. | `Read`: assigned addressing only; preferred server configuration is not exposed. | `R,D`; typed IP fields with validation. | Enable flags, primary and secondary values if present, DHCP/provider fallback, resolved server state after save. | `OFF`. `GET` the DNS page and fetched JSON; `FORM` IPv4 and IPv6 fields and empty-value semantics; `ROUNDTRIP,VARIANT`. |
-| Public IP and renewal, 83-84 | Show public IPv4 and IPv6 addresses; request new addresses, briefly reconnecting the Internet. | `Write`: address state plus Internet reconnect button. | `RO,D`; address sensors and confirmed reconnect action. | Current addresses, expected disconnect, return of Internet, and new or retained addresses. | `OFF,REPO`. Existing reconnect contract is implemented. Determine whether the UI's dedicated IP-change request differs with `GET,FORM`; no extra write until proven. |
-| Telekom privacy, 85 | Select Off, privacy level 1, or privacy level 2; level 1 changes part of IPv6 daily; level 2 also renews IPv4 and IPv6 every four days between 02:00 and 05:00. | `Staged`: read sensor plus guarded select for `lan_privacy_policy=0/1/2`. | `R,D,C`; confirmed select with exact schedule explanation. | Fresh exact scalar before POST, positive acknowledgement, fresh selected level, and rollback validation. | `OFF,PUB,GET`; exact `data/IPPrivacy.json` route and values are known. `ROUNDTRIP,VARIANT` remains before promotion. |
-| 5G receiver mode and firmware, 86-89 | Show receiver status; choose LTE Boost bonding or immediate-use mode; choose receiver LED behavior; check for receiver firmware; install and restart receiver. | `Staged/Read`: guarded `use_bonding=0/1` switch and `ex5g_led_mode=0/1/2` select; other receiver and firmware operations remain read-only. | `RO,R,D,C`; confirmed controls plus read-only firmware state. | Fresh exact scalar before POST, positive acknowledgement, fresh semantic state, and rollback validation. Firmware actions need progress and final reconnect. | `OFF,PUB,GET`; exact `data/LTE.json` scalar routes and values are known. `ROUNDTRIP,VARIANT` remains for bonding/LED; firmware actions still require `FORM,MAINT`. |
-| 5G routing exceptions, 90-91 | Create, name, choose exception type, assign devices, edit, and delete rules that force selected devices to DSL only. | `None` | `R,X,C`; structured rule editor with target confirmation for deletion. | Stable rule and device IDs, current type and membership, full list after mutation. | `OFF`. `GET` Routing exceptions and all fetched JSON; `FORM` create/edit/delete with full-row preservation; `ROUNDTRIP,VARIANT`. |
-| Parental schedules, 92-101 | Create, name, edit, and delete rules; assign devices; set up to three periods per day or use weekly view; set daily time budgets; show allowed periods and remaining budget. One rule per device. | `Read`: overall status and rules when returned; no CRUD. | `R,X,S,C`; structured weekly editor and target confirmation for rule deletion. | Stable device and rule IDs, all periods, budgets and remaining budget, uniqueness constraint, full list after save. | `OFF,PUB`; `TimeRules.json` is a candidate. `GET` schedule and information pages; `FORM` create/edit/delete; `ROUNDTRIP,VARIANT`. |
-| Port forwarding and redirection, 102-104 | Create up to 32 rules; name a rule; select device and optional template; set public and internal ports; enable, disable, edit, and delete. | `Partial`: list/read and enable/disable an existing rule only. | `R,X,C`; rule editor; deletion requires target confirmation. | Stable rule/device IDs, protocol and full port ranges, active flag, conflicts, entire rule after save. | `OFF,REPO,PUB`; `PortuwMain.json` is proven only for existing-rule state. `GET` all rule data; `FORM` create/edit/delete and templates; `ROUNDTRIP`; deletion needs explicit target confirmation. |
-| Port blocks, 105-107 | Create, name, edit, and delete blocks; choose a template; apply to selected or all devices. | `None` | `R,X,C`; structured rule editor. | Stable rule/device IDs, template or port definition, scope, active state, full list after save. | `OFF`. `GET` Portsperren and fetched JSON; `FORM` create/edit/delete; `ROUNDTRIP,VARIANT`. |
-| Dynamic DNS, 108-111 | Enable DynDNS; choose provider; set domain, username, password; for custom providers set update-server URL, protocol, and port; save. | `Read`: `use_dyndns` is interpreted as enablement; connection state is separate when returned. | `R,S,C`; options flow with secret field; optional manual-update action only if documented by firmware. | Current provider and nonsecret fields, password masked/write-only semantics, last status or error, final connected state. | `OFF,PUB`; `DDNS.json` and `DynDNS.json` are endpoint candidates only. Write blocked by save `ENDPOINT`, complete provider `FORM`, `ACK`, independent `READBACK`, and credential `SECRET` handling; then `ROUNDTRIP,VARIANT`. |
+| Capability | Coverage | Implemented subset and remaining limit | Owner |
+| --- | --- | --- | --- |
+| USB/storage/printer state | Read only | Presence/mount/capacity/printer metadata; USB power through Energy, no unbound printer-enable form. | Native surfaces/system editor |
+| Existing NAS share | Interactive | Enable/path/read-only/authentication/credentials and delete. Fresh protected passwords; secret verification distinguished. | NAS/storage modules/admin actions |
+| New NAS share | Interactive | Empty disabled-form lifecycle, prerequisites and exact new-ID proof. Missing identity is not fabricated empty form. | `configuration_nas_create.py` |
+| NAS directory picker/mkdir | Missing | Validated absolute path text is editable, but no picker/filesystem directory creation. Static request names do not prove full node/path/ACK/readback. | Telephony/storage evidence |
+| Safe storage removal | Interactive | Supported ID/serial, complete absence/sibling proof; missing inventory is not unmount success. | `storage_lifecycle.py` |
+| SMB workgroup | Interactive | Typed form/same-endpoint readback. | `configuration.py` |
+| Media folders/index | Interactive | Configuration create/edit/enable/delete and reindex/progress. Not filesystem deletion; Finished-to-Finished is not new-run proof. | `configuration_media.py` |
+| Smart Home service | Interactive | Activation-code/deactivation, state/lock checks and service readback; not every attached device. | `system_actions.py` |
 
-## Telephony
+## System, maintenance and private files
 
-| Family and manual pages | Documented settings and actions | Coverage | Risk and surface | Required state and readback | Evidence and exact next proof |
-| --- | --- | --- | --- | --- | --- |
-| Providers and numbers, 114-120 | Add MagentaZuhause Regio numbers; add another provider; set numbers, provider name, username, password, registrar or proxy, and port; add more providers; activate or deactivate each number. | `Read`: registration and line state when returned. | `R,D,S,C`; reauthentication/options flow and per-line switches only with stable IDs. | Provider and line IDs, active and registration state, masked secrets, full provider record, calling restored after save. | `OFF,PUB`. `GET` provider and number pages plus phone JSON; `FORM` each provider type and activate/deactivate; `ROUNDTRIP,MAINT,VARIANT`. |
-| Global number assignment, 121-122 | Assign each incoming number to directly attached endpoints; select the outgoing number for each endpoint. | `Read`: line and endpoint inventory; assignments are not changed. | `R,D,S,C`; assignment matrix editor. | Stable line and endpoint IDs, complete incoming matrix, one outgoing choice per endpoint, post-save registration. | `OFF`. `GET` both assignment pages; `FORM` complete matrices; `ROUNDTRIP,VARIANT`. |
-| Analog telephone socket, 123-126 | Rename the socket; assign incoming and outgoing numbers; select attached device type such as telephone or fax; allow call waiting. | `Read`: analog state when returned. | `R,D,S,C`; text/select/switch controls grouped by socket. | Stable socket ID, all assignments, device enum, call-waiting flag, call state before save. | `OFF,PUB`; `PhonePlugs.json` is a candidate. `GET` socket pages; `FORM` full socket row; `ROUNDTRIP,VARIANT`. |
-| DECT base, 127-130 | Enable DECT; change the DECT PIN; choose full or reduced transmit power; enable or disable Full Eco Mode. | `Read`: base state and registered devices when returned. | `R,D,S,C`; switches/selects; PIN only in a secret options flow. | Base state, device count, current power and eco mode, PIN write-only behavior, registration after save. | `OFF,PUB`; phone settings endpoints are candidates. `GET` DECT settings; `FORM` full form and dependencies; `ROUNDTRIP,VARIANT`. |
-| DECT handsets, 131-136 | Start registration; rename a handset; assign incoming and outgoing numbers; set call waiting; unregister a handset. | `Read`: handset inventory and registration when returned. | `R,D,X,S,C`; bounded enrollment action, row editor, confirmed unregister action. | Stable handset ID, enrollment lifetime, complete assignments, call state, list and registration after action. | `OFF,PUB`. `GET` handset list and edit pages; `FORM` enroll/edit/unregister; `ROUNDTRIP`; unregister requires target confirmation. |
-| DECT repeaters, 137 | Register and unregister a CAT-iq 2.0 repeater. Registration requires PIN 0000, full power, and Full Eco Mode off. | `Read`: only if present in returned DECT data. | `R,D,X,C`; preconditioned enrollment action and confirmed unregister action. | Stable repeater ID, all three prerequisites, enrollment lifetime, list after action. | `OFF`. `GET` repeater page; `FORM` register/unregister; `ROUNDTRIP,VARIANT` with hardware. |
-| IP PBX and IP phones, 138-144 | Enable the built-in IP PBX; create up to three IP phones; display one-time generated credentials; rename phones; assign incoming and outgoing numbers; delete phones. UDP is required. | `Read`: PBX and IP-phone state when returned. | `R,D,X,S,C`; PBX switch, structured editor, one-time secret download, confirmed delete. | PBX state, stable phone IDs, credential one-time behavior, full assignments, registration and list after save. | `OFF,PUB`; `IPPhoneHandler.json` is a candidate. `GET` PBX pages; `FORM` enable/create/edit/delete; secret audit; `ROUNDTRIP,VARIANT`. |
-| Number use and call behavior, 145-150 | Select multiple or single simultaneous use per number; reject when busy; suppress caller ID; choose Telekom call-encryption level; enable HD Voice; choose dialing delay; enable spoken/displayed telephony status. | `Read`: registration and active-call state only. | `R,D,S,C`; per-line switches/selects. | Stable line IDs, every current flag and enum, active-call precondition, registration and selected value after save. | `OFF,PUB`; `PhoneSettings.json` is a candidate. `GET` every listed page; `FORM` complete forms; `ROUNDTRIP,VARIANT`. |
-| Automatic number memory, 151 and 163 | Enable or disable automatic speed dial; clear its stored numbers from UI or telephone keypad. | `None` | `R,X,S,C`; switch and confirmed clear action. | Enabled state, count or generation if exposed, explicit clear acknowledgement. Never expose stored numbers unless the firmware already treats them as call-history data. | `OFF`. `GET` the speed-dial page; `FORM` enable and clear; `ROUNDTRIP,VARIANT`. |
-| Call lists, 152-153 | View and sort missed, accepted, and dialed calls; print or export each list; delete each list. | `Read`: call records when returned. | `RO,X,S,C`; event/history view, private user download that never enters diagnostics, and confirmed delete per list. | List type, stable record identity if any, timestamp, number/name, line, duration, complete export, empty list after deletion. | `OFF,PUB`; `PhoneCalls.json` is a candidate. `GET` all three lists and export response; `FORM` delete; privacy audit; `ROUNDTRIP` only with explicit permission. |
-| Phonebooks, 154-161 | Create up to five phonebooks; name one; link an online address book and choose refresh interval; create, edit, and delete entries; import and export; assign a phonebook to handsets. | `Read`: phonebook counts and limited data when returned. | `R,X,S,C`; structured editor and file import/export; confirmed deletion. | Stable book, contact and handset IDs, online-link state, interval enum, lossless import/export format, full list after save. | `OFF,PUB`; `PhoneBook.json` is a candidate. `GET` settings, entries, assignments, and export; `FORM` all CRUD/import paths; privacy audit; `ROUNDTRIP,VARIANT`. |
-| Telephone keypad functions, 162-175 | Internal calls; shortened dialing; one-call CLIR/CLIP; hold, consultation and toggling; accept or reject call waiting; three-way conference; internal and external transfer; call pickup; immediate, delayed, busy, and alternate-number forwarding; Wi-Fi on/off. | `Partial`: the Wi-Fi switch covers Wi-Fi state, but no keypad call action is exposed. | `D,S,C`; most are live telephone/provider operations, not persistent router settings. | Current call and line context, provider acknowledgement, target number, unambiguous result. | `OFF` only. These are documented telephone keypad sequences, not documented local HTTP controls. Require `GET` proof of a queryable state and `FORM` proof of a router-local command before considering HA actions; otherwise leave them to the telephone. |
-| Front-panel paging, 114 | Start a paging call to connected telephones or handsets with the physical `+` button. | `None` | `D,C`; bounded action only. | Registered target set, paging lifetime, in-progress and completion state. | `OFF` only. `GET` phone status and downloaded page resources for a local paging contract; `FORM,ROUNDTRIP,VARIANT`. |
+| Capability | Coverage | Implemented subset and remaining limit | Owner |
+| --- | --- | --- | --- |
+| Initial setup wizard | Missing | Setup/password/write-blocked diagnostics only; provider editor is not first boot. | Native diagnostics |
+| Router password | Interactive | Isolated old/new login proof, exact ACK, requester-bound confirmation, proven HA persistence/recovery latch; no credential cycling. | Password transaction modules |
+| Router-Pass | Partial | Private text from fresh Wi-Fi data; optional entered router password unverified, no QR-print parity/persistent card. | File-transfer transaction |
+| Front LED schedule | Interactive | Native mode/interval; not general display timeout. | System editor |
+| Wi-Fi/USB Energy | Interactive | Separate full form, wired prerequisites and native hidden/select preservation. | System editor |
+| Display parental rule | Interactive | None or exact current profile, revision-bound choices. | System-extra editor |
+| Automatic cloud backup | Interactive | Eligible EasySupport-dependent flag; not local backup/hotline consent. | System editor |
+| Local backup | Interactive | Private bounded native download/password/no-store/cleanup; not restorability certificate. | File-transfer transaction |
+| Restore backup | Interactive | Approved digest-bound upload, native status and recovery; no redirect-based configuration proof. | File-transfer transaction |
+| Reboot | Interactive | Guarded command/deferred recovery. | `management.py` |
+| Factory reset | Interactive | Fresh typed one-shot preflight/backup/physical attestations. Attestations are not verified backups; recovery manual. | `maintenance.py` |
+| DECT reset | Interactive | Explicit retain/remove covers handsets/repeaters, fresh state/recovery. | Maintenance |
+| Router firmware | Interactive | Fresh offered image/digest or manual upload. Accepted is not installed-version proof. | System actions/file transfer |
+| Mesh firmware | Interactive | Mesh-wide offered/manual update with identified-node preflight; unsupported/local-only offers excluded. | System actions/file transfer |
+| System information/services | Read only | Returned identity/version/uptime/DSL/WAN/health/service summaries. Service lists not writable; unknown fields not auto-exposed. | Read contracts/surfaces |
+| Distinct web-UI build version | Missing | Exact normalized source absent; device firmware cannot be relabeled. | Firmware-history distinction |
+| Detailed logging | Interactive | Exact module flag, no messages in settings result. | System editor |
+| System log download/clear/filter | Partial | Native private Syslog download, complete unfiltered-list clear and exact seven-category filter editor. No in-panel raw-message viewer. Missing/filtered lists cannot authorize clear. | File transfer/maintenance/small controls |
+| Email notifications | Interactive | Conditional account/recipient/events; fresh changed credentials. Readback not delivery/password proof. | System-extra editor |
+| HTTPS access | Interactive | Exact flag, explicit reconnect/certificate/HA scheme handling; no automatic TLS downgrade. | System editor |
+| External modem/Link-LAN1 | Interactive | Native flag/mobile-cabling prerequisites/reconnect; not arbitrary port/routing editor. | System editor |
+| DSL modem mode | Interactive | Disruptive maintenance and backup/wiring/physical/firewall-loss attestations; router-mode recovery physical. | Maintenance |
+| Local EasySupport/updates | Interactive | Standard/eligible BNG branches and dependencies; account/hotline separate. | System-extra editor |
+| Global firewall switch | Read only / excluded writes | Returned state; no documented editable switch. Port rules separate. | Official manual/native state |
+| Safe-mail-server allowlist | Excluded | Model unsupported; separate from email notifications. | [Telekom guidance](https://www.telekom.de/hilfe/geraete/router/speedport/e-mail-server-bearbeiten) |
+| Device Manager/hotline/account | Excluded | Account login/consent/remote password/reconfiguration external and user-operated. | Official EasySupport documentation |
+| Physical display/keys/speed test | Partial / excluded | Proven web equivalents above; no display-only speed test/keypad/unbound reset invented. | Official manual/native forms |
 
-## Network, Wi-Fi, VPN, and storage
+## Remaining contracts and live validation
 
-| Family and manual pages | Documented settings and actions | Coverage | Risk and surface | Required state and readback | Evidence and exact next proof |
-| --- | --- | --- | --- | --- | --- |
-| Connected devices, 180-185 | Refresh and change view; open device UI; manually add a name and MAC address; rename; delete disconnected records; enable a fixed IPv4 address and select the address. | `Partial`: devices, presence, and `access_possible` Internet-access allowance read; client rename; fixed-DHCP flag toggle. Internet pause, manual add, delete, and address selection are absent. | `R,X,S,C`; per-device text/switch/select; confirmed deletion. | Stable source kind, row ID and MAC, complete current row, valid address list, identity unchanged after save. | `OFF,REPO,PUB`; `DeviceList.json` is proven for rename and the fixed-DHCP flag only. Client access pause is blocked by `ENDPOINT`, `FORM`, `ACK`, and `READBACK`; `access_possible` remains read-only. Manual add/delete/address selection also need `IDENTITY`, `FORM`, `ACK`, `READBACK`, `ROUNDTRIP`, and `VARIANT`. |
-| Mesh inventory and mode, 186-189 and 315 | Show topology/list, link type, signal, upload/download link rates, IP, firmware, and attached clients; enable or disable Mesh; pair up to five repeaters through the documented enrollment path. | `Read`: topology and node metrics when returned. | `RO,R,D,C`; topology view, Mesh switch only with rollback, bounded enrollment action. | Stable node IDs, base state, topology, enrollment lifetime, every node restored after change. | `OFF,PUB`; `Mesh.json` is a candidate. `GET` topology, node detail and enable/enrollment pages; `FORM`; `ROUNDTRIP,VARIANT` with Mesh hardware. |
-| Main Wi-Fi and bands, 190-191 | Enable or disable Wi-Fi; use both 2.4 and 5 GHz or a selected band. | `Partial`: global Wi-Fi write; per-band state is read only. `wlan_band=0`, `1`, and `2` mean both, 2.4 GHz only, and 5 GHz only; dedicated per-radio fields override this fallback. | `R,D,C`; global and band switches with disconnect warning. | Global and both band states, HA connection path, fresh state after save. | `OFF,REPO,PUB`. Per-band write blocked by the complete shared `FORM`, `ACK`, independent `READBACK`, and disconnect recovery; then `ROUNDTRIP,VARIANT`. |
-| Wi-Fi schedule, 192-193 | Choose no schedule, one daily interval, or per-day intervals; optionally disconnect associated clients at the end. | `Read`: schedule-enabled state may be returned; no editor. | `R,D,C`; weekly schedule editor. | Mode, all intervals, cross-midnight behavior, disconnect flag, next transition, complete schedule after save. | `OFF,PUB`; `WLANBasic.json` and `WLANSettings.json` are candidates. `GET` schedule data; `FORM`; `ROUNDTRIP,VARIANT`. |
-| Main Wi-Fi identity and security, 194-197 | Set separate 2.4 and 5 GHz SSIDs; show or hide each SSID; choose encryption; set the 8-63 character key; show, print, or scan an access pass and QR code. | `Read`: nonsecret radio state only; no identity or key control. | `R,D,S,C`; text/select controls for nonsecrets; key only in a secret options flow; access pass as one-time private download, never entity state. | Both SSIDs, visibility, encryption enums, masked-key behavior, associated-client recovery after save. | `OFF,PUB`. `GET` Name and encryption page and full shared form; `FORM`; secret audit; `ROUNDTRIP,MAINT,VARIANT`. |
-| Radio power, mode, and channel, 198-203 | Per band choose full, medium, or low transmit power; choose transmission mode; choose automatic or permitted channel. | `Read`: current channels and some band state; no settings. | `R,D,C`; per-band selects. | Per-band power, firmware-provided mode and channel enums, regulatory channel set, Mesh dependency, fresh radio state. | `OFF,PUB`; `WLANSettings.json` is a candidate. `GET` the complete radio form; `FORM`; `ROUNDTRIP,VARIANT`. |
-| Prioritized Wi-Fi, 204-205 | Enable a separate prioritized WLAN; set SSID, encryption, and key; show connected devices. It reserves up to 50 percent of Wi-Fi and upload bandwidth. | `Partial`: on/off switch and client/state read; no SSID, encryption, or key control. | `R,D,S,C`; switch and secret options flow. | Enabled state, SSID, encryption enum, masked-key behavior, client list, state after save. | `OFF,REPO,PUB`. `GET` complete prioritized-Wi-Fi form; `FORM`; secret audit; `ROUNDTRIP,VARIANT`. |
-| Guest Wi-Fi, 206-212 | Enable; choose duration or permanent operation; disconnect clients at expiry; permit guest WPS; set SSID, encryption, key, and Internet-only isolation; display, print, or scan the guest access pass and QR code. | `Partial`: on/off switch and state/client read; other settings absent. | `R,D,S,C`; switch plus structured secret options flow. | Enabled state, expiry, disconnect and WPS flags, SSID, encryption, isolation, masked-key behavior, guest clients. | `OFF,REPO,PUB`. `GET` complete guest form; `FORM`; secret audit; `ROUNDTRIP,VARIANT`. |
-| Wi-Fi environment scan, 213 | Scan 2.4 or 5 GHz for nearby networks; view graph or list; refresh. | `None` | `RO,C`; on-demand diagnostic action with short-lived results. Nearby SSIDs are private data. | Requested band, scan timestamp, channel, strength and sanitized SSID handling, completion or timeout. | `OFF`. `GET` scan page and result resource; `FORM` only if starting a scan requires an action request; privacy audit; `VARIANT`. |
-| WPS, 214-216 | Enable or disable WPS; start a two-minute push-button enrollment window. Requires visible Wi-Fi and WPA2/WPA3. | `Partial`: start action and status read; WPS enable setting absent. | `R,D,C`; enable switch and bounded start action. | Enabled state, Wi-Fi visibility and encryption prerequisites, active window, completion or timeout. | `OFF,REPO,PUB`; start uses `WLANAccess.json`, status uses `WPSStatus.json`. `GET,FORM,ROUNDTRIP` for the enable flag; `VARIANT`. |
-| Wi-Fi allowlist, 217-218 | Enable an allowlist; permit or deny each known device; add missing devices through device management. Mesh cannot be created or expanded while active. | `Read`: allowlist-enabled state may be returned; no list editor. | `R,D,X,C`; device matrix with lockout warning and recovery confirmation. | Current mode, full permitted-device set, HA host path and MAC, Mesh state, post-save connectivity. | `OFF,PUB`. `GET` allowlist and device data; `FORM` full set semantics; `ROUNDTRIP,MAINT,VARIANT`. |
-| Router LAN identity, IPv4, and ULA, 219-224 | Show router name, MAC, and local addresses; change local IPv4; enable ULA; change local IPv6 prefix/address. | `Read`: LAN addressing and ports when returned. | `R,D,X,C`; typed network fields with reachability warning and rollback instructions. | Current addresses, DHCP pool, HA route, collision checks, new management URL, fresh state after reconnect. | `OFF,PUB`; `LAN.json` is a candidate. `GET` Router addresses; `FORM` IPv4, ULA and IPv6 fields; `ROUNDTRIP,MAINT,VARIANT`. |
-| DHCP, 225-226 | Enable or disable DHCP; set pool start and end; set lease duration. | `Read`: DHCP state and leases when returned; per-client fixed flag can be changed. | `R,D,X,C`; switch and validated network fields. | Router subnet, pool, reservations, lease enum/range, HA address path, fresh server state. | `OFF,REPO,PUB`; `LAN.json` is a candidate. `GET` complete DHCP form; `FORM`; `ROUNDTRIP,MAINT,VARIANT`. |
-| Traffic prioritization, 227 | Enable or disable telephony priority; select up to two devices whose Internet-bound traffic is prioritized. | `None` | `R,D,C`; telephony switch and two-device selector. | Stable device IDs, telephony priority, ordered or unordered device set, full state after save. | `OFF`. `GET` Prioritization page and device choices; `FORM`; `ROUNDTRIP,VARIANT`. |
-| DNS rebind protection, 228 | Enable or disable protection globally; add multiple domain exceptions. | `Read`: global state when returned. | `R,D,S,C`; protection switch with strong warning and structured exception editor. | Global flag, normalized complete exception list, duplicate and wildcard rules, final state. | `OFF,PUB`. `GET` protection page; `FORM` full-list save semantics; `ROUNDTRIP,VARIANT`. |
-| WireGuard VPN, 229-235 | Create and name an access; generate one-time QR code and configuration download; create more accesses; delete an access; deleting the last access disables VPN. | `Read`: VPN profile enablement, separate connection state, type, and peer state when returned. `vpn_status` alone never claims a connected tunnel. | `R,X,S,C`; create action with one-time private download; peer list; typed-confirm delete. | Stable peer ID, enabled and connected state, one-time secret behavior, peer list after create/delete, DynDNS dependency. | `OFF,PUB`; WireGuard and VPN JSON names are endpoint candidates only. Writes are blocked by exact save `ENDPOINT`, complete `FORM`, `ACK`, distinct enabled/connected `READBACK`, peer `IDENTITY`, and key `SECRET` handling; then `ROUNDTRIP,VARIANT`. |
-| SmartHome activation, 236-237 | Enter an activation code to link the MagentaZuhause service. | `None` | `R,S,C`; reauthentication/options flow, never an entity. | Unlinked/linked state, activation-code write-only behavior, service result, account unlink path if available. | `OFF`. `GET` SmartHome page and fetched resources; `FORM`; secret/privacy audit; `ROUNDTRIP,VARIANT`. |
-| USB port, storage, printer, and shares, 238-242 | Enable USB; show attached storage/printer; enable file/printer sharing; choose folder; make it read only; require login and set password; delete a share. | `Read`: devices, mount, capacity, free space, media state, and temperature when returned. | `R,D,X,S,C`; switches and share editor; password in options flow; confirmed delete. | Stable device/share IDs, mount state, folder identifier, read-only and auth flags, masked secret, list and accessibility after save. | `OFF,PUB`; `NASDevice.json` is a candidate. `GET` USB and share pages; `FORM`; secret audit; `ROUNDTRIP,VARIANT` with storage and printer. |
-| Workgroup and media folders, 243-246 | Change workgroup; create named media folders; select paths; enable or disable a folder; add more folders; delete. | `Read`: media-server and storage state when returned. | `R,D,X,S,C`; text, switches, structured editor, confirmed delete. | Workgroup and stable folder IDs, path, enabled state, index progress, full list after save. | `OFF,PUB`; `NASMediacenter.json` is a candidate. `GET` both pages; `FORM`; `ROUNDTRIP,VARIANT`. |
+1. Resolve routing full/create and NAS picker/mkdir lifecycle evidence.
+2. An in-panel raw system-message viewer remains absent; private native log
+   download and category filtering are available. Unobservable learned-number
+   clearing must not report verified deletion.
+3. Keep undocumented IPv6, legacy WPS PIN, UPnP mappings, VPN mode/import,
+   per-device pause and unsupported physical/account functions unavailable.
+4. Obtain explicit permission for real change/readback/restoration tests,
+   including online phonebook linking and category-history behavior.
+   Destructive/firmware work needs maintenance window, backup, exact target and
+   physical recovery. No percentage or fixture replaces that validation.
 
-## System, maintenance, security, and front panel
+## Primary references and limits
 
-| Family and manual pages | Documented settings and actions | Coverage | Risk and surface | Required state and readback | Evidence and exact next proof |
-| --- | --- | --- | --- | --- | --- |
-| Router password, 251-253 | Change the local device password; use EasySupport Device Manager to replace a forgotten password; alternatively factory reset. | `None` | `D,X,S,C`; local reauthentication flow requiring old and repeated new password. EasySupport reset remains an external Telekom account flow. | Current session ownership, password constraints, success followed by login with the new password, secure credential replacement in the config entry. | `OFF`. `GET` password page and mask behavior; `FORM`; secret audit; `ROUNDTRIP,MAINT`. Factory reset is a separate row. |
-| Front LEDs and schedule, 254 and 315 | Enable scheduled LED off time; set interval; toggle the standard 23:30-07:30 schedule from the display. | `None` | `R,C`; switch and start/end time controls. | Enabled state, interval, cross-midnight behavior, front-panel override and fresh state. | `OFF`. `GET` Energy page; `FORM`; `ROUNDTRIP,VARIANT`. |
-| LAN port status, 255 | Show link state and speed for each LAN port. | `Read`: linked ports and related metrics when returned. | `RO,C`; diagnostic entities. | Stable port identity, link state, negotiated rate, timestamp. | `OFF,REPO,PUB`. `GET` any fields not normalized; `VARIANT` with different port states. |
-| Energy settings, 256-257 | Enable Wi-Fi; choose both bands, 2.4 GHz only, or 5 GHz only; set transmit power; enable USB. | `Partial`: global Wi-Fi write; other energy-form controls absent. | `R,D,C`; switches/selects with connection warning. | All shared Wi-Fi and USB fields from one fresh form, HA path, complete post-save state. | `OFF,REPO`. `GET` complete Energy form; `FORM` shared-field preservation; `ROUNDTRIP,VARIANT`. |
-| Automatic cloud backup, 258 and 291 | Enable or disable automatic backup and restoration of Wi-Fi name and key to Telekom servers. | `None` | `R,S,C`; privacy-labeled switch, no secret state. | Enabled state, provider and rental eligibility, last backup if returned, fresh flag. | `OFF`. `GET` backup and EasySupport pages; `FORM`; privacy audit; `ROUNDTRIP,VARIANT`. |
-| Local configuration backup, 259 | Export all router settings, optionally encrypted with a password. | `None` | `RO,S,C`; explicit private file download with optional password prompt. | Download response type, filename, encryption behavior, size, and redaction policy. The backup must never enter diagnostics or entity state. | `OFF`. `GET` backup page and user-authorized export response; `FORM` only if export uses a request; secret/file audit; `VARIANT`. |
-| Configuration restore, 260 | Upload a saved configuration, provide its password, restore it, and reboot automatically. | `None` | `D,X,S,C`; opt-in file-upload action with typed confirmation, current backup, and recovery instructions. | File compatibility and integrity, password handling, current backup, progress, reboot and successful login. | `OFF`. `GET` restore page; `FORM` upload contract without sending a file; actual validation requires `MAINT` on an explicitly authorized router or spare device. |
-| Router reboot, 261 and 304 | Restart while preserving settings; expected completion is about three minutes. | `Write`: reboot button. | `D`; confirmed action, no automatic retry. | Request acknowledgement, expected loss, router identity and polling after return. | `OFF,REPO`; current `Reboot.json` contract is implemented. Add dashboard confirmation and retain the existing recovery handling. |
-| Factory reset and automatic reconfiguration, 253, 262-263 and 308-311 | Reset all settings locally; optionally trigger EasySupport automatic reconfiguration through Telekom Device Manager. | `None` | `X,D,S,C`; opt-in typed-confirm action only after a fresh downloadable backup. Remote reconfiguration remains an external account flow. | Exact router identity, backup completion, reset acknowledgement, factory-state detection, setup and recovery route. | `OFF`. `GET` Reset page and resources only. `FORM` without posting. Any execution requires separate user authorization, `MAINT`, physical access, and a recovery test. |
-| DECT reset, 264 | Reset DECT settings; optionally keep handsets and repeaters registered; router restarts. | `None` | `X,D,C`; typed-confirm action with retain-devices option. | Base state, registered device IDs, retain flag, reboot and post-reset registration list. | `OFF`. `GET` Reset page; `FORM`; actual validation requires `MAINT` and explicit permission. |
-| Mesh restart and reset, 265-266 | Restart all connected Mesh repeaters; reset all connected repeaters to factory settings and break the Mesh network. | `Read`: Mesh topology only. | Restart `D`; reset `X,D,C`; separate actions, with target count and typed confirmation for reset. | Stable complete node set, online state, action scope, topology restored or expected empty state. | `OFF,PUB`. `GET` Mesh maintenance page; `FORM`; restart needs `ROUNDTRIP,MAINT`; reset needs separate explicit authorization and recovery plan. |
-| Router firmware, 267-269 | Check online; show installed/latest versions and release information; install and reboot; alternatively upload a firmware file and install. | `Read`: installed/latest metadata when returned; no proven install command is currently exposed. | `D,X,C`; update entity for router-approved online update; manual upload requires explicit file action and integrity checks. | Router model and hardware revision, versions, image provenance and checksum, progress, reboot, final version and connectivity. | `OFF,PUB`; `FirmwareUpdate.json` and `Update.json` are candidates. `GET` all update states; `FORM` check/install/upload; online install needs `MAINT`; manual upload needs a spare-device or recovery validation. |
-| Mesh firmware, 267 and 270-272 | Check all Mesh devices; show versions and release information; install supported updates and restart a repeater; open another device UI when direct install is unsupported; manually upload firmware. | `Read`: node firmware when returned. | `D,X,C`; per-node update entity and explicit upload action. | Stable node/model ID, support flag, versions, image match, progress, restart, node returns to topology. | `OFF`. `GET` Mesh update page and per-node data; `FORM`; `ROUNDTRIP,MAINT,VARIANT` with each supported node class. |
-| System information and active services, 273-274 | Show device data and versions; show and refresh active services, network services, SmartHome client services, extended service pages, system information, and analysis tools. | `Read`: model, serial, firmware, uptime, health, and diagnostics; active-service inventory is incomplete. | `RO,S,C`; diagnostic entities and a redacted download. | Stable service identifiers, bind scope and status, timestamps; redact serial, addresses, numbers, hostnames, and tokens from diagnostics. | `OFF,REPO`. `GET` System information, Active services and analysis resources; privacy audit; `VARIANT`. |
-| System messages, 275-276 | Enable detailed logging; filter and refresh messages; export; delete displayed messages. | `Read`: messages when returned; no detailed-mode, export, or delete control. | `RO,R,X,S,C`; redacted viewer/download, switch, confirmed clear action. | Detailed flag, full filter enum, cursor/timestamp, lossless export, empty state after clear; redact network and telephone data. | `OFF,PUB`; `SystemMessages.json` is a candidate. `GET` list/export; `FORM` detailed flag and delete; privacy audit; `ROUNDTRIP`. |
-| Email notifications, 277-278 | Enable mail; select provider; enter sender credentials and recipient; enable daily report; select event types; edit or cancel. | `None` | `R,S,C`; secret options flow and event checklist. | Enabled state, provider and nonsecret SMTP fields, masked password, recipient, report and event flags, last delivery result if returned. | `OFF`. `GET` notification page; `FORM` every provider and cancel path; secret audit; `ROUNDTRIP,VARIANT`. |
-| DSL modem mode, 279-281 | Download a configuration backup; switch to modem mode and reboot. Firewall and all other router functions are disabled. Return to router mode by factory reset and restore or reconfigure. | `None` | `X,D,S,C`; typed-confirm maintenance action only after verified backup and recovery instructions. | Line type, Link/LAN1 and HA connection path, backup completion, mode, management address `169.254.2.1`, physical recovery path. | `OFF`. `GET` DSL modem page; `FORM` without posting. Any execution requires separate permission, physical access, `MAINT`, and a recovery test. |
-| HTTPS access, 282 | Enable secure access to the local web interface. The router certificate may cause a browser warning. | `None` | `R,D,C`; switch with certificate and integration-reconfiguration guidance. | Current HTTP/HTTPS state, certificate identity, both reachable URLs, integration scheme and TLS verification setting after save. | `OFF`. `GET` Security page; `FORM`; `ROUNDTRIP,MAINT,VARIANT`. |
-| Firewall, 283 | Show that the integrated firewall is active. The official UI intentionally provides no editable firewall setting. | `Read`: firewall state when returned. | `RO,C`; binary sensor only. | Reported state and timestamp. | `OFF,REPO`. No write contract should be sought because the documented firmware has no setting to change. |
-| External modem and Link/LAN1 mode, 284 and 313-315 | Choose external-modem use for fiber ONT or 5G receiver, or use Link/LAN1 as a normal LAN port. External modem disables internal DSL; the display shows current mode. | `Read`: WAN and link state when returned; no mode control. | `R,D,X,C`; confirmed select with cabling and recovery warning. | Current line and port mode, link state, HA path, DSL/ONT/5G prerequisites, Internet restored after save. | `OFF`. `GET` External modem page and port state; `FORM`; `ROUNDTRIP,MAINT,VARIANT`. |
-| EasySupport, 288-297 | Automatic setup; automatic firmware update; automatic Wi-Fi backup; one-time or standing remote hotline support; Device Manager overview, details, number assignment, password replacement, and automatic reconfiguration; enable or disable eligible local services. Rental devices may not permit disablement. | `Read`: remote-management and update state may be returned; no controls. | `R,D,X,S,C`; privacy-labeled options flow. Telekom account operations remain external links, not local router actions. | Rental/provider eligibility, separate flags for automatic setup, remote support and updates, cloud-backup state, external consent state. | `OFF`. `GET` EasySupport page and fetched JSON; `FORM` eligible local toggles; privacy audit; `ROUNDTRIP,VARIANT`. Do not automate Telekom account login or hotline consent. |
-| Front-panel display and keys, 12-15 and 314-315 | Toggle Wi-Fi; start WPS or DECT enrollment; show status and SSID; configure whether the display may show the Wi-Fi key; enable guest Wi-Fi for 24 hours; run the displayed speed test; reset Wi-Fi credentials and show a new QR code; enable EasySupport; toggle LED night mode; show firmware, connection duration, ping, Link/LAN1 mode, and Mesh status. | `Partial`: Wi-Fi and guest switches, WPS start, and equivalent read-only status. Physical-only actions and display password visibility are absent. | `RO,R,D,X,S,C`; expose only proven router-local equivalents. Credential reset needs typed confirmation and private one-time display. | Display visibility setting, exact action lifetime and result, physical versus HTTP ownership, credential rotation and reconnect state. | `OFF`. `GET` display-related settings and downloaded page resources; `FORM` only for proven web equivalents; secret audit; `ROUNDTRIP,MAINT,VARIANT`. |
+References are retained from prior review; this documentation update made no
+router requests and did not refresh online sources. Manuals document behavior,
+not private JSON schemas.
 
-## Evidence sequence
+- [Smart 4R manual](https://www.telekom.de/hilfe/downloads/bedienungsanleitung-speedport-smart-4r).
+- [Smart 4R/4R2 Typ A firmware history](https://www.telekom.de/hilfe/downloads/firmware-aenderungen-speedport-smart-4r-4r2-typ-a).
+- [Smart-series support](https://www.telekom.de/hilfe/geraete/router/speedport/smart-serie) and [manual configuration](https://www.telekom.de/hilfe/hilfe-bei-stoerungen/speedport-manuell-konfigurieren).
+- [EasySupport functions](https://www.telekom.de/hilfe/geraete/service/einrichtung-support/easy-support-funktion) and [firmware guidance](https://www.telekom.de/hilfe/geraete/router/speedport/firmware-update).
+- [Telekom developer catalogue](https://developer.telekom.com/en/products), not a local advertised API/form substitute.
+- [TR-064 Issue 2](https://www.broadband-forum.org/pdfs/tr-064-2-0-0.pdf), [TR-181 Device:2](https://device-data-model.broadband-forum.org/), [UPnP ConfigurationManagement:2](https://www.upnp.org/specs/dm/UPnP-dm-ConfigurationManagement-v2-Service-20120216.pdf), [BasicManagement:2](https://upnp.org/specs/dm/UPnP-dm-BasicManagement-v2-Service.pdf) and [IGD 2](https://openconnectivity.org/developer/specifications/upnp-resources/upnp/internet-gateway-device-igd-v-2-0/) are generic standards, not proof of this firmware's actions.
 
-Management work should proceed by family, not by adding guessed controls in bulk:
-
-1. Record model, hardware revision, firmware, provider mode, line type, attached 5G/USB/Mesh/DECT hardware, and the exact menu set. Do not record credentials or personally identifying values.
-2. Run GET-only discovery. The only POST requests allowed in this phase are the router's required login and logout requests. Fetch one page and its referenced JSON at a time, with the correct Referer, through one serialized session.
-3. Save only a sanitized contract fixture: endpoint, authentication requirement, Referer, response shape, stable IDs, data types, enum candidates, dependency flags, and which fields are masked or omitted. Remove values, tokens, nonces, keys, passwords, phone numbers, contacts, call records, public and private IP addresses, MAC addresses, SSIDs, hostnames, serial numbers, and free-text logs.
-4. Obtain the complete form without sending it. Use downloaded firmware web resources or a user-performed browser request capture. Record every submitted field, unchanged hidden field, CSRF or session requirement, allowed range, acknowledgement shape, and independent GET used for verification.
-5. Implement one narrow action. Preserve unrelated fields, fail closed on missing or ambiguous state, serialize it with polling, and expose it only when the current response proves the capability.
-6. Ask for explicit permission before `ROUNDTRIP` or `MAINT`. A reversible test records the pre-state, changes one field, verifies it, restores the original value, and verifies restoration. A disruptive or destructive test also requires a current backup, maintenance window, physical recovery path, and a named target.
-7. Repeat capability checks on relevant firmware and hardware variants before calling a family generally supported.
-
-Completion for a row means the official behavior, request contract, preconditions, sensitive-data treatment, acknowledgement, readback, failure behavior, restoration path, and variant gating are all documented and tested. `OFF` alone is never enough to implement a write.
+Actual contracts derive from reviewed firmware HTML/JavaScript and code/tests.
+V3 missing-form conclusions were superseded by actual v4/v5 forms and v6
+validators. Candidate names/third-party projects grant no generic write
+authority. No captured private identities, credentials, addresses, SSIDs,
+contacts, call records or log contents appear in this matrix.

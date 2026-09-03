@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -26,7 +26,9 @@ from custom_components.speedport_smart.api import (
 from custom_components.speedport_smart.const import DOMAIN
 from custom_components.speedport_smart.coordinator import PollGroup
 from custom_components.speedport_smart.hub import SpeedportHub
+from custom_components.speedport_smart.management import get_command_write_contract
 from custom_components.speedport_smart.models import (
+    CandidateInventoryResult,
     CapabilityReport,
     DslMetrics,
     EndpointCapability,
@@ -45,6 +47,7 @@ async def test_setup_and_grouped_data(
     mock_speedport_client: MagicMock,
 ) -> None:
     """Hub discovers semantic capabilities and merges polling groups."""
+    mock_speedport_client.capture_candidate_inventory = AsyncMock()
     mock_speedport_client.get_json.side_effect = lambda endpoint, **_kwargs: (
         {"use_wlan": True} if endpoint == "data/WLANBasic.json" else {"use_mesh": True}
     )
@@ -72,13 +75,130 @@ async def test_setup_and_grouped_data(
     assert normal.generation == 2
     assert slow.generation == 3
     assert hub.get("missing.path", "fallback") == "fallback"
+    mock_speedport_client.capture_candidate_inventory.assert_not_awaited()
 
 
-def test_management_feature_families_publish_their_normalized_roots(
+async def test_devicelist_families_share_one_normal_poll(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """Discovered endpoint aliases make their canonical read roots available."""
+    """Clients and mesh topology share one authenticated DeviceList read."""
+    capability_kwargs = {
+        "endpoint": "data/DeviceList.json",
+        "authenticated": True,
+        "referer": "html/content/network/devices.html",
+    }
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "clients": EndpointCapability("clients", **capability_kwargs),
+                "mesh_topology": EndpointCapability(
+                    "mesh_topology", **capability_kwargs
+                ),
+            }
+        ),
+    )
+    mock_speedport_client.get_json.return_value = {
+        "addmdevice": [{"id": "client-1", "mdevice_mac": "AA:BB:CC:DD:EE:FF"}],
+        "addmeshdevice": [
+            {
+                "id": "mesh-1",
+                "mesh_name": "Mesh repeater",
+                "mesh_downspeed": "1200000000",
+            }
+        ],
+    }
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    normal = await hub.async_update_group(PollGroup.NORMAL)
+    slow = await hub.async_update_group(PollGroup.SLOW)
+
+    mock_speedport_client.get_json.assert_awaited_once_with(
+        "data/DeviceList.json",
+        authenticated=True,
+        referer="html/content/network/devices.html",
+    )
+    mock_speedport_client.observe_feature_data.assert_has_calls(
+        [
+            call("clients", mock_speedport_client.get_json.return_value),
+            call("mesh_topology", mock_speedport_client.get_json.return_value),
+        ]
+    )
+    mock_speedport_client.logout.assert_awaited_once()
+    assert normal.data["clients"]["items"][0]["id"] == "client-1"
+    assert normal.data["mesh"]["nodes"][0]["id"] == "mesh-1"
+    assert slow.data["mesh"]["nodes"][0]["id"] == "mesh-1"
+
+
+def test_observed_schema_is_diagnostics_only_and_copy_safe(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Observed response structure never enters state and cannot mutate its source."""
+    mock_speedport_client.observed_feature_schema = MappingProxyType(
+        {"wifi": (MappingProxyType({"path": "rows[].enabled", "shape": "boolean"}),)}
+    )
+    mock_speedport_client.observed_candidate_schema = MappingProxyType(
+        {
+            "wifi": (
+                MappingProxyType(
+                    {
+                        "endpoint": "data/WLANBasic.json",
+                        "authenticated": True,
+                        "referer": "html/content/network/wlan_basic.html",
+                        "schema": (
+                            MappingProxyType(
+                                {"path": "rows[].enabled", "shape": "boolean"}
+                            ),
+                        ),
+                    }
+                ),
+            )
+        }
+    )
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    first = hub.diagnostics()
+
+    assert "observed_feature_schema" not in hub.data
+    assert "observed_candidate_schema" not in hub.data
+    assert first["observed_feature_schema"] == {
+        "wifi": [{"path": "rows[].enabled", "shape": "boolean"}]
+    }
+    assert first["observed_candidate_schema"] == {
+        "wifi": [
+            {
+                "endpoint": "data/WLANBasic.json",
+                "authenticated": True,
+                "referer": "html/content/network/wlan_basic.html",
+                "schema": [{"path": "rows[].enabled", "shape": "boolean"}],
+            }
+        ]
+    }
+    first["observed_feature_schema"]["wifi"][0]["path"] = "changed"
+    first["observed_candidate_schema"]["wifi"][0]["schema"][0]["path"] = "changed"
+    assert hub.diagnostics()["observed_feature_schema"] == {
+        "wifi": [{"path": "rows[].enabled", "shape": "boolean"}]
+    }
+    assert hub.diagnostics()["observed_candidate_schema"] == {
+        "wifi": [
+            {
+                "endpoint": "data/WLANBasic.json",
+                "authenticated": True,
+                "referer": "html/content/network/wlan_basic.html",
+                "schema": [{"path": "rows[].enabled", "shape": "boolean"}],
+            }
+        ]
+    }
+
+
+def test_feature_families_do_not_publish_unobserved_normalized_roots(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Endpoint discovery alone cannot invent normalized read capabilities."""
     feature_families = {
         "connection_privacy",
         "dect",
@@ -93,11 +213,14 @@ def test_management_feature_families_publish_their_normalized_roots(
         "port_blocking",
         "qos",
         "receiver",
+        "receiver_led",
+        "system_services",
         "telephony",
         "usb_tethering",
         "wifi_access",
         "wifi_configuration",
         "wps",
+        "wps_status",
     }
     report = CapabilityReport(
         authenticated_json=True,
@@ -116,21 +239,414 @@ def test_management_feature_families_publish_their_normalized_roots(
 
     hub._apply_capability_report(report)  # noqa: SLF001 - capability routing contract
 
-    expected_roots = {
-        "dect",
-        "internet",
-        "mobile",
-        "pbx",
-        "qos",
-        "receiver",
-        "security",
-        "system",
-        "telephony",
-        "usb",
-        "wifi",
+    assert hub.capabilities == frozenset(feature_families | {"authenticated_json"})
+
+
+@pytest.mark.parametrize(
+    ("family", "group", "raw", "normalized_roots"),
+    [
+        (
+            "5g",
+            PollGroup.NORMAL,
+            {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
+            frozenset({"mobile", "receiver"}),
+        ),
+        (
+            "clients",
+            PollGroup.NORMAL,
+            {
+                "addmlandevice": [{"id": "lan-1", "connected": "1"}],
+                "addmwlandevice": [{"id": "wifi-1", "connected": "1"}],
+                "addpwlinedevice": [{"id": "powerline-1", "pwline_mode": "mesh"}],
+            },
+            frozenset({"clients", "wifi", "lan", "powerline"}),
+        ),
+        (
+            "dhcp",
+            PollGroup.SLOW,
+            {"lan_use_dhcp": "1", "lan1_device": "1000000000"},
+            frozenset({"dhcp", "lan"}),
+        ),
+        (
+            "lan",
+            PollGroup.SLOW,
+            {
+                "lan_use_dhcp": "1",
+                "lan1_device": "1000000000",
+                "lan4_link_status": "1",
+            },
+            frozenset({"lan", "dhcp", "dsl"}),
+        ),
+        (
+            "lte",
+            PollGroup.NORMAL,
+            {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
+            frozenset({"mobile", "receiver"}),
+        ),
+        (
+            "mobile",
+            PollGroup.NORMAL,
+            {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
+            frozenset({"mobile", "receiver"}),
+        ),
+        (
+            "receiver",
+            PollGroup.NORMAL,
+            {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
+            frozenset({"receiver", "mobile"}),
+        ),
+        (
+            "receiver_led",
+            PollGroup.NORMAL,
+            {"ex5g_signal_5g": "-80", "ex5g_led_mode": "1"},
+            frozenset({"receiver"}),
+        ),
+    ],
+)
+async def test_successful_poll_publishes_every_observed_normalizer_root(  # noqa: PLR0917
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    family: str,
+    group: PollGroup,
+    raw: dict[str, object],
+    normalized_roots: frozenset[str],
+) -> None:
+    """Cross-root reads become discoverable only after their endpoint succeeds."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                family: EndpointCapability(
+                    family,
+                    f"data/{family}.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
+    mock_speedport_client.get_json.return_value = raw
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    assert hub.capabilities == frozenset({"authenticated_json", family})
+
+    await hub.async_update_group(group)
+
+    assert normalized_roots <= hub.capabilities
+    assert normalized_roots <= frozenset(hub.data)
+
+
+async def test_sparse_success_does_not_invent_cross_root_capabilities(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """An observed empty client collection proves no Wi-Fi, LAN, or powerline data."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "clients": EndpointCapability(
+                    "clients",
+                    "data/DeviceList.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
+    mock_speedport_client.get_json.return_value = {"addmdevice": []}
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    assert hub.capabilities == frozenset({"authenticated_json", "clients"})
+    assert hub.get("clients.items") == ()
+    assert not hub.has_capability("wifi")
+    assert not hub.has_capability("lan")
+    assert not hub.has_capability("powerline")
+
+
+async def test_cross_root_read_never_unlocks_an_unproven_write_family(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Observed Wi-Fi client counts cannot authorize a Wi-Fi mutation contract."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "clients": EndpointCapability(
+                    "clients",
+                    "data/DeviceList.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
+    mock_speedport_client.get_json.return_value = {
+        "addmwlandevice": [{"id": "wifi-1", "connected": "1"}]
     }
-    assert feature_families <= hub.capabilities
-    assert expected_roots <= hub.capabilities
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+
+    decision = hub.command_decision("wifi_set_enabled")
+    assert hub.has_capability("wifi")
+    assert decision.capability_supported is False
+    assert decision.executable is False
+
+
+async def test_detail_families_use_independent_exact_get_routes(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Summary evidence cannot hide safe schedule, VPN, or repeater detail."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi_schedule": EndpointCapability(
+                    "wifi_schedule",
+                    "data/WLANBasic.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_basic.html",
+                ),
+                "vpn_details": EndpointCapability(
+                    "vpn_details",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                ),
+                "dect_repeater": EndpointCapability(
+                    "dect_repeater",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                ),
+                "usb": EndpointCapability(
+                    "usb",
+                    "data/NASDevice.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_overview.html",
+                ),
+                "media_server": EndpointCapability(
+                    "media_server",
+                    "data/NASMediacenter.json",
+                    authenticated=True,
+                    referer="html/content/network/nas_mediacenter.html",
+                ),
+            }
+        ),
+    )
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        return {
+            "data/WLANBasic.json": {
+                "wlan_timerule": "1",
+                "wlan_dfrom": "07:30",
+                "wlan_dto": "22:15",
+            },
+            "data/VPN.json": {
+                "vpn_status": "1",
+                "vpn_connected": "1",
+                "addpeer": [{"connected": "1"}, {"connected": "0"}],
+            },
+            "data/DECTRepeater.json": {
+                "addrepeater": [{"id": "1"}, {"id": "2"}],
+            },
+            "data/NASDevice.json": {
+                "addnasdevice": [{"nas_device_name": "USB storage"}],
+            },
+            "data/NASMediacenter.json": {
+                "use_media_server": "1",
+                "addnasmediareplay": [
+                    {"mediareplay_active": "1"},
+                    {"mediareplay_active": "0"},
+                ],
+            },
+        }[endpoint]
+
+    mock_speedport_client.get_json.side_effect = feature_payload
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.SLOW)
+
+    mock_speedport_client.get_json.assert_has_awaits(
+        [
+            call(
+                "data/WLANBasic.json",
+                authenticated=True,
+                referer="html/content/network/wlan_basic.html",
+            ),
+            call(
+                "data/VPN.json",
+                authenticated=True,
+                referer="html/content/internet/vpn.html",
+            ),
+            call(
+                "data/DECTRepeater.json",
+                authenticated=True,
+                referer="html/content/phone/phone_dect_repeater.html",
+            ),
+            call(
+                "data/NASDevice.json",
+                authenticated=True,
+                referer="html/content/network/nas_overview.html",
+            ),
+            call(
+                "data/NASMediacenter.json",
+                authenticated=True,
+                referer="html/content/network/nas_mediacenter.html",
+            ),
+        ],
+        any_order=True,
+    )
+    assert mock_speedport_client.get_json.await_count == 5
+    mock_speedport_client.logout.assert_awaited_once()
+    assert {
+        "wifi_schedule",
+        "vpn_details",
+        "dect_repeater",
+        "usb",
+        "media_server",
+    } <= hub.capabilities
+    assert {"wifi", "vpn", "dect"} <= hub.capabilities
+    assert hub.get("wifi.schedule.daily_from") == "07:30"
+    assert hub.get("vpn.connected_peer_count") == 1
+    assert hub.get("dect.repeater_count") == 2
+    assert hub.get("usb.storage_device_count") == 1
+    assert hub.get("usb.media_share_count") == 2
+    assert hub.get("usb.active_media_share_count") == 1
+
+
+@pytest.mark.parametrize("detail_result", ["daily", "empty", "unsupported"])
+async def test_detail_family_loss_preserves_healthy_base_sources(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    detail_result: str,
+) -> None:
+    """One missing detail source cannot clear overlapping healthy base state."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                ),
+                "wifi_schedule": EndpointCapability(
+                    "wifi_schedule",
+                    "data/WLANBasic.json",
+                    authenticated=True,
+                    referer="html/content/network/wlan_basic.html",
+                ),
+                "vpn": EndpointCapability(
+                    "vpn",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                ),
+                "vpn_details": EndpointCapability(
+                    "vpn_details",
+                    "data/VPN.json",
+                    authenticated=True,
+                    referer="html/content/internet/vpn.html",
+                ),
+                "dect": EndpointCapability(
+                    "dect",
+                    "data/DECTStation.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_mobiles.html",
+                ),
+                "dect_repeater": EndpointCapability(
+                    "dect_repeater",
+                    "data/DECTRepeater.json",
+                    authenticated=True,
+                    referer="html/content/phone/phone_dect_repeater.html",
+                ),
+            }
+        ),
+    )
+    phase = {"detail": "initial"}
+
+    async def feature_payload(endpoint: str, **_: object) -> dict[str, object]:
+        base_payloads: dict[str, dict[str, object]] = {
+            "data/SecureStatus.json": {
+                "use_wlan": "1",
+                "wlan_time_active": "1",
+                "vpn_active": "1",
+                "vpn_connected": "1",
+            },
+            "data/DECTStation.json": {"use_dect": "1"},
+        }
+        if endpoint in base_payloads:
+            return base_payloads[endpoint]
+        if phase["detail"] == "unsupported":
+            raise SpeedportUnsupportedError("detail endpoint disappeared")
+        if phase["detail"] == "empty":
+            return {}
+        if phase["detail"] == "daily":
+            if endpoint == "data/WLANBasic.json":
+                return {
+                    "wlan_timerule": "1",
+                    "wlan_dfrom": "07:30",
+                    "wlan_dto": "22:15",
+                }
+            return {}
+        return {
+            "data/WLANBasic.json": {
+                "use_wlan": "0",
+                "wlan_timerule": "2",
+                "wlan_time_mo_from": "08:00",
+                "wlan_time_mo_to": "21:00",
+            },
+            "data/VPN.json": {
+                "enabled": "0",
+                "addpeer": [{"connected": "1"}, {"connected": "0"}],
+            },
+            "data/DECTRepeater.json": {
+                "use_dect": "0",
+                "addrepeater": [{"id": "1"}, {"id": "2"}],
+            },
+        }[endpoint]
+
+    mock_speedport_client.get_json.side_effect = feature_payload
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.NORMAL)
+    await hub.async_update_group(PollGroup.SLOW)
+
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("vpn.enabled") is True
+    assert hub.get("dect.enabled") is True
+    assert hub.get("wifi.schedule.weekly_day_count") == 1
+    assert hub.get("vpn.connected_peer_count") == 1
+    assert hub.get("dect.repeater_count") == 2
+
+    phase["detail"] = detail_result
+    await hub.async_update_group(PollGroup.SLOW)
+
+    assert hub.get("wifi.enabled") is True
+    assert hub.get("wifi.schedule_enabled") is True
+    assert hub.get("vpn.enabled") is True
+    assert hub.get("vpn.connected") is True
+    assert hub.get("dect.enabled") is True
+    assert hub.get("wifi.schedule.weekly_day_count") is None
+    assert hub.get("vpn.connected_peer_count") is None
+    assert hub.get("dect.repeater_count") is None
+    if detail_result == "daily":
+        assert hub.get("wifi.schedule.daily_from") == "07:30"
+        assert hub.get("wifi.schedule.daily_to") == "22:15"
 
 
 async def test_rate_delta_and_counter_reset(
@@ -144,7 +660,6 @@ async def test_rate_delta_and_counter_reset(
         hass,
         mock_speedport_client,
         fallback_identifier="entry-id",
-        rate_window_seconds=10,
         monotonic_time=lambda: next(times),
     )
 
@@ -212,12 +727,12 @@ async def test_fast_wan_busy_uses_telemetry_backoff_only(
     assert hub.get("management.access.state") == "available"
     assert hub.get("diagnostics.problem") is False
 
-    now[0] = 106.0
+    now[0] = 160.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 2
     assert hub.get("management.access.state") == "available"
 
-    now[0] = 107.0
+    now[0] = 161.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_status.await_count == 4
     assert mock_speedport_client.get_wan_counters.await_count == 2
@@ -276,7 +791,7 @@ async def test_wan_transient_failures_preserve_totals_and_do_not_inflate_busy_re
     mock_speedport_client: MagicMock,
     wan_interface: WanInterface,
 ) -> None:
-    """Transient failures retain totals and do not poison 9801 backoff."""
+    """Transient failures retain totals and keep the fixed WAN cooldown."""
     now = [100.0]
     hub = SpeedportHub(
         hass,
@@ -328,7 +843,7 @@ async def test_wan_transient_failures_preserve_totals_and_do_not_inflate_busy_re
     await hub.async_update_group(PollGroup.FAST)
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-    assert telemetry["retry_in_seconds"] == 5.0
+    assert telemetry["retry_in_seconds"] == 60.0
     assert hub.get("wan.bytes_received") == 20_000
 
 
@@ -347,11 +862,11 @@ async def test_wan_failure_breaks_clean_cadence_proof_streak(
     )
     await hub.async_setup()
 
-    for _ in range(11):
+    for _ in range(4):
         await hub.async_update_group(PollGroup.FAST)
         now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
 
-    assert hub._wan_counter_success_streak == 11  # noqa: SLF001
+    assert hub._wan_counter_success_streak == 4  # noqa: SLF001
     assert hub._wan_counter_effective_interval == 5.0  # noqa: SLF001
     mock_speedport_client.get_wan_counters.side_effect = SpeedportConnectionError(
         "temporary"
@@ -393,14 +908,14 @@ async def test_slow_wan_error_reschedules_from_request_completion(
     await hub.async_update_group(PollGroup.FAST)
 
     assert now[0] == 110.0
-    assert hub._wan_counter_next_poll_at == 112.0  # noqa: SLF001
+    assert hub._wan_counter_next_poll_at == 170.0  # noqa: SLF001
     assert mock_speedport_client.get_wan_counters.await_count == 1
 
-    now[0] = 111.0
+    now[0] = 169.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 1
 
-    now[0] = 112.0
+    now[0] = 170.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 2
 
@@ -438,7 +953,7 @@ async def test_pending_wan_counter_capability_recovers_after_busy_setup(
     assert hub.has_capability("wan_counters")
     assert hub.get("wan.bytes_received") is None
 
-    now[0] = 106.0
+    now[0] = 160.0
     await hub.async_update_group(PollGroup.FAST)
 
     assert hub.has_capability("wan_counters")
@@ -492,11 +1007,11 @@ async def test_pending_wan_counter_capability_is_removed_after_unsupported_probe
     assert "wan_counters" not in hub.capability_report.failures
 
 
-async def test_repeated_wan_busy_uses_exponential_retry_without_raising_floor(
+async def test_repeated_wan_busy_uses_fixed_cooldown_without_raising_floor(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """Repeated 9801 responses slow retries without rejecting a proven cadence."""
+    """Repeated 9801 responses always wait one minute without raising cadence."""
     now = [100.0]
     mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
         "busy"
@@ -509,23 +1024,23 @@ async def test_repeated_wan_busy_uses_exponential_retry_without_raising_floor(
     )
     await hub.async_setup()
 
-    for retry_seconds in (5.0, 10.0, 20.0, 40.0, 60.0):
+    for _ in range(5):
         await hub.async_update_group(PollGroup.FAST)
         telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-        assert telemetry["retry_in_seconds"] == retry_seconds
+        assert telemetry["retry_in_seconds"] == 60.0
         assert telemetry["runtime_floor_seconds"] == 1.0
         assert hub.get("management.access.state") == "available"
         assert hub.get("diagnostics.problem") is False
-        now[0] += retry_seconds
+        now[0] += 60.0
 
     assert mock_speedport_client.get_wan_counters.await_count == 5
 
 
-async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_busy(
+async def test_wan_counter_auto_cadence_learns_and_retries_same_cadence_after_busy(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """Auto cadence learns 5→4→3→2→1 and holds after a busy response."""
+    """Auto learns every five samples and resumes the failed cadence after cooldown."""
     now = [100.0]
     hub = SpeedportHub(
         hass,
@@ -538,7 +1053,7 @@ async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_bus
     await hub.async_setup()
 
     for expected_interval in (4.0, 3.0, 2.0, 1.0):
-        for _ in range(12):
+        for _ in range(5):
             await hub.async_update_group(PollGroup.FAST)
             now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
         assert hub._wan_counter_effective_interval == expected_interval  # noqa: SLF001
@@ -553,22 +1068,22 @@ async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_bus
     await hub.async_update_group(PollGroup.FAST)
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-    assert telemetry["effective_interval_seconds"] == 2.0
-    assert telemetry["state"] == "retrying"
-    assert telemetry["runtime_floor_seconds"] == 2.0
+    assert telemetry["effective_interval_seconds"] == 1.0
+    assert telemetry["state"] == "cooldown"
+    assert telemetry["runtime_floor_seconds"] == 1.0
     assert telemetry["last_stable_interval_seconds"] == 2.0
     assert hub.get("wan.bytes_received") == confirmed_total
     assert hub.get("diagnostics.problem") is False
 
     mock_speedport_client.get_wan_counters.side_effect = None
     now[0] = hub._wan_counter_retry_at  # noqa: SLF001
-    for _ in range(12):
+    for _ in range(5):
         await hub.async_update_group(PollGroup.FAST)
         now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-    assert telemetry["effective_interval_seconds"] == 2.0
-    assert telemetry["state"] == "limited"
+    assert telemetry["effective_interval_seconds"] == 1.0
+    assert telemetry["state"] == "stable"
     assert "wan_counters" not in hub.diagnostics()["endpoint_errors"]
 
 
@@ -590,7 +1105,7 @@ def test_wan_auto_target_is_stable_only_after_target_samples_are_proven(
     initial = hub.diagnostics()["telemetry"]["wan_counters"]
     assert initial["state"] == "learning"
     assert initial["last_stable_interval_seconds"] is None
-    for _ in range(12):
+    for _ in range(5):
         hub._record_wan_counter_success()  # noqa: SLF001
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
@@ -849,6 +1364,62 @@ async def test_protected_failure_restores_latest_public_status_values(
     assert hub.get("dsl.snr_downstream_db") is None
 
 
+async def test_public_status_failure_does_not_restore_errored_family_cache(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Two failed sources cannot revive an older overlapping family value."""
+    now = [100.0]
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wifi": EndpointCapability(
+                    "wifi",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                    referer="html/content/overview/index.html",
+                )
+            }
+        ),
+    )
+    mock_speedport_client.get_status.side_effect = (
+        RouterStatus(
+            info=RouterInfo(model="Speedport Smart 4R"),
+            raw={"use_wlan": "1"},
+        ),
+        SpeedportConnectionError("public status unavailable"),
+    )
+    mock_speedport_client.get_json.return_value = {"use_wlan": "0"}
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        public_status_interval_seconds=1,
+        monotonic_time=lambda: now[0],
+    )
+
+    await hub.async_setup()
+    await hub.async_update_group(PollGroup.FAST)
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert hub.get("wifi.enabled") is False
+
+    mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
+    await hub.async_update_group(PollGroup.NORMAL)
+    assert hub.get("wifi.enabled") is True
+    assert hub.diagnostics()["endpoint_errors"]["wifi"] == ("SpeedportSessionBusyError")
+
+    now[0] = 101.0
+    await hub.async_update_group(PollGroup.FAST)
+
+    assert hub.get("wifi.enabled") is None
+    assert hub.diagnostics()["endpoint_errors"] == {
+        "status": "SpeedportConnectionError",
+        "wifi": "SpeedportSessionBusyError",
+    }
+
+
 async def test_protected_failure_invalidates_every_poll_group_immediately(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -888,6 +1459,11 @@ async def test_protected_failure_invalidates_every_poll_group_immediately(
 
     slow_coordinator = MagicMock()
     hub.attach_coordinator(PollGroup.SLOW, slow_coordinator)
+    hub.record_update_failure(
+        PollGroup.SLOW,
+        RuntimeError("private slow-group failure"),
+    )
+    assert hub.poll_group_health(PollGroup.SLOW)["state"] == "failed"
     mock_speedport_client.get_json.side_effect = SpeedportSessionBusyError("busy")
 
     with patch.object(hub, "_create_management_issue") as create_issue:
@@ -902,10 +1478,15 @@ async def test_protected_failure_invalidates_every_poll_group_immediately(
     propagated = slow_coordinator.async_set_updated_data.call_args.args[0]
     assert propagated.group is PollGroup.SLOW
     assert propagated.data["nat"]["port_forwarding_enabled"] is None
+    assert hub.poll_group_health(PollGroup.SLOW)["state"] == "failed"
 
     slow_coordinator.reset_mock()
     await hub.async_update_group(PollGroup.NORMAL)
     slow_coordinator.async_set_updated_data.assert_not_called()
+
+    mock_speedport_client.get_json.side_effect = get_feature
+    await hub.async_update_group(PollGroup.SLOW)
+    assert hub.poll_group_health(PollGroup.SLOW)["state"] == "healthy"
 
 
 async def test_fast_wan_busy_preserves_protected_poll_groups(
@@ -1181,6 +1762,125 @@ async def test_retry_invalid_credentials_starts_reauth_once(
     mock_speedport_client.probe_capabilities.assert_awaited_once_with()
 
 
+async def test_candidate_inventory_records_complete_counts_without_reload(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Explicit inventory publishes safe counts and preserves runtime capabilities."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+    )
+    await hub.async_setup()
+    report = hub.capability_report
+    mock_speedport_client.capture_candidate_inventory = AsyncMock(
+        return_value=CandidateInventoryResult(
+            attempted=53,
+            succeeded=41,
+            unsupported=12,
+            failed=0,
+            observed=76,
+            excluded=1,
+        )
+    )
+
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload_entry:
+        await hub.async_capture_candidate_inventory()
+
+    diagnostics = hub.diagnostics()["candidate_inventory"]
+    assert diagnostics["status"] == "complete"
+    assert diagnostics["attempted"] == 53
+    assert diagnostics["succeeded"] == 41
+    assert diagnostics["unsupported"] == 12
+    assert diagnostics["failed"] == 0
+    assert diagnostics["observed"] == 76
+    assert diagnostics["excluded"] == 1
+    assert diagnostics["last_attempted_at"] is not None
+    assert diagnostics["last_completed_at"] is not None
+    assert diagnostics["last_error"] is None
+    assert hub.capability_report is report
+    assert hub.get("management.access.state") == "available"
+    reload_entry.assert_not_called()
+
+
+async def test_candidate_inventory_marks_partial_and_retains_counts_on_abort(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Isolated failures are partial; a later critical abort keeps prior counts."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        entry_id="entry-id",
+    )
+    await hub.async_setup()
+    partial = CandidateInventoryResult(
+        attempted=53,
+        succeeded=40,
+        unsupported=12,
+        failed=1,
+        observed=74,
+    )
+    mock_speedport_client.capture_candidate_inventory = AsyncMock(
+        side_effect=[
+            partial,
+            SpeedportDecodeError("encrypted response authentication failed"),
+        ]
+    )
+
+    await hub.async_capture_candidate_inventory()
+    first = hub.diagnostics()["candidate_inventory"]
+    assert first["status"] == "partial"
+    assert first["failed"] == 1
+    assert first["observed"] == 74
+
+    with pytest.raises(HomeAssistantError):
+        await hub.async_capture_candidate_inventory()
+
+    second = hub.diagnostics()["candidate_inventory"]
+    assert second["status"] == "failed"
+    assert second["attempted"] == 53
+    assert second["observed"] == 74
+    assert second["last_completed_at"] == first["last_completed_at"]
+    assert second["last_error"] == "SpeedportDecodeError"
+    assert "encrypted response authentication failed" not in repr(second)
+    assert hub.get("management.access.state") == "unavailable"
+
+
+async def test_candidate_inventory_serializes_against_polling(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The explicit scan owns the hub operation lock until it has logged out."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def capture() -> CandidateInventoryResult:
+        started.set()
+        await release.wait()
+        return CandidateInventoryResult(1, 1, 0, 0, 1)
+
+    mock_speedport_client.capture_candidate_inventory = AsyncMock(side_effect=capture)
+    mock_speedport_client.get_status.reset_mock()
+    capture_task = asyncio.create_task(hub.async_capture_candidate_inventory())
+    await started.wait()
+    poll_task = asyncio.create_task(hub.async_update_group(PollGroup.FAST))
+    await asyncio.sleep(0)
+
+    mock_speedport_client.get_status.assert_not_awaited()
+    assert not poll_task.done()
+
+    release.set()
+    await capture_task
+    await poll_task
+    mock_speedport_client.get_status.assert_awaited_once_with()
+
+
 @pytest.mark.parametrize(
     ("error", "expected_state", "starts_reauth"),
     [
@@ -1335,7 +2035,13 @@ async def test_command_gate_and_verification(
     assert unimplemented_error.value.translation_key == "command_unsupported"
 
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="ok")
-    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+
+    def publish_requested_state(_family: str, _group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": True}})  # noqa: SLF001
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_requested_state
+    )
     normal_coordinator = MagicMock()
     hub.attach_coordinator(PollGroup.NORMAL, normal_coordinator)
     assert hub.supports_command("wifi_set_enabled")
@@ -1348,10 +2054,599 @@ async def test_command_gate_and_verification(
     mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
         enabled=True
     )
+    hub._async_update_verification_family_locked.assert_awaited_once_with(  # noqa: SLF001
+        "wifi", PollGroup.NORMAL
+    )
+    normal_coordinator.async_set_updated_data.assert_called_once()
+
+
+async def test_wps_refresh_only_verification_keeps_full_group_ownership(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """WPS lifecycle refreshes its status family through the normal group."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "wps": EndpointCapability(
+                    "wps",
+                    "data/WLANAccess.json",
+                    authenticated=True,
+                ),
+                "wps_status": EndpointCapability(
+                    "wps_status",
+                    "data/WPSStatus.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    mock_speedport_client.wps = AsyncMock(return_value="accepted")
+
+    def publish_wps_status(_group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"wps_status": "connecting"}})  # noqa: SLF001
+
+    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_wps_status
+    )
+    hub._async_update_verification_family_locked = AsyncMock()  # noqa: SLF001
+
+    assert await hub.async_execute("wps") == "accepted"
+
+    mock_speedport_client.wps.assert_awaited_once_with()
     hub._async_update_group_locked.assert_awaited_once_with(  # noqa: SLF001
         PollGroup.NORMAL
     )
-    normal_coordinator.async_set_updated_data.assert_called_once()
+    hub._async_update_verification_family_locked.assert_not_awaited()  # noqa: SLF001
+
+
+async def test_port_forward_verification_uses_family_owning_rule_readback(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """SecureStatus capability fallback cannot replace NAT rule readback."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "port_forwarding": EndpointCapability(
+                    "port_forwarding",
+                    "data/SecureStatus.json",
+                    authenticated=True,
+                ),
+                "nat": EndpointCapability(
+                    "nat",
+                    "data/PortuwMain.json",
+                    authenticated=True,
+                ),
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.set_port_forward_rule = handler
+    fingerprint = "a" * 64
+    rule = {
+        "id": "3",
+        "name": "HTTPS",
+        "_identity_fingerprint": fingerprint,
+        "active": True,
+    }
+    initial = {"nat": {"port_forward_rules": [rule]}}
+    hub._family_data["nat"] = initial  # noqa: SLF001 - source ownership proof
+    hub._merge_data(initial)  # noqa: SLF001
+
+    def publish_disabled_rule(_family: str, _group: PollGroup) -> None:
+        hub._merge_data(  # noqa: SLF001 - focused readback fixture
+            {"nat": {"port_forward_rules": [{**rule, "active": False}]}}
+        )
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_disabled_rule
+    )
+
+    assert (
+        await hub.async_execute(
+            "set_port_forward_rule",
+            rule_id="3",
+            enabled=False,
+            expected_name="HTTPS",
+            expected_fingerprint=fingerprint,
+        )
+        == "accepted"
+    )
+
+    handler.assert_awaited_once_with(
+        rule_id="3",
+        enabled=False,
+        expected_name="HTTPS",
+        expected_fingerprint=fingerprint,
+    )
+    hub._async_update_verification_family_locked.assert_awaited_once_with(  # noqa: SLF001
+        "nat",
+        PollGroup.SLOW,
+    )
+
+
+async def test_stateful_command_cannot_bypass_contract_readback(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A caller-provided None cannot suppress a stateful command's refresh."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute(
+            "wifi_set_enabled",
+            verify_group=None,
+            enabled=False,
+        )
+
+    assert failure.value.translation_key == "command_unsupported"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+@pytest.mark.parametrize("invalid_enabled", [1, 0, "1", None])
+async def test_command_input_types_are_checked_before_router_io(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    invalid_enabled: object,
+) -> None:
+    """Python's bool/int overlap cannot widen an exact boolean write contract."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=invalid_enabled)
+
+    assert failure.value.translation_key == "command_unsupported"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "rename_client",
+            "clients",
+            "rename_client",
+            {
+                "source_kind": "addmdevice",
+                "row_id": "7",
+                "stable_mac": "00:11:22:33:44:55",
+                "name": "Living Room",
+            },
+        ),
+        (
+            "rename_client",
+            "clients",
+            "rename_client",
+            {
+                "source_kind": "addmdevice",
+                "row_id": "   ",
+                "stable_mac": "00:11:22:33:44:55",
+                "name": "Living-Room",
+            },
+        ),
+        (
+            "set_client_fixed_dhcp",
+            "clients",
+            "set_client_fixed_dhcp",
+            {
+                "source_kind": "addmdevice",
+                "row_id": "7",
+                "stable_mac": "00:11:22:aa:bb:cc",
+                "enabled": True,
+            },
+        ),
+        (
+            "set_port_forward_rule",
+            "port_forwarding",
+            "set_port_forward_rule",
+            {
+                "rule_id": "   ",
+                "enabled": True,
+                "expected_name": None,
+                "expected_fingerprint": "a" * 64,
+            },
+        ),
+        (
+            "set_port_forward_rule",
+            "port_forwarding",
+            "set_port_forward_rule",
+            {
+                "rule_id": "3",
+                "enabled": True,
+                "expected_name": None,
+                "expected_fingerprint": "A" * 64,
+            },
+        ),
+    ],
+)
+async def test_formatted_command_inputs_fail_without_io_or_invalidation(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    case: tuple[str, str, str, dict[str, object]],
+) -> None:
+    """Malformed IDs and fingerprints cannot reach a client pre-read."""
+    command, capability, handler_name, parameters = case
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    hub._capabilities = frozenset(  # noqa: SLF001 - isolate input contract
+        {"authenticated_json", capability}
+    )
+    hub._set_management_access("available")  # noqa: SLF001
+    handler = AsyncMock(return_value="accepted")
+    setattr(mock_speedport_client, handler_name, handler)
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute(command, **parameters)
+
+    assert failure.value.translation_key == "command_unsupported"
+    assert hub.get("management.access.state") == "available"
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+async def test_exact_scalar_readback_mismatch_fails_without_session_invalidation(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """An accepted write is not reported successful when fresh state disagrees."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+        monotonic_time=lambda: 100.0,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    def publish_mismatch(_family: str, _group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": True}})  # noqa: SLF001
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_mismatch
+    )
+
+    with (
+        patch(
+            "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+        ) as sleep,
+        pytest.raises(HomeAssistantError) as failure,
+    ):
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_verification_failed"
+    assert failure.value.__cause__ is None
+    assert hub.get("management.access.state") == "available"
+    assert hub._protected_retry_at == 0.0  # noqa: SLF001
+    handler.assert_awaited_once_with(enabled=False)
+    assert hub._async_update_verification_family_locked.await_count == 4  # noqa: SLF001
+    sleep.assert_has_awaits([call(0.5), call(0.5), call(1.0)])
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_receiver_led_exact_readback_retries_stale_state_without_rewrite(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A stale first LED readback may settle without replaying its mutation."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "receiver_led": EndpointCapability(
+                    "receiver_led",
+                    "data/LTE.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.set_receiver_led_mode = handler
+    mock_speedport_client.get_json.side_effect = [
+        {"ex5g_led_mode": "1"},
+        {"ex5g_led_mode": "2"},
+    ]
+
+    with patch(
+        "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+    ) as sleep:
+        assert await hub.async_execute("set_receiver_led_mode", mode=2) == "accepted"
+
+    handler.assert_awaited_once_with(mode=2)
+    assert mock_speedport_client.get_json.await_args_list == [
+        call(
+            "data/LTE.json",
+            authenticated=True,
+            referer=None,
+        ),
+        call(
+            "data/LTE.json",
+            authenticated=True,
+            referer=None,
+        ),
+    ]
+    sleep.assert_awaited_once_with(0.5)
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_hybrid_exact_readback_fresh_reads_status_endpoint(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Status-backed exact verification bypasses normal public poll cadence."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        status_json=True,
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "hybrid": EndpointCapability(
+                    "hybrid",
+                    "data/Status.json",
+                )
+            }
+        ),
+    )
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.set_hybrid_bonding = handler
+    mock_speedport_client.get_status.side_effect = [
+        RouterStatus(
+            info=mock_speedport_client.router_info,
+            raw=MappingProxyType({"use_bonding": "0"}),
+        ),
+        RouterStatus(
+            info=mock_speedport_client.router_info,
+            raw=MappingProxyType({"use_bonding": "1"}),
+        ),
+    ]
+    hub._merge_data({"hybrid": {"enabled": False}})  # noqa: SLF001
+    hub._public_status_next_poll_at = float("inf")  # noqa: SLF001
+
+    with patch(
+        "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+    ) as sleep:
+        assert await hub.async_execute("set_hybrid_bonding", enabled=True) == "accepted"
+
+    handler.assert_awaited_once_with(enabled=True)
+    assert mock_speedport_client.get_status.await_count == 2
+    mock_speedport_client.get_json.assert_not_awaited()
+    sleep.assert_awaited_once_with(0.5)
+    assert hub.get("hybrid.enabled") is True
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+async def test_exact_readback_retries_transient_read_error_without_rewrite(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A transient read failure may recover without replaying its mutation."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+    attempts = 0
+
+    async def publish_after_error(_family: str, _group: PollGroup) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise SpeedportConnectionError("temporary read failure")
+        hub._merge_data({"wifi": {"enabled": False}})  # noqa: SLF001
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_after_error
+    )
+
+    with patch(
+        "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+    ) as sleep:
+        assert await hub.async_execute("wifi_set_enabled", enabled=False) == "accepted"
+
+    handler.assert_awaited_once_with(enabled=False)
+    assert hub._async_update_verification_family_locked.await_count == 2  # noqa: SLF001
+    sleep.assert_awaited_once_with(0.5)
+    assert hub.get("management.access.state") == "available"
+    mock_speedport_client.logout.assert_awaited_once()
+
+
+def test_collection_readback_requires_exact_stable_identity(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Collection verification rejects missing, reused, or duplicated row IDs."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    client_contract = get_command_write_contract("rename_client")
+    port_contract = get_command_write_contract("set_port_forward_rule")
+    assert client_contract is not None
+    assert client_contract.verification is not None
+    assert port_contract is not None
+    assert port_contract.verification is not None
+    client_parameters = {
+        "source_kind": "addmdevice",
+        "row_id": "7",
+        "stable_mac": "00:11:22:33:44:55",
+        "name": "Living-Room",
+    }
+    client_row = {
+        "source_kind": "addmdevice",
+        "source_row_id": "7",
+        "mac": "00:11:22:33:44:55",
+        "name": "Living-Room",
+    }
+    hub._merge_data({"clients": {"items": [client_row]}})  # noqa: SLF001
+    assert hub._matches_command_readback(  # noqa: SLF001
+        client_contract.verification,
+        client_parameters,
+    )
+    hub._merge_data(  # noqa: SLF001
+        {"clients": {"items": [{**client_row, "source_row_id": "8"}]}}
+    )
+    assert not hub._matches_command_readback(  # noqa: SLF001
+        client_contract.verification,
+        client_parameters,
+    )
+    hub._merge_data({"clients": {"items": [client_row, client_row]}})  # noqa: SLF001
+    assert not hub._matches_command_readback(  # noqa: SLF001
+        client_contract.verification,
+        client_parameters,
+    )
+
+    port_parameters = {
+        "rule_id": "3",
+        "enabled": True,
+        "expected_name": "HTTPS",
+        "expected_fingerprint": "a" * 64,
+    }
+    port_row = {
+        "id": "3",
+        "name": "HTTPS",
+        "_identity_fingerprint": "a" * 64,
+        "active": True,
+    }
+    hub._merge_data({"nat": {"port_forward_rules": [port_row]}})  # noqa: SLF001
+    assert hub._matches_command_readback(  # noqa: SLF001
+        port_contract.verification,
+        port_parameters,
+    )
+    hub._merge_data(  # noqa: SLF001
+        {
+            "nat": {
+                "port_forward_rules": [{**port_row, "_identity_fingerprint": "b" * 64}]
+            }
+        }
+    )
+    assert not hub._matches_command_readback(  # noqa: SLF001
+        port_contract.verification,
+        port_parameters,
+    )
+
+
+async def test_command_rechecks_runtime_capability_before_handler_io(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A visible native control cannot execute after its capability disappears."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+    hub._capabilities = frozenset(  # noqa: SLF001 - runtime gate regression
+        {"authenticated_json", "system"}
+    )
+    hub._set_management_access("available")  # noqa: SLF001 - isolate capability
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute(
+            "wifi_set_enabled",
+            enabled=False,
+        )
+
+    assert failure.value.translation_key == "command_failed"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+
+async def test_command_rechecks_capability_after_waiting_for_operation_lock(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """A capability loss while queued cannot race a stale command into the router."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+
+    async with hub._operation_lock:  # noqa: SLF001 - reproduce command race
+        command = asyncio.create_task(
+            hub.async_execute(
+                "wifi_set_enabled",
+                enabled=False,
+            )
+        )
+        await asyncio.sleep(0)
+        assert not command.done()
+        hub._capabilities = frozenset(  # noqa: SLF001 - simulate poll result
+            {"authenticated_json", "system"}
+        )
+
+    with pytest.raises(HomeAssistantError) as failure:
+        await command
+
+    assert failure.value.translation_key == "command_failed"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
 
 
 async def test_descriptor_scaffolding_never_enables_unproven_commands(
@@ -1425,6 +2720,18 @@ async def test_disruptive_command_defers_verification(
     mock_speedport_client: MagicMock,
 ) -> None:
     """An accepted disruptive command relies on natural coordinator recovery."""
+    mock_speedport_client.setup.return_value = CapabilityReport(
+        authenticated_json=True,
+        feature_endpoints=MappingProxyType(
+            {
+                "system": EndpointCapability(
+                    "system",
+                    "data/Router.json",
+                    authenticated=True,
+                )
+            }
+        ),
+    )
     hub = SpeedportHub(
         hass,
         mock_speedport_client,
@@ -1444,7 +2751,7 @@ async def test_disruptive_command_defers_verification(
     mock_speedport_client.logout.assert_awaited_once()
 
 
-async def test_command_failures_are_translated_without_retry(
+async def test_command_writes_never_retry_after_indeterminate_failure(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
@@ -1482,11 +2789,16 @@ async def test_command_failures_are_translated_without_retry(
     mock_speedport_client.logout.reset_mock()
     hub._set_management_access("available")  # noqa: SLF001
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="accepted")
-    hub._async_update_group_locked = AsyncMock(  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
         side_effect=SpeedportConnectionError("readback unavailable")
     )
 
-    with pytest.raises(HomeAssistantError) as verification_error:
+    with (
+        patch(
+            "custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()
+        ) as sleep,
+        pytest.raises(HomeAssistantError) as verification_error,
+    ):
         await hub.async_execute("wifi_set_enabled", enabled=True)
 
     assert verification_error.value.translation_domain == DOMAIN
@@ -1501,8 +2813,18 @@ async def test_command_failures_are_translated_without_retry(
     mock_speedport_client.execute_wifi_set_enabled.assert_awaited_once_with(
         enabled=True
     )
-    hub._async_update_group_locked.assert_awaited_once_with(  # noqa: SLF001
-        PollGroup.NORMAL
+    assert hub._async_update_verification_family_locked.await_args_list == [  # noqa: SLF001
+        call("wifi", PollGroup.NORMAL),
+        call("wifi", PollGroup.NORMAL),
+        call("wifi", PollGroup.NORMAL),
+        call("wifi", PollGroup.NORMAL),
+    ]
+    sleep.assert_has_awaits(
+        [
+            call(0.5),
+            call(0.5),
+            call(1.0),
+        ]
     )
     mock_speedport_client.logout.assert_awaited_once()
 
@@ -1569,15 +2891,18 @@ async def test_command_failures_update_management_backoff(
     )
     await hub.async_setup()
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(return_value="accepted")
-    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock()  # noqa: SLF001
     if failure_stage == "command":
         mock_speedport_client.execute_wifi_set_enabled.side_effect = error
         expected_translation_key = "command_failed"
     else:
-        hub._async_update_group_locked.side_effect = error  # noqa: SLF001
+        hub._async_update_verification_family_locked.side_effect = error  # noqa: SLF001
         expected_translation_key = "command_verification_failed"
 
-    with pytest.raises(HomeAssistantError) as failure:
+    with (
+        patch("custom_components.speedport_smart.hub.asyncio.sleep", AsyncMock()),
+        pytest.raises(HomeAssistantError) as failure,
+    ):
         await hub.async_execute("wifi_set_enabled", enabled=False)
 
     assert failure.value.translation_key == expected_translation_key
@@ -1707,6 +3032,61 @@ async def test_command_backoff_rejects_before_handler_io(
     mock_speedport_client.logout.assert_not_awaited()
 
 
+async def test_firmware_write_block_rejects_before_handler_io(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The firmware's global save-failure gate disables every mutation."""
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        controls_enabled=True,
+    )
+    await hub.async_setup()
+    handler = AsyncMock(return_value="accepted")
+    mock_speedport_client.execute_wifi_set_enabled = handler
+    hub._merge_data(  # noqa: SLF001 - firmware-state safety fixture
+        {"system": {"settings_write_blocked": True}}
+    )
+
+    assert not hub.management_controls_available
+    with pytest.raises(HomeAssistantError) as failure:
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+
+    assert failure.value.translation_key == "command_failed"
+    handler.assert_not_awaited()
+    mock_speedport_client.logout.assert_not_awaited()
+
+    hub._merge_data(  # noqa: SLF001 - transient Status.json failure fixture
+        {"system": {"settings_write_blocked": None}}
+    )
+    assert not hub.management_controls_available
+    with pytest.raises(HomeAssistantError):
+        await hub.async_execute("wifi_set_enabled", enabled=False)
+    handler.assert_not_awaited()
+
+    hub._merge_data(  # noqa: SLF001 - explicit router readback clears latch
+        {"system": {"settings_write_blocked": False}}
+    )
+
+    def publish_disabled_wifi(_family: str, _group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": False}})  # noqa: SLF001
+
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_disabled_wifi
+    )
+    assert hub.management_controls_available
+    assert (
+        await hub.async_execute(
+            "wifi_set_enabled",
+            enabled=False,
+        )
+        == "accepted"
+    )
+    handler.assert_awaited_once_with(enabled=False)
+
+
 async def test_commands_remain_serialized(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -1721,17 +3101,24 @@ async def test_commands_remain_serialized(
     await hub.async_setup()
     active = 0
     max_active = 0
+    requested_state = False
 
     async def execute_wifi(*, enabled: bool) -> bool:
-        nonlocal active, max_active
+        nonlocal active, max_active, requested_state
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0)
+        requested_state = enabled
         active -= 1
         return enabled
 
+    def publish_requested_state(_family: str, _group: PollGroup) -> None:
+        hub._merge_data({"wifi": {"enabled": requested_state}})  # noqa: SLF001
+
     mock_speedport_client.execute_wifi_set_enabled = AsyncMock(side_effect=execute_wifi)
-    hub._async_update_group_locked = AsyncMock()  # noqa: SLF001
+    hub._async_update_verification_family_locked = AsyncMock(  # noqa: SLF001
+        side_effect=publish_requested_state
+    )
 
     assert await asyncio.gather(
         hub.async_execute("wifi_set_enabled", enabled=True),
@@ -1740,7 +3127,7 @@ async def test_commands_remain_serialized(
 
     assert max_active == 1
     assert mock_speedport_client.execute_wifi_set_enabled.await_count == 2
-    assert hub._async_update_group_locked.await_count == 2  # noqa: SLF001
+    assert hub._async_update_verification_family_locked.await_count == 2  # noqa: SLF001
     assert mock_speedport_client.logout.await_count == 2
 
 
