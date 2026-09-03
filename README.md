@@ -45,8 +45,9 @@ The bundled dashboard follows Home Assistant's active light or dark theme and
 adapts to both desktop and mobile layouts. These current dark-theme previews use
 only synthetic names, traffic and connection data, rendered by the actual
 dashboard. No private router or household information is shown. The captures
-show the top of the Dashboard; see the [dashboard guide](docs/dashboard.md) for
-the remaining connection cards and Administration navigation.
+focus on the shared-window WAN traffic and transferred-data graphs; see the
+[dashboard guide](docs/dashboard.md) for the remaining connection cards and
+Administration navigation.
 
 ### Desktop
 

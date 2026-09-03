@@ -10,8 +10,6 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ## [0.3.0] - 2026-09-03
 
-Release preparation; stable publication and final owner testing remain pending.
-
 ### Upgrade notes
 
 - Update the existing integration through HACS, restart Home Assistant, then
@@ -218,7 +216,6 @@ Release preparation; stable publication and final owner testing remain pending.
   without discarding its draft or revision. Reads wait for an in-flight save,
   preserve its result, and are cancelled on page or identity changes. Repeated
   metadata and WAN updates do not retry failed sections or repeat writes.
-  Final candidate owner validation remains pending.
 - Dashboard summary cards now fill each row after the full-width Wi-Fi section,
   including partial rows on tablets, without reserving empty desktop columns.
 - WAN graph freshness now prefers the newest valid successful sample timestamp
@@ -226,8 +223,7 @@ Release preparation; stable publication and final owner testing remain pending.
   a Home Assistant clock up to five seconds ahead of the browser without
   rewriting timestamps; larger clock leads, genuinely stale values and
   unavailable samples still produce gaps. This chart fix does not change the
-  WAN polling policy described above. The combined release candidate still
-  requires owner confirmation before the release PR can be merged.
+  WAN polling policy described above.
 - Native call-list pages load their own category automatically. Concurrent
   settings saves blocked before dispatch now explicitly report that nothing
   was sent; session recovery preserves the outcome of an active save.

@@ -91,15 +91,16 @@ during the clean-install smoke test.
 
 Reference: **https://developers.home-assistant.io/docs/core/integration/brand_images/**
 
-## Version 0.3.0 release preparation
+## Version 0.3.0 release process
 
-The **0.3.0** stable release is in preparation, not published. The candidate has
-matching source versions, a dated changelog, versioned release notes and the
+The **0.3.0** release uses matching source versions, a dated changelog,
+versioned release notes and the
 [promotion checklist](releases/0.3.0-checklist.md). Its combined scope includes
 consecutive-sample WAN rates, focus-based polling priority and separate rate and
-transferred-volume graphs with a shared time window. Validate the exact combined
-candidate and its archive; earlier beta results do not certify later edits.
-Owner testing remains a requirement before merging the release pull request.
+transferred-volume graphs with a shared time window. Promotion requires
+validating the exact combined candidate and its archive; earlier beta results do
+not certify later edits. Owner testing is required before merging the release
+pull request.
 
 1. Push the tested <code>feat/*</code> branch only when it is ready to publish
    a beta prerelease.
@@ -119,7 +120,7 @@ Owner testing remains a requirement before merging the release pull request.
    publish the full stable release **v0.3.0** with both release assets and the
    prepared release notes.
 7. Install the stable asset through HACS and repeat the clean-install smoke
-   test before updating the default-catalog submission.
+   test before rechecking the default-catalog submission.
 
 If any remote check is red, fix it before publishing or promoting a release.
 Do not update the default-catalog request with claims about unreleased code.
@@ -128,11 +129,13 @@ Do not update the default-catalog request with claims about unreleased code.
 
 Only the repository owner or a major contributor should submit.
 
-The catalog request may remain open during release promotion. Update it only
-after the stable **v0.3.0** release and its install smoke test are complete.
-The existing submission is [hacs/default#10514](https://github.com/hacs/default/pull/10514).
-Check its current status and update that request rather than creating a
-duplicate. Do not mark the repository as listed before acceptance.
+The catalog request may remain open during release promotion. The existing
+submission is [hacs/default#10514](https://github.com/hacs/default/pull/10514).
+Repository and release changes are reflected automatically during review, so
+recheck that request after the stable **v0.3.0** install smoke test, leave it
+queued, and respond only if a HACS maintainer asks for changes or evidence. Do
+not comment merely to announce the release, create a duplicate, or mark the
+repository as listed before acceptance.
 
 1. Fork **https://github.com/hacs/default** under a personal account.
 2. Create a fresh branch from its **master** branch.
