@@ -368,6 +368,51 @@ test("German renderer uses localized messages and decimal format", async () => {
   assert.match(output, /Jetzt/);
 });
 
+test("WAN headline buttons use the exact scoped rate entities and accessible labels", async () => {
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END, "48.2", "6.3")});
+  const output = renderTrafficHistory(controller.snapshot());
+  const buttons = [...output.matchAll(/<button\b[^>]*data-more-info="([^"]+)"[^>]*>[\s\S]*?<\/button>/g)];
+  assert.deepEqual(buttons.map((match) => match[1]), [DOWN, UP]);
+  assert.match(buttons[0][0], /type="button"/);
+  assert.match(buttons[0][0], /aria-label="Download: 48\.2 Mbit\/s\. Latest sample\. Open entity details"/);
+  assert.match(buttons[1][0], /aria-label="Upload: 6\.3 Mbit\/s\. Latest sample\. Open entity details"/);
+  assert.equal(calls.length, 1, "rendering buttons does not request anything");
+});
+
+test("unavailable WAN entities retain more-info buttons without inventing zero or missing IDs", async () => {
+  const {controller} = setup();
+  await controller.open({...SCOPE, states: states(END, "unavailable", "unknown")});
+  let output = renderTrafficHistory(controller.snapshot());
+  assert.match(output, /data-more-info="sensor.router_download" aria-label="Download: No recent sample\. Open entity details"/);
+  assert.match(output, /data-more-info="sensor.router_upload"/);
+  assert.doesNotMatch(output, /data-more-info="[^"]+"[^>]*disabled|<strong>0 /);
+  await controller.open({...SCOPE, entities: {download: DOWN, upload: null}, states: states(END)});
+  output = renderTrafficHistory(controller.snapshot());
+  assert.equal([...output.matchAll(/data-more-info=/g)].length, 1);
+  assert.ok(output.includes(`data-more-info="${DOWN}"`));
+});
+
+test("WAN readout targets reject malformed IDs and snapshot changes cannot alter scope", async () => {
+  const {controller} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  const view = controller.snapshot();
+  view.series.download.entityId = 'sensor.bad" onclick="alert(1)';
+  view.series.upload.entityId = "switch.router_upload";
+  const output = renderTrafficHistory(view);
+  assert.doesNotMatch(output, /data-more-info=|onclick=/);
+  assert.equal(controller.snapshot().series.download.entityId, DOWN);
+  assert.equal(controller.snapshot().series.upload.entityId, UP);
+});
+
+test("WAN headline typography is prominent, responsive and keyboard-focusable", () => {
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric>span\{[^}]*font-size:16px/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{[^}]*font-size:clamp\(28px,2\.6vw,36px\)/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric:focus-visible\{/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*min-width:0/);
+  assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{font-size:22px/);
+});
+
 test("full-width plot uses bounded height without stretching axis labels", async () => {
   const {controller} = setup({[DOWN]: [row(END - 90000, "10")], [UP]: []});
   await controller.open({...SCOPE, states: states(END, "20", "5")});

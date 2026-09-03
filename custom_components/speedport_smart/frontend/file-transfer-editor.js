@@ -1,5 +1,5 @@
 /** Explicit administrator file transfers. No router requests on open or selection. */
-import {digestFile} from "./file-digest.js?schema=25";
+import {digestFile} from "./file-digest.js?schema=26";
 
 const ACTIONS = new Set(["system_backup_download", "system_backup_restore", "system_firmware_upload", "system_mesh_firmware_upload",
   "system_log_download", "system_router_pass_download",

@@ -172,7 +172,7 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
         const current = live[key];
         const fresh = !state.stale && current?.value !== null && current &&
           current.time <= end && end - current.time <= state.staleAfterMs;
-        series[key] = {points: points[key].map((point) => ({...point})),
+        series[key] = {entityId: state.entities[key], points: points[key].map((point) => ({...point})),
           current: fresh ? current.value : null, stale: !fresh,
           lastSampleAt: current?.time ?? points[key].at(-1)?.time ?? null};
       }
@@ -190,13 +190,13 @@ const LABELS = Object.freeze({
     unavailable: "History unavailable. Showing only samples received in this view.", waiting: "Waiting for usable samples.",
     stale: "No recent sample", latest: "Latest sample", window: "Last 15 minutes", ago: "15 min ago", now: "Now",
     inspect: "Hover or touch to inspect samples. Arrow keys move between samples; Home and End jump; Escape clears.",
-    sample: "Observed samples", missing: "No sample", selected: "Selected time"},
+    sample: "Observed samples", missing: "No sample", selected: "Selected time", moreInfo: "Open entity details"},
   de: {title: "WAN-Datenverkehr", download: "Download", upload: "Upload", loading: "Gespeicherter Verlauf wird geladen…",
     ready: "Gespeicherte Änderungen und beobachtete Messwerte. Lücken bedeuten nicht null Datenverkehr.", empty: "Keine gespeicherten Änderungen in diesem Zeitraum. Neue Messwerte werden gesammelt.",
     unavailable: "Verlauf nicht verfügbar. Nur in dieser Ansicht empfangene Messwerte werden angezeigt.", waiting: "Warten auf nutzbare Messwerte.",
     stale: "Kein aktueller Messwert", latest: "Letzter Messwert", window: "Letzte 15 Minuten", ago: "Vor 15 Min.", now: "Jetzt",
     inspect: "Mit Maus oder Berührung Messwerte prüfen. Pfeiltasten wechseln Messwerte; Pos1 und Ende springen; Escape schließt.",
-    sample: "Beobachtete Messwerte", missing: "Kein Messwert", selected: "Gewählter Zeitpunkt"},
+    sample: "Beobachtete Messwerte", missing: "Kein Messwert", selected: "Gewählter Zeitpunkt", moreInfo: "Entitätsdetails öffnen"},
 });
 
 function chartSegments(series, start, end, staleAfterMs) {
@@ -240,7 +240,13 @@ export function renderTrafficHistory(snapshot, {language = "en", title, download
   const legends = SERIES.map((key) => {
     const value = snapshot.series?.[key]?.current;
     const available = Number.isFinite(value) && value >= 0 && value <= 1e9 && snapshot.series[key].stale === false;
-    return `<div class="sp-traffic-metric sp-traffic-${key}"><span>${escape(labels[key])}</span><strong>${available ? escape(format.format(value)) : "—"} <small>Mbit/s</small></strong><small>${available ? words.latest : words.stale}</small></div>`;
+    const entityId = snapshot.series?.[key]?.entityId;
+    const tag = entityValid(entityId) ? "button" : "div";
+    const readout = available ? format.format(value) : "—";
+    const description = available ? `${readout} Mbit/s. ${words.latest}` : words.stale;
+    const attributes = tag === "button" ? ` type="button" class="sp-traffic-metric sp-traffic-${key}" data-more-info="${escape(entityId)}" aria-label="${escape(`${labels[key]}: ${description}. ${words.moreInfo}`)}"` :
+      ` class="sp-traffic-metric sp-traffic-${key}"`;
+    return `<${tag}${attributes}><span>${escape(labels[key])}</span><strong>${escape(readout)} <small>Mbit/s</small></strong><small>${available ? words.latest : words.stale}</small></${tag}>`;
   }).join("");
   const grid = [0, 0.5, 1].map((fraction) => `<line x1="52" x2="740" y1="${fixed(y(ceiling * fraction))}" y2="${fixed(y(ceiling * fraction))}"/>`).join("");
   const axis = [1, 0.5, 0].map((fraction) => `<span>${escape(format.format(ceiling * fraction))}</span>`).join("");
@@ -418,10 +424,10 @@ export function bindTrafficHistory(host, controllerOrSnapshotGetter) {
 export const TRAFFIC_HISTORY_STYLES = `
   .sp-traffic-history{padding:22px;border:1px solid var(--divider-color,#ddd);border-radius:var(--ha-card-border-radius,16px);background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#222);min-width:0}
   .sp-traffic-history header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}.sp-traffic-history h2{font-size:18px;margin:0}.sp-traffic-history header>span,.sp-traffic-note{color:var(--secondary-text-color,#666);font-size:12px}
-  .sp-traffic-metrics{display:flex;gap:40px;margin:20px 0 10px;flex-wrap:wrap}.sp-traffic-metric{display:grid;gap:4px}.sp-traffic-metric>span{font-size:13px}.sp-traffic-metric strong{font-size:26px;line-height:1.15;font-variant-numeric:tabular-nums}.sp-traffic-metric small{font-size:11px;font-weight:400;color:var(--secondary-text-color,#666)}
+  .sp-traffic-metrics{display:flex;gap:40px;margin:20px 0 10px;flex-wrap:wrap}.sp-traffic-metric{display:grid;gap:6px;flex:1 1 140px;min-width:0;text-align:start;padding:8px 0;border:0;border-radius:6px;background:none;font:inherit}.sp-traffic-metric>span{font-size:16px;font-weight:600;line-height:1.4}.sp-traffic-metric strong{font-size:clamp(28px,2.6vw,36px);font-weight:600;line-height:1.2;letter-spacing:-.025em;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.sp-traffic-metric small{font-size:12px;font-weight:400;color:var(--secondary-text-color,#666)}.sp-traffic-metric strong small{font-size:clamp(13px,1.2vw,16px);letter-spacing:normal}.sp-traffic-metric[data-more-info]{cursor:pointer}.sp-traffic-metric[data-more-info]:hover{background:var(--secondary-background-color,#0001)}.sp-traffic-metric:focus-visible{outline:2px solid var(--primary-color,#e20074);outline-offset:4px}
   .sp-traffic-download{color:var(--sp-magenta,#e20074);stroke:var(--sp-magenta,#e20074)}.sp-traffic-upload{color:var(--info-color,#039be5);stroke:var(--info-color,#039be5)}
   .sp-traffic-chart{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:220px auto;gap:12px 10px;margin-top:22px}.sp-traffic-y-axis,.sp-traffic-x-axis{font-size:11px;line-height:1;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums}.sp-traffic-y-axis{display:flex;flex-direction:column;justify-content:space-between;text-align:right}.sp-traffic-y-axis>span:first-child{transform:translateY(-50%)}.sp-traffic-y-axis>span:last-child{transform:translateY(50%)}.sp-traffic-x-axis{grid-column:2;display:flex;justify-content:space-between;gap:12px}
   .sp-traffic-plot{position:relative;min-width:0;touch-action:pan-y;outline-offset:5px}.sp-traffic-plot:focus-visible{outline:2px solid var(--sp-magenta,#e20074)}.sp-traffic-crosshair{position:absolute;top:0;bottom:0;border-left:1px dashed var(--primary-text-color,#222);pointer-events:none}.sp-traffic-tooltip{position:absolute;top:10px;z-index:1;width:max-content;max-width:min(360px,100%);box-sizing:border-box;padding:10px 12px;border:1px solid var(--divider-color,#ddd);border-radius:8px;background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#222);box-shadow:0 3px 12px #0002;font-size:12px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere;pointer-events:none}.sp-traffic-tooltip[hidden],.sp-traffic-crosshair[hidden]{display:none}
   .sp-traffic-history svg{display:block;width:100%;height:100%;min-width:0;overflow:visible}.sp-traffic-grid line{stroke:var(--divider-color,#ddd);stroke-width:1;vector-effect:non-scaling-stroke}.sp-traffic-line{fill:none;stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}.sp-traffic-line.sp-traffic-upload{stroke-dasharray:5 3}.sp-traffic-dot{fill:currentColor;stroke:none}.sp-traffic-note{line-height:1.5;margin:8px 0 0}
-  @media(max-width:480px){.sp-traffic-history{padding:16px}.sp-traffic-metrics{gap:26px}.sp-traffic-metric strong{font-size:22px}.sp-traffic-chart{grid-template-rows:180px auto}.sp-traffic-y-axis,.sp-traffic-x-axis{font-size:12px}}
+  @media(max-width:480px){.sp-traffic-history{padding:16px}.sp-traffic-metrics{gap:16px}.sp-traffic-chart{grid-template-rows:180px auto}.sp-traffic-y-axis,.sp-traffic-x-axis{font-size:12px}}
 `;

@@ -20,7 +20,8 @@ test("one private POST keeps all credentials out of URL and clears temporary bod
 });
 
 test("every private command uses the same closed endpoint without metadata or arbitrary proxy",async()=>{
-  assert.equal(PRIVATE_COMMAND_TYPES.length,30);assert.equal(new Set(PRIVATE_COMMAND_TYPES).size,30);
+  assert.equal(PRIVATE_COMMAND_TYPES.length,31);assert.equal(new Set(PRIVATE_COMMAND_TYPES).size,31);
+  assert.ok(PRIVATE_COMMAND_TYPES.includes("speedport_smart/panel/ip_information"));
   assert.ok(PRIVATE_COMMAND_TYPES.includes("speedport_smart/panel/admin_read"));
   for(const type of PRIVATE_COMMAND_TYPES){const {hass,calls}=fixture();await requestPrivateApi(hass,{type,entry_id:"entry-a"});assert.equal(calls.length,1);}
   for(const type of ["speedport_smart/panel","other/panel/settings/save","speedport_smart/panel/settings/unknown","https://router.invalid"]){

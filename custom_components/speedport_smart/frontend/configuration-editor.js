@@ -29,12 +29,23 @@ const MESSAGES = Object.freeze({
   rejected: "The request was rejected. Reload current settings before trying again.",
   busy_rejected: "Another router request is still running. This change was not sent. Wait for it to finish, then reload current settings before trying again.",
   load_failed: "Current settings could not be loaded. Nothing was changed.",
+  load_management_unavailable: "Router management access is unavailable. Wait for access to recover, then use Refresh. Nothing was changed.",
+  load_busy: "Another router request is still running. Wait for it to finish, then use Refresh. Nothing was changed.",
+  load_rate_limited: "The router is receiving requests too quickly. Wait briefly, then use Refresh. Nothing was changed.",
+  load_setting_unavailable: "The router did not provide the required state or prerequisites for this setting. Editing remains disabled. Nothing was changed.",
   outcome_unknown: "The resulting router state could not be verified. Check the router and reload before trying again. The request will not be repeated automatically.",
   pending_confirmation: "The account-link request was sent. Choose whether to merge or replace local contacts, then confirm that separate operation. Nothing will continue automatically.",
   link_finishing: "Sending the separately confirmed phonebook decision once…",
   link_invalid: "Choose merge or replace, then type its exact confirmation. No second request was sent.",
   link_expired: "The pending phonebook decision expired and was cleared. Inspect the router's phonebook before starting again; the account-link request may already have changed it.",
   link_manual_required: "The phonebook decision was sent once. Online synchronization and individual contact results could not be independently verified. Inspect the phonebook before repeating anything.",
+});
+const LOAD_ERROR_STATUS = Object.freeze({
+  management_unavailable: "load_management_unavailable",
+  settings_busy: "load_busy", action_busy: "load_busy",
+  rate_limited: "load_rate_limited", action_rate_limited: "load_rate_limited",
+  setting_unavailable: "load_setting_unavailable", settings_target_unavailable: "load_setting_unavailable",
+  settings_inventory_unavailable: "load_setting_unavailable",
 });
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -311,7 +322,8 @@ export function createConfigurationEditorController({request, download, onChange
         return true;
       } catch (_error) {
         if (epoch !== generation) return false;
-        baseline.clear(); drafts.clear(); state.revision = null; state.status = "load_failed";
+        baseline.clear(); drafts.clear(); state.revision = null;
+        state.status = Object.hasOwn(LOAD_ERROR_STATUS, _error?.code) ? LOAD_ERROR_STATUS[_error.code] : "load_failed";
         return false;
       } finally {
         if (epoch === generation) { busy = false; notify(); }
@@ -598,7 +610,8 @@ export function renderConfigurationEditor(controller, {pageMode = false} = {}) {
       input = `<select multiple size="${Math.min(8, Math.max(3, field.choices.length))}" ${common}>` +
         field.choices.map((choice, index) => `<option value="${index}"${Array.isArray(value) && value.includes(choice.value) ? " selected" : ""}>${escape(choice.label)}</option>`).join("") + "</select>";
     } else if (field.kind === "enum") {
-      input = `<select ${common}>${field.choices.map((choice, index) =>
+      const unavailable = !field.choices.some((choice) => choice.value === value);
+      input = `<select ${common}>${unavailable ? '<option value="" disabled selected>Current value unavailable</option>' : ""}${field.choices.map((choice, index) =>
         `<option value="${index}"${choice.value === value ? " selected" : ""}>${escape(choice.label)}</option>`).join("")}</select>`;
     } else {
       const scheduleClock = /^wlan_(?:d(?:from|to)|time_(?:mo|di|mi|do|fr|sa|so)_(?:from|to))$/.test(field.name) ||
@@ -643,6 +656,31 @@ export function renderConfigurationEditor(controller, {pageMode = false} = {}) {
     .sp-settings-field input[type=checkbox]{align-self:flex-start;width:22px;height:22px;accent-color:var(--primary-color)}.sp-settings-field small{color:var(--secondary-text-color);overflow-wrap:anywhere}
     .sp-settings-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}.sp-settings-actions button{padding:10px 16px;color:var(--primary-text-color);background:var(--secondary-background-color);border:1px solid var(--divider-color);border-radius:8px;cursor:pointer}.sp-settings-editor :focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.sp-settings-editor :disabled{opacity:.55;cursor:default}.sp-settings-warning{white-space:pre-wrap;overflow-wrap:anywhere}.sp-settings-confirmation{margin-top:16px}.sp-settings-link{min-width:0;margin:20px 0 0;padding:16px;border:1px solid var(--divider-color);border-radius:8px}
     .sp-settings-group{min-width:0;margin:20px 0 0;padding:16px;border:1px solid var(--divider-color);border-radius:8px}.sp-settings-group>legend{font-weight:600;padding:0 6px}.sp-settings-check{display:flex;align-items:center;gap:10px;cursor:pointer}.sp-settings-check input[type=checkbox]{flex:none;margin:0;align-self:auto}.sp-settings-boolean{justify-content:flex-start;padding-top:8px}.sp-settings-choices{margin:0;padding:0;border:0}.sp-settings-choices>legend{margin-bottom:10px}.sp-settings-page .sp-settings-confirmation{padding-top:16px;border-top:1px solid var(--divider-color)}
+    .sp-settings-page{margin-block:12px;padding:clamp(18px,2vw,28px);border-radius:22px;box-shadow:0 1px 3px color-mix(in srgb,var(--primary-text-color) 4%,transparent)}
+    .sp-settings-page h3{display:flex;align-items:center;gap:12px;font-size:18px;line-height:1.4;overflow-wrap:anywhere}
+    .sp-settings-page h3::before{content:"";flex:none;width:6px;height:26px;border-radius:6px;background:var(--primary-color)}
+    .sp-settings-page>p{font-size:13px;line-height:1.6;color:var(--secondary-text-color)}
+    .sp-settings-page>[role=status]{padding:12px 16px;border-radius:12px;background:color-mix(in srgb,var(--primary-color) 6%,var(--ha-card-background,var(--card-background-color)));border:1px solid var(--divider-color)}
+    .sp-settings-page .sp-settings-group{padding:0;border:0;margin-top:24px}
+    .sp-settings-page .sp-settings-group>legend{padding:0;margin-bottom:12px;font-size:13px;color:var(--secondary-text-color)}
+    .sp-settings-page .sp-settings-field{padding:16px;border:1px solid var(--divider-color);border-radius:16px;background:var(--secondary-background-color);font-size:14px;line-height:1.45}
+    .sp-settings-page .sp-settings-field>label{font-weight:600}
+    .sp-settings-page .sp-settings-field input:not([type=checkbox]),.sp-settings-page .sp-settings-field select{min-height:46px;padding:12px;border-radius:10px;background:var(--ha-card-background,var(--card-background-color));font:inherit}
+    .sp-settings-page .sp-settings-field small{font-size:12px;line-height:1.5}
+    .sp-settings-page .sp-settings-field small:empty{display:none}
+    .sp-settings-page .sp-settings-boolean .sp-settings-check{justify-content:space-between;min-height:32px;gap:16px}
+    .sp-settings-page .sp-settings-boolean .sp-settings-check span{order:-1}
+    .sp-settings-page .sp-settings-boolean input[type=checkbox]{appearance:none;position:relative;width:44px;height:26px;border-radius:999px;border:1px solid var(--divider-color);background:var(--ha-card-background,var(--card-background-color));cursor:pointer}
+    .sp-settings-page .sp-settings-boolean input[type=checkbox]::before{content:"";position:absolute;top:4px;left:4px;width:16px;height:16px;border-radius:50%;background:var(--secondary-text-color)}
+    .sp-settings-page .sp-settings-boolean input[type=checkbox]:checked{background:var(--primary-color);border-color:var(--primary-color)}
+    .sp-settings-page .sp-settings-boolean input[type=checkbox]:checked::before{transform:translateX(18px);background:var(--text-primary-color,var(--primary-background-color))}
+    .sp-settings-page .sp-settings-boolean input[type=checkbox]:disabled{cursor:default}
+    .sp-settings-page .sp-settings-confirmation{margin-top:24px;background:color-mix(in srgb,var(--primary-color) 4%,var(--secondary-background-color))}
+    .sp-settings-page .sp-settings-actions{gap:10px;margin-top:20px}
+    .sp-settings-page .sp-settings-actions button{flex:1 1 140px;min-height:46px;border-radius:12px;font:inherit;font-size:14px;font-weight:600}
+    .sp-settings-page [data-setting-action=save]{color:var(--primary-color);border-color:color-mix(in srgb,var(--primary-color) 50%,var(--divider-color));background:color-mix(in srgb,var(--primary-color) 9%,transparent)}
+    @media(hover:hover){.sp-settings-page .sp-settings-actions button:not(:disabled):hover{border-color:var(--primary-color);background:color-mix(in srgb,var(--primary-color) 12%,var(--secondary-background-color))}}
+    @media(max-width:600px){.sp-settings-page{border-radius:18px}.sp-settings-page .sp-settings-field{padding:14px}.sp-settings-page .sp-settings-fields{gap:12px}}
     </style><section class="sp-settings-editor${pageMode ? " sp-settings-page" : ""}" aria-labelledby="${prefix}-title" aria-busy="${view.busy}">
     <h3 id="${prefix}-title">${escape(view.setting.title)}</h3>
     ${view.setting.warning ? `<p class="sp-settings-warning">${escape(view.setting.warning)}</p>` : ""}

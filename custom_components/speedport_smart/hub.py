@@ -141,6 +141,7 @@ _ADMIN_QUERY_INTERVAL_SECONDS: Final = MappingProxyType(
         "phonebook_search": 1.0,
         "phonebook_contact": 1.0,
         "call_history": 1.0,
+        "ip_information": 1.0,
         "voip_line_targets": 1.0,
     }
 )
@@ -150,6 +151,7 @@ _ADMIN_QUERY_CAPABILITY_PROOFS: Final = MappingProxyType(
         "phonebook_search": ("phonebook", "data/PhoneBook.json"),
         "phonebook_contact": ("phonebook", "data/PhoneBook.json"),
         "call_history": ("calls", "data/PhoneCalls.json"),
+        "ip_information": ("ip", "data/IPData.json"),
     }
 )
 _ADMIN_ACTION_GLOBAL_INTERVAL_SECONDS: Final = 1.0
@@ -794,6 +796,12 @@ class SpeedportHub:
                 phonebook_id=phonebook_id,
                 contact_id=contact_id,
             ),
+        )
+
+    async def async_query_ip_information(self) -> dict[str, Any]:
+        """Read native IP information privately, without entity or cache publication."""
+        return await self._async_admin_query(
+            "ip_information", self.client.query_ip_information
         )
 
     async def async_query_call_history(
@@ -2002,11 +2010,20 @@ class SpeedportHub:
             capability = (
                 report.feature_endpoints.get(family) if report is not None else None
             )
-            if (
-                capability is None
-                or capability.endpoint != endpoint
-                or not capability.authenticated
-            ):
+            if query_kind == "ip_information":
+                # This fixed read-only page is proven by the reviewed firmware's
+                # native JSONSource. Optional discovery need not have visited it.
+                identity = self.router_identity
+                supported = RouterWriteContract(
+                    "Speedport Smart 4R Typ A", "010152.5.0.001.0"
+                ).matches(identity.model, identity.firmware)
+            else:
+                supported = (
+                    capability is not None
+                    and capability.endpoint == endpoint
+                    and capability.authenticated
+                )
+            if not supported:
                 raise HomeAssistantError(
                     "Administrator router query is unsupported by this router"
                 )

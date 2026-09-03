@@ -127,13 +127,15 @@ export function renderDashboardOverview({router, states = {}, trafficMarkup = ""
       ${metric("wan_download_capacity", "WAN download capacity")}${metric("wan_upload_capacity", "WAN upload capacity")}</div>` : ""}
     </section>` : "";
 
-  const mobileKeys = ["mobile_connected", "mobile_network_type", "mobile_operator", "mobile_rsrp", "mobile_rsrq", "mobile_sinr", "mobile_band", "mobile_frequency", "mobile_nr_signal", "mobile_nr_band", "receiver_model"];
+  const mobileKeys = ["mobile_connected", "mobile_network_type", "mobile_operator", "mobile_rsrp", "mobile_rsrq", "mobile_sinr", "mobile_band", "mobile_frequency", "mobile_lte_signal", "mobile_lte_band", "mobile_nr_signal", "mobile_nr_band", "receiver_model"];
   const mobileCard = has(mobileKeys) ? `<section class="overview-card" data-overview-section="mobile">
     ${header("Mobile receiver", "mdi:antenna", "Cellular connection", degraded(mobileKeys))}
     <div class="overview-metrics">${metric("mobile_connected", "Connection", {numeric: false})}
       ${metric("mobile_network_type", "Network", {numeric: false})}
       ${metric("mobile_rsrp", "Signal · RSRP", {prominent: true})}${metric("mobile_sinr", "Signal quality · SINR")}${metric("mobile_rsrq", "Signal quality · RSRQ")}
+      ${metric("mobile_lte_signal", "LTE signal strength", {prominent: true})}
       ${!find("mobile_rsrp") ? metric("mobile_nr_signal", "5G signal", {prominent: true}) : ""}
+      ${metric("mobile_lte_band", "LTE band", {numeric: false})}
       ${metric("mobile_band", "Band", {numeric: false})}${!find("mobile_band") ? metric("mobile_nr_band", "5G band", {numeric: false}) : ""}
       ${metric("mobile_frequency", "Frequency")}${metric("mobile_operator", "Operator", {numeric: false})}
       ${metric("receiver_model", "Receiver", {numeric: false})}</div></section>` : "";
@@ -176,7 +178,8 @@ export const DASHBOARD_OVERVIEW_STYLES = `
   .dashboard-overview { display: grid; gap: 20px; min-width: 0; width: 100%; }
   .dashboard-overview * { box-sizing: border-box; }
   .overview-traffic { width: 100%; min-width: 0; }
-  .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 20px; align-items: start; }
+  .overview-grid { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; min-width: 0; }
+  .overview-grid > .overview-card { flex: 1 1 380px; max-width: 100%; }
   .overview-card { min-width: 0; padding: clamp(18px, 2vw, 28px); border: 1px solid var(--divider-color); border-radius: 22px; background: var(--ha-card-background, var(--card-background-color)); color: var(--primary-text-color); }
   .overview-card-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; flex-wrap: wrap; }
   .overview-card-heading > div { flex: 1; min-width: 0; }
@@ -184,7 +187,7 @@ export const DASHBOARD_OVERVIEW_STYLES = `
   .overview-card h3 { font-size: 17px; margin: 0; font-weight: 650; }
   .overview-card-heading p, .overview-empty { font-size: 13px; line-height: 1.5; color: var(--secondary-text-color); margin: 5px 0 0; }
   .overview-heading-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 9%, transparent); }
-  .overview-wifi { grid-column: 1 / -1; }
+  .overview-grid > .overview-wifi { flex-basis: 100%; }
   .overview-wifi-bands { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 16px; }
   .overview-wifi-band { border: 1px solid var(--divider-color); border-radius: 16px; padding: 18px; min-width: 0; }
   .overview-band-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }

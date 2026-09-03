@@ -2,7 +2,7 @@
 const PREFIX = "speedport_smart/panel/";
 export const PRIVATE_COMMAND_TYPES = Object.freeze([
   "admin_read", "settings/targets", "settings/read", "settings/save", "phonebook_link/finish",
-  "maintenance", "call_history", "ip_pbx_refresh", "phonebook_search", "phonebook_contact",
+  "maintenance", "call_history", "ip_information", "ip_pbx_refresh", "phonebook_search", "phonebook_contact",
   "action/dect_handset_targets", "action/voip_line_targets", "action/dect_handset_enroll",
   "action/dect_repeater_enroll", "action/dect_handset_set_paging", "action/voip_line_set_active",
   "action/dect_handset_disconnect_targets", "action/dect_repeater_disconnect_targets",

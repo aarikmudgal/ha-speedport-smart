@@ -97,6 +97,7 @@ def _cases() -> list[tuple[str, dict[str, Any], str]]:
             {"category": "taken", "export": True},
             "async_query_call_history",
         ),
+        ("ip_information", {}, "async_query_ip_information"),
         ("ip_pbx_refresh", {"client_id": "client-a"}, "async_query_ip_pbx_client"),
         (
             "phonebook_search",

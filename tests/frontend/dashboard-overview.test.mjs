@@ -111,6 +111,80 @@ test("NR-only telemetry has explicit 5G signal and band fallback", () => {
   assert.ok(html.includes("NR3500"));
 });
 
+function renderedMetric(html, entityId) {
+  return [...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)]
+    .map(([button]) => button).find((button) => button.includes(`data-more-info="${entityId}"`)) || "";
+}
+
+test("LTE and 5G signal and band use distinct actual entities side by side", () => {
+  const f = fixture();
+  f.add("mobile_lte_signal", "-91.5", {attributes: {unit_of_measurement: "dBm"}});
+  f.add("mobile_lte_band", "LTE1800");
+  f.add("mobile_nr_signal", "-73", {attributes: {unit_of_measurement: "dBm"}});
+  f.add("mobile_nr_band", "NR3500");
+  const html = f.render();
+  for (const [key, label, value] of [
+    ["mobile_lte_signal", "LTE signal strength", "-91.5 dBm"],
+    ["mobile_lte_band", "LTE band", "LTE1800"],
+    ["mobile_nr_signal", "5G signal", "-73 dBm"],
+    ["mobile_nr_band", "5G band", "NR3500"],
+  ]) {
+    const metric = renderedMetric(html, `sensor.${key}`);
+    assert.ok(metric.includes(`>${label}</span>`), key);
+    assert.ok(metric.includes(`>${value}</strong>`), key);
+    assert.equal(html.split(`data-more-info="sensor.${key}"`).length - 1, 1);
+  }
+});
+
+test("LTE-only telemetry creates a mobile card without inventing 5G", () => {
+  const f = fixture(); f.add("mobile_lte_signal", "-89", {attributes: {unit_of_measurement: "dBm"}});
+  f.add("mobile_lte_band", "LTE800");
+  const html = f.render();
+  assert.ok(html.includes('data-overview-section="mobile"'));
+  assert.ok(html.includes("LTE signal strength")); assert.ok(html.includes("LTE band"));
+  assert.ok(html.includes("-89 dBm")); assert.ok(html.includes("LTE800"));
+  assert.doesNotMatch(html, /5G signal|5G band|mobile_nr_/);
+});
+
+test("missing LTE metadata never borrows 5G or generic mobile telemetry", () => {
+  const f = fixture(); f.add("mobile_nr_signal", "-75"); f.add("mobile_nr_band", "NR3500");
+  f.states["sensor.mobile_lte_signal"] = {state: "-15", attributes: {}};
+  f.states["sensor.mobile_lte_band"] = {state: "Unadvertised band", attributes: {}};
+  assert.doesNotMatch(f.render(), /LTE signal strength|LTE band|mobile_lte_|Unadvertised band|-15/);
+  const generic = fixture(); generic.add("mobile_rsrp", "-86"); generic.add("mobile_band", "B3");
+  assert.doesNotMatch(generic.render(), /LTE signal strength|LTE band|mobile_lte_/);
+});
+
+test("unavailable LTE data remains explicit and clickable beside available 5G", () => {
+  const f = fixture(); f.add("mobile_lte_signal", "unavailable"); f.add("mobile_lte_band", "unknown");
+  f.add("mobile_nr_signal", "-75"); f.add("mobile_nr_band", "NR3500");
+  const html = f.render();
+  assert.ok(renderedMetric(html, "sensor.mobile_lte_signal").includes(">Unavailable</strong>"));
+  assert.ok(renderedMetric(html, "sensor.mobile_lte_band").includes(">Unknown</strong>"));
+  assert.ok(html.includes("Some data unavailable"));
+  assert.doesNotMatch(renderedMetric(html, "sensor.mobile_lte_signal"), /-75|>0</);
+  assert.doesNotMatch(renderedMetric(html, "sensor.mobile_lte_band"), /NR3500/);
+});
+
+test("LTE metrics inherit permission, enabled and root-entity boundaries", () => {
+  for (const flags of [{control: true}, {control_supported: true}, {disabled: true}, {disabled_by: "user"},
+    {child_device: {kind: "receiver", device_id: "other"}}]) {
+    const f = fixture();
+    f.add("mobile_lte_signal", "-11", {meta: flags}); f.add("mobile_lte_band", "Excluded LTE", {meta: flags});
+    assert.doesNotMatch(f.render(), /mobile_lte_|Excluded LTE|-11/);
+  }
+});
+
+test("malformed LTE strength is unavailable and private band text stays escaped", () => {
+  for (const value of ["", "NaN", "Infinity", "broken", null, false]) {
+    const f = fixture(); f.add("mobile_lte_signal", value);
+    assert.ok(renderedMetric(f.render(), "sensor.mobile_lte_signal").includes(">Unavailable</strong>"));
+  }
+  const f = fixture(); f.add("mobile_lte_band", '<img src=x onerror="attack()">');
+  const metric = renderedMetric(f.render(), "sensor.mobile_lte_band");
+  assert.ok(metric.includes("&lt;img")); assert.doesNotMatch(metric, /<img/);
+});
+
 test("LAN classification uses exact canonical medium, never missing wireless data", () => {
   const f = fixture();
   f.client("ethernet", "Wired desktop", "lan"); f.client("wifi", "Wireless laptop", "wifi_5");
@@ -261,8 +335,17 @@ test("Map state input follows same current metadata boundary", () => {
 });
 
 test("responsive style inherits HA themes with full-width traffic and two-band hierarchy", () => {
-  for (const text of ["var(--primary-text-color)", "var(--ha-card-background", "var(--secondary-text-color)", "var(--divider-color)", "repeat(auto-fit", "min(100%", "grid-column: 1 / -1", "button:focus-visible", "@media (max-width: 600px)"]) assert.ok(DASHBOARD_OVERVIEW_STYLES.includes(text), text);
+  for (const text of ["var(--primary-text-color)", "var(--ha-card-background", "var(--secondary-text-color)", "var(--divider-color)", "repeat(auto-fit", "min(100%", "flex-wrap: wrap", "flex: 1 1 380px", "flex-basis: 100%", "button:focus-visible", "@media (max-width: 600px)"]) assert.ok(DASHBOARD_OVERVIEW_STYLES.includes(text), text);
   assert.doesNotMatch(DASHBOARD_OVERVIEW_STYLES, /#[0-9a-f]{3,8}\b|(?<![-\w])width:\s*\d{3,}px/);
+});
+
+test("full-row Wi-Fi cannot reserve unused grid columns beside the lower cards", () => {
+  const grid = DASHBOARD_OVERVIEW_STYLES.match(/\.overview-grid\s*\{([^}]+)\}/)?.[1];
+  assert.match(grid, /display:\s*flex/);
+  assert.match(grid, /flex-wrap:\s*wrap/);
+  assert.doesNotMatch(grid, /grid-template-columns/);
+  assert.match(DASHBOARD_OVERVIEW_STYLES, /\.overview-grid > \.overview-card\s*\{[^}]*flex:\s*1 1 380px;[^}]*max-width:\s*100%/);
+  assert.match(DASHBOARD_OVERVIEW_STYLES, /\.overview-grid > \.overview-wifi\s*\{[^}]*flex-basis:\s*100%/);
 });
 
 test("overview is pure read-only presentation with no network, storage or timer path", async () => {

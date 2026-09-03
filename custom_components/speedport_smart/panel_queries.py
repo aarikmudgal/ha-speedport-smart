@@ -47,6 +47,7 @@ PANEL_IP_PBX_REFRESH_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/ip_pbx_refresh"
 PANEL_PHONEBOOK_SEARCH_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/phonebook_search"
 PANEL_PHONEBOOK_CONTACT_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/phonebook_contact"
 PANEL_CALL_HISTORY_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/call_history"
+PANEL_IP_INFORMATION_WS_TYPE: Final = f"{_PANEL_WS_TYPE}/ip_information"
 PANEL_DECT_HANDSET_TARGETS_WS_TYPE: Final = (
     f"{_PANEL_WS_TYPE}/action/dect_handset_targets"
 )
@@ -165,6 +166,7 @@ def private_panel_command_handlers() -> dict[str, Any]:
         websocket_phonebook_search,
         websocket_phonebook_contact,
         websocket_call_history,
+        websocket_ip_information,
         websocket_dect_handset_targets,
         websocket_voip_line_targets,
         websocket_dect_handset_enroll,
@@ -410,6 +412,28 @@ async def _settings_result(
         )
         return
     connection.send_result(msg["id"], result)
+
+
+@websocket_command(
+    {
+        vol.Required("type"): PANEL_IP_INFORMATION_WS_TYPE,
+        vol.Required("entry_id"): _ENTRY_ID_SCHEMA,
+    }
+)
+@require_admin
+@async_response
+async def websocket_ip_information(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Dispatch one private read; the registered WebSocket name remains inert."""
+    hub = _loaded_hub(
+        hass, connection, msg, required_method="async_query_ip_information"
+    )
+    if hub is None:
+        return
+    await _send_private_query_result(
+        connection, msg, "ip_information", hub.async_query_ip_information()
+    )
 
 
 @websocket_command(

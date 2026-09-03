@@ -1,24 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=25";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=25";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=25";
+import { requestPrivateApi } from "./private-api.js?schema=26";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=26";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=26";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=25";
-import { keepDialogFocus } from "./accessibility.js?schema=25";
+} from "./admin-navigation.js?schema=26";
+import { keepDialogFocus } from "./accessibility.js?schema=26";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=25";
+} from "./call-history-view.js?schema=26";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=25";
+} from "./file-transfer-editor.js?schema=26";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=25";
+} from "./maintenance-editor.js?schema=26";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=25";
+} from "./configuration-editor.js?schema=26";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,28 +33,29 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=25";
+} from "./controls.js?schema=26";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=25";
+} from "./entity-state.js?schema=26";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=25";
+} from "./render-state.js?schema=26";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=25";
+} from "./translations.js?schema=26";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
 const ADMIN_READ_SCHEMA_VERSION = 2;
 const ADMIN_PRIVATE_QUERY_SCHEMA_VERSION = 1;
 const ADMIN_PRIVATE_QUERY_API_TYPES = Object.freeze({
+  ip_information: `${API_TYPE}/ip_information`,
   ip_pbx_refresh: `${API_TYPE}/ip_pbx_refresh`,
   phonebook_search: `${API_TYPE}/phonebook_search`,
   phonebook_contact: `${API_TYPE}/phonebook_contact`,
@@ -233,7 +234,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 25;
+const PANEL_SCHEMA_VERSION = 26;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -827,6 +828,7 @@ export const ADMIN_IA = Object.freeze([
         }),
         fixedAdminFeature("internet_ip_information", {
           contract: "read_only",
+          queries: ["ip_information"],
           entityGroups: ["connection_addressing"],
           capabilities: ["internet"],
         }),
@@ -2598,6 +2600,37 @@ function normalizeAdminPrivateContactResult(result, expected) {
 }
 
 /** Allowlist one ephemeral private-query response before it reaches the DOM. */
+const ADMIN_IP_INFORMATION_FIELDS = Object.freeze({
+  ipv4: Object.freeze(["address", "gateway", "dns_primary", "dns_secondary"]),
+  ipv6: Object.freeze(["delegated_prefix", "lan_prefix", "address", "gateway", "dns_primary", "dns_secondary"]),
+});
+
+function normalizeAdminIpInformation(result) {
+  if (Object.keys(result).length !== 2 || !Object.hasOwn(result, "ipv4") || !Object.hasOwn(result, "ipv6")) return undefined;
+  const normalized = {};
+  for (const [family, fields] of Object.entries(ADMIN_IP_INFORMATION_FIELDS)) {
+    const values = result[family];
+    if (!values || typeof values !== "object" || Array.isArray(values) ||
+        Object.keys(values).some((field) => !fields.includes(field))) return undefined;
+    normalized[family] = {};
+    for (const [field, value] of Object.entries(values)) {
+      if (typeof value !== "string" || value.length > 128 || value !== value.trim() || /[\s%]/.test(value)) return undefined;
+      if (family === "ipv4") {
+        if (!adminPrivateQueryIpv4(value)) return undefined;
+      } else {
+        const parts = value.split("/");
+        if (field.endsWith("prefix")) {
+          if (parts.length > 2 || parts.length === 2 && (!/^(?:0|[1-9][0-9]{0,2})$/.test(parts[1]) || Number(parts[1]) > 128)) return undefined;
+        } else if (parts.length !== 1) return undefined;
+        if (!/^[0-9a-f:.]+$/i.test(parts[0]) || !parts[0].includes(":")) return undefined;
+        try { new URL(`http://[${parts[0]}]/`); } catch { return undefined; }
+      }
+      normalized[family][field] = value;
+    }
+  }
+  return normalized;
+}
+
 export function normalizeAdminPrivateQueryPayload(payload, query, expected) {
   if (
     payload?.schema_version !== ADMIN_PRIVATE_QUERY_SCHEMA_VERSION ||
@@ -2608,6 +2641,7 @@ export function normalizeAdminPrivateQueryPayload(payload, query, expected) {
   ) {
     return undefined;
   }
+  if (query === "ip_information") return normalizeAdminIpInformation(payload.result);
   if (query === "ip_pbx_refresh") {
     return normalizeAdminPrivatePbxResult(payload.result, expected);
   }
@@ -2622,6 +2656,7 @@ export function normalizeAdminPrivateQueryPayload(payload, query, expected) {
 
 function emptyAdminPrivateQueryState() {
   return {
+    ip: {errorKey: "", loading: false, attempted: false, result: undefined},
     pbx: {
       clientId: "",
       errorKey: "",
@@ -3716,7 +3751,14 @@ export class SpeedportSmartPanel extends HTMLElement {
       router.access_sources?.find((item) => item.id === "wan_counters"), router.entities, this._hass.states,
     );
     const sampleMeta = router.entities?.find((meta) => meta.translation_key === "wan_last_sample");
-    const sampledAt = sampleMeta ? this._hass.states?.[sampleMeta.entity_id]?.state : source?.last_sampled_at;
+    // The diagnostic sensor is minute-rounded. Prefer the newest real sample
+    // from either source, never a render-time heartbeat or a future timestamp.
+    const now = Date.now();
+    const observationTimes = [source?.last_sampled_at,
+      sampleMeta ? this._hass.states?.[sampleMeta.entity_id]?.state : undefined]
+      .map((value) => typeof value === "string" ? Date.parse(value) : NaN)
+      .filter((time) => Number.isFinite(time) && time <= now);
+    const sampledAt = observationTimes.length ? Math.max(...observationTimes) : undefined;
     this._trafficHistory.open({entryId: router.entry_id, userId, entities, states: this._hass.states,
       stale: source?.available === false || source?.retrying === true || source?.supported === false,
       staleAfterMs: Math.max(30000, (Number(source?.effective_interval_seconds) || 10) * 4000), sampledAt,
@@ -3810,7 +3852,8 @@ export class SpeedportSmartPanel extends HTMLElement {
       current();
       const paced = message.type === "speedport_smart/panel/settings/read" ? "read" :
         message.type === "speedport_smart/panel/settings/targets" ? "targets" :
-          message.type === "speedport_smart/panel/call_history" ? "callHistory" : null;
+          message.type === "speedport_smart/panel/call_history" ? "callHistory" :
+            message.type === "speedport_smart/panel/ip_information" ? "read" : null;
       if (paced) {
         const delay = this._privateReadReadyAt[paced] - this._privateReadNow();
         if (delay > 0) await this._privateReadWait(delay);
@@ -4153,6 +4196,10 @@ export class SpeedportSmartPanel extends HTMLElement {
       }
     }
     if (!current()) return;
+    if (page.id === "internet_ip_information" && !this._adminPrivateQueries.ip.attempted) {
+      await this._runIpInformationQuery();
+      if (!current()) return;
+    }
     // Read inventories only after page entry; never from telemetry rendering.
     for (const feature of adminPageFeatures(page, ADMIN_IA)) {
       for (const actionId of feature.adminActions) {
@@ -4392,6 +4439,9 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._clearAdminPrivateQueryResult(target.dataset.adminQueryClear);
       return;
     }
+    if (target.dataset.refreshIpInformation !== undefined) {
+      return this._runIpInformationQuery();
+    }
     if (target.dataset.phonebookContact) {
       this._runPhonebookContactQuery(target.dataset.phonebookContact);
       return;
@@ -4609,6 +4659,7 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _adminPrivateQueryCapabilityObserved(query) {
     const router = this._currentRouter();
+    if (query === "ip_information") return router?.entry_state === "loaded";
     const capabilities = new Set([
       ...(router?.capabilities || []).map((capability) =>
         String(capability).toLowerCase(),
@@ -4658,6 +4709,32 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._hass?.user?.is_admin === true &&
       this._currentRouter()?.entry_id === entryId
     );
+  }
+
+  async _runIpInformationQuery() {
+    const state = this._adminPrivateQueries.ip;
+    if (state.loading || this._currentAdminPage().page.id !== "internet_ip_information" ||
+        !this._adminPrivateQueryAvailable("ip_information") || this.isConnected === false) return;
+    const entryId = this._currentRouter().entry_id;
+    const epoch = this._adminPrivateQueryEpoch, pageEpoch = this._adminPageEpoch;
+    const userId = this._hass.user.id;
+    const current = () => this._adminPrivateQueryContextIsCurrent(entryId, epoch) &&
+      this._adminPageEpoch === pageEpoch && this._hass?.user?.id === userId &&
+      this.isConnected !== false && this._currentRouter()?.entry_state === "loaded" &&
+      this._currentAdminPage().page.id === "internet_ip_information";
+    state.attempted = true; state.loading = true; state.errorKey = ""; state.result = undefined;
+    this._render();
+    try {
+      const payload = await this._requestPrivate({type: ADMIN_PRIVATE_QUERY_API_TYPES.ip_information, entry_id: entryId});
+      if (!current()) return;
+      const result = normalizeAdminPrivateQueryPayload(payload, "ip_information");
+      if (!result) throw new Error("invalid_response");
+      state.result = result;
+    } catch (error) {
+      if (current()) state.errorKey = this._adminPrivateQueryErrorKey(error);
+    } finally {
+      if (current()) {state.loading = false; this._render();}
+    }
   }
 
   async _runIpPbxQuery() {
@@ -6700,10 +6777,26 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
+  _renderAdminIpInformation() {
+    const state = this._adminPrivateQueries.ip;
+    const available = this._adminPrivateQueryAvailable("ip_information");
+    const content = state.result ? Object.entries(ADMIN_IP_INFORMATION_FIELDS).map(([family, fields]) =>
+      `<section class="admin-read-row"><h4>${family === "ipv4" ? "IPv4" : "IPv6"}</h4><dl>${fields.map((field) =>
+        `<div class="admin-read-value"><dt>${escapeHtml(this._t(`admin.ip.field.${field}`))}</dt>` +
+        `<dd>${escapeHtml(state.result[family][field] ?? this._t("admin.ip.not_reported"))}</dd></div>`).join("")}</dl></section>`).join("") : "";
+    return `<section class="admin-query-card" data-admin-query="ip_information">
+      <p>${escapeHtml(this._t("admin.ip.description"))}</p>
+      <button type="button" class="secondary" data-refresh-ip-information${state.loading || !available ? " disabled" : ""}>${escapeHtml(this._t("admin.ip.refresh"))}</button>
+      ${this._renderAdminPrivateQueryStatus({errorKey: state.errorKey, loading: state.loading, query: "ip_information"})}
+      ${!available ? `<p>${escapeHtml(this._t("admin.query.unavailable"))}</p>` : ""}
+      ${content ? `<div class="admin-read-rows" aria-live="polite">${content}</div>` : !state.loading && !state.errorKey && available ? `<p>${escapeHtml(this._t("admin.ip.not_loaded"))}</p>` : ""}
+    </section>`;
+  }
+
   _renderAdminPrivateQueries(queryIds) {
     return queryIds
       .map((query) =>
-        query === "ip_pbx_refresh"
+        query === "ip_information" ? this._renderAdminIpInformation() : query === "ip_pbx_refresh"
           ? this._renderAdminPrivatePbxQuery()
           : query === "phonebook_search"
             ? this._renderAdminPrivatePhonebookQuery()
@@ -7172,9 +7265,14 @@ export class SpeedportSmartPanel extends HTMLElement {
         const settingsMarkup = canReadAdmin && featureSettings.length && !pageMode
           ? `<div class="sp-settings-buttons">${featureSettings.map((setting) => `<button type="button" data-open-setting="${escapeHtml(setting.id)}"${setting.available ? "" : " disabled"}>${escapeHtml(setting.title)}</button>`).join("")}</div>${SETTINGS_FEATURE_LINKS[feature.id]?.complete ? "" : "<p>Partial coverage: the editors above are implemented; other options in this feature remain pending.</p>"}`
           : "";
+        const reportMarkup = pageMode && feature.id === "internet_receiver_mode"
+          ? this._renderAdministrationEntities(entities.filter((entity) =>
+              !isSemanticControl(entity) && entity.translation_key === "receiver_mode" &&
+              entity.access_source !== "integration"), accessSourceStates)
+          : "";
         const ownedMarkup =
-          controlMarkup || readMarkup || queryMarkup || actionMarkup || settingsMarkup || maintenance || transfer
-            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${transfers.map((item) => `<button type="button" class="secondary" data-open-transfer="${escapeHtml(item.id)}"${item.available ? "" : " disabled"}>${escapeHtml(item.title)}</button>`).join("")}${maintenance ? `<button type="button" class="secondary" data-open-maintenance="${escapeHtml(maintenance.id)}"${maintenance.available ? "" : " disabled"}>Review ${escapeHtml(maintenance.title)}</button>` : ""}${settingsMarkup}${controlMarkup}${readMarkup}${queryMarkup}${actionMarkup}</div>`
+          controlMarkup || readMarkup || reportMarkup || queryMarkup || actionMarkup || settingsMarkup || maintenance || transfer
+            ? `<div class="admin-feature-owned" data-admin-feature-content="${escapeHtml(feature.id)}">${transfers.map((item) => `<button type="button" class="secondary" data-open-transfer="${escapeHtml(item.id)}"${item.available ? "" : " disabled"}>${escapeHtml(item.title)}</button>`).join("")}${maintenance ? `<button type="button" class="secondary" data-open-maintenance="${escapeHtml(maintenance.id)}"${maintenance.available ? "" : " disabled"}>Review ${escapeHtml(maintenance.title)}</button>` : ""}${settingsMarkup}${controlMarkup}${readMarkup}${reportMarkup}${queryMarkup}${actionMarkup}</div>`
             : "";
         const headingId = `speedport-admin-feature-${feature.id}`.replace(
           /[^a-z0-9_-]/gi,
@@ -7196,10 +7294,15 @@ export class SpeedportSmartPanel extends HTMLElement {
           // Forms are already available in the page-local editor, not repeated
           // under every overlapping capability. Preserve contextual read/actions.
           if (!ownedMarkup && (featureSettings.length || featureControls.length)) return "";
+          const emptyHint = featureContract === "blocked"
+            ? feature.blockedReasonKey || "admin.contract.blocked_hint"
+            : featureContract === "read_only" ? "admin.contract.read_only_hint"
+              : featureContract === "unsupported" ? "admin.contract.unsupported"
+                : `admin.feature.status.${statusKey}`;
           return `<section class="admin-native-section" data-admin-feature="${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
             <header><h3 id="${escapeHtml(headingId)}">${escapeHtml(this._t(feature.titleKey))}</h3>
               <span class="admin-feature-status">${escapeHtml(status)}</span>${featureRisk}</header>
-            ${ownedMarkup || `<p class="admin-native-unavailable">${escapeHtml(this._t(feature.blockedReasonKey || "admin.contract.blocked_hint"))}</p>`}
+            ${ownedMarkup || `<p class="admin-native-unavailable">${escapeHtml(this._t(emptyHint))}</p>`}
           </section>`;
         }
         if (ownedMarkup) {
@@ -7434,19 +7537,25 @@ export class SpeedportSmartPanel extends HTMLElement {
     const runtimeEntities = [...controls, ...reporting];
     const {tab, page} = this._currentAdminPage();
     const features = adminPageFeatures(page, ADMIN_IA);
+    const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
+    const {inline, contextual} = adminPageSettingSections(page, router.settings || [], SETTINGS_FEATURE_LINKS);
+    const canReadAdmin = this._hass?.user?.is_admin === true;
+    const typedFeatures = new Set(canReadAdmin ? features.filter((feature) =>
+      SETTINGS_FEATURE_LINKS[feature.id]?.complete && inline.some((setting) =>
+        setting.supported && SETTINGS_FEATURE_LINKS[feature.id].ids.includes(setting.id))).map((feature) => feature.id) : []);
     const nativeControls = features.flatMap((feature) => runtimeEntities.filter((entity) =>
-      isSemanticControl(entity) && adminFeatureForControl(entity) === feature.id));
+      !typedFeatures.has(feature.id) && isSemanticControl(entity) && adminFeatureForControl(entity) === feature.id));
     const nativeControlMarkup = features.map((feature) => {
       const owned = nativeControls.filter((entity) => adminFeatureForControl(entity) === feature.id);
       if (!owned.length) return "";
       const presentation = this._adminFeaturePresentation(feature, runtimeEntities, sections, capabilities, adminReadAvailable);
       return `<div data-admin-control-feature="${escapeHtml(feature.id)}"><span class="admin-control-status">${escapeHtml(this._t(`admin.feature.status.${presentation.key}`))}</span>${this._renderAdministrationEntities(owned, accessSourceStates)}</div>`;
     }).join("");
-    const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
-    const {inline, contextual} = adminPageSettingSections(page, router.settings || [], SETTINGS_FEATURE_LINKS);
-    const canReadAdmin = this._hass?.user?.is_admin === true;
     const pageEntities = reporting.filter((entity) =>
-      page.entityGroups.includes(capabilityGroupFor(entity)) && entity.access_source !== "integration");
+      (page.entityGroups.includes(capabilityGroupFor(entity)) ||
+        page.id === "internet_receiver_mode" && entity.translation_key === "receiver_led_mode") &&
+      !(page.id === "internet_receiver_mode" && entity.translation_key === "receiver_led_mode" && typedFeatures.has("internet_receiver_led")) &&
+      entity.access_source !== "integration");
     const nativeTabs = NATIVE_ADMIN_TABS.map((item) => `<button type="button" data-admin-tab="${escapeHtml(item.id)}"
       ${item.id === tab.id ? 'aria-current="page" class="active"' : ""}>
       <ha-icon icon="${escapeHtml(item.icon)}" aria-hidden="true"></ha-icon>${escapeHtml(item.title)}</button>`).join("");

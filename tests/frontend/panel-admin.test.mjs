@@ -59,6 +59,20 @@ const { PANEL_TRANSLATIONS } = await import(
   "../../custom_components/speedport_smart/frontend/translations.js"
 );
 
+test("native information-only sections never claim an unproven write when no fields are exposed", () => {
+  const {panel} = panelFixture();
+  const features = ADMIN_IA.flatMap((area) => area.subsections).flatMap((section) => section.features);
+  const render = (feature) => panel._renderAdminFeatureCatalog([feature], [], new Map(), new Set(), true, {}, {pageMode: true});
+  for (const feature of features.filter((item) => item.contract === "read_only" && !item.controls.length && !item.queries.length)) {
+    const html = render(feature);
+    assert.ok(!html.includes(PANEL_TRANSLATIONS.en["admin.contract.blocked_hint"]), feature.id);
+    assert.ok(html.includes("read-only information"), feature.id);
+    assert.ok(!html.includes("data-setting-field="), feature.id);
+  }
+  const blocked = features.find((feature) => feature.id === "internet_receiver_mode");
+  assert.ok(render(blocked).includes(PANEL_TRANSLATIONS.en["admin.contract.blocked_hint"]));
+});
+
 const REPORTING_META = Object.freeze({
   access_source: "protected_json",
   confirmation: "confirm",
@@ -1690,6 +1704,26 @@ test("receiver telemetry never proves receiver firmware evidence", () => {
     ).key,
     "read_only",
   );
+});
+
+test("receiver Mode settings displays exact existing mode and LED reports without inventing editable options", () => {
+  const {panel, calls} = panelFixture();
+  const mode = {access_source: "protected_json", child_device: {device_id: "receiver-1", kind: "receiver"},
+    control: false, domain: "sensor", entity_id: "sensor.receiver_mode", section: "mobile", translation_key: "receiver_mode"};
+  const led = {...mode, entity_id: "sensor.receiver_led_mode", translation_key: "receiver_led_mode"};
+  panel._hass.states = {
+    [mode.entity_id]: {attributes: {}, state: "3"},
+    [led.entity_id]: {attributes: {}, state: "Switch off after timeout"},
+  };
+  panel._adminTab = "internet"; panel._adminPage = "internet_receiver_mode";
+  const current = router("entry-a", [mode, led]);
+  const html = panel._renderAdministration(current, [], [mode, led], {protected_json: {available: true}});
+  assert.ok(html.includes('data-more-info="sensor.receiver_mode"'));
+  assert.ok(html.includes('data-more-info="sensor.receiver_led_mode"'));
+  assert.ok(html.includes("Switch off after timeout"));
+  assert.ok(html.includes('<strong class="entity-state">3</strong>'));
+  assert.ok(!html.includes("data-setting-field="));
+  assert.equal(calls.length, 0);
 });
 
 test("exact receiver firmware entity proves receiver firmware evidence", () => {

@@ -129,6 +129,8 @@ _INTERNET_PRIVACY_ENDPOINT: Final = "data/IPPrivacy.json"
 _INTERNET_PRIVACY_REFERER: Final = "html/content/internet/con_privacy.html"
 _LTE_MODE_ENDPOINT: Final = "data/LTE.json"
 _LTE_MODE_REFERER: Final = "html/content/internet/lte_mode.html"
+_LTE_FIRMWARE_REFERER: Final = "html/content/internet/lte_firmware.html"
+_IP_INFORMATION_MAX_RESPONSE_BYTES: Final = 128 * 1024
 _WPS_ENDPOINT: Final = "data/WLANAccess.json"
 _WPS_STATUS_ENDPOINT: Final = "data/WPSStatus.json"
 _WPS_REFERER: Final = "html/content/network/wlan_wps.html"
@@ -138,6 +140,8 @@ _QUERY_TOKEN_READS: Final = frozenset(
     {
         (_INTERNET_PRIVACY_ENDPOINT, _INTERNET_PRIVACY_REFERER),
         (_LTE_MODE_ENDPOINT, _LTE_MODE_REFERER),
+        (_LTE_MODE_ENDPOINT, _LTE_FIRMWARE_REFERER),
+        ("data/IPData.json", "html/content/internet/con_ipdata.html"),
         (_WPS_ENDPOINT, _WPS_REFERER),
         (_WPS_ENDPOINT, _WIFI_ACCESS_REFERER),
         ("data/NASFolder.json", "html/content/network/nas_share.html"),
@@ -1845,6 +1849,21 @@ class SpeedportClient:
             ),
         )
         normalized = normalize_configuration_payload(raw)
+        if setting_id in {"receiver_bonding", "receiver_led_mode"}:
+            from ..configuration_network_controls import (  # noqa: PLC0415
+                merge_receiver_identity,
+                receiver_identity_requires_read,
+            )
+
+            if receiver_identity_requires_read(normalized):
+                firmware = normalize_configuration_payload(
+                    await self.get_json(
+                        _LTE_MODE_ENDPOINT,
+                        authenticated=True,
+                        referer=_LTE_FIRMWARE_REFERER,
+                    )
+                )
+                normalized = merge_receiver_identity(normalized, firmware)
         if setting_id == "telephony_phonebook_link":
             from ..configuration_phonebook_accounts import (  # noqa: PLC0415
                 phonebook_account_rows,
@@ -2184,6 +2203,22 @@ class SpeedportClient:
             book_id, assigned_id
         )
         return current
+
+    async def query_ip_information(self) -> dict[str, Any]:
+        """Read native IP information only for a private administrator view."""
+        from ..ip_information import (  # noqa: PLC0415
+            IP_INFORMATION_ENDPOINT,
+            IP_INFORMATION_REFERER,
+            read_ip_information,
+        )
+
+        return read_ip_information(
+            await self.get_json(
+                IP_INFORMATION_ENDPOINT,
+                authenticated=True,
+                referer=IP_INFORMATION_REFERER,
+            )
+        )
 
     async def query_call_history(
         self, *, category: str, export: bool = False
@@ -4092,7 +4127,17 @@ class SpeedportClient:
             kwargs["ssl"] = False
         try:
             async with self._session.request(method, url, **kwargs) as response:
-                text = await response.text(errors="replace")
+                if method != "GET" or urlsplit(url).path != "/data/IPData.json":
+                    text = await response.text(errors="replace")
+                else:
+                    body = bytearray()
+                    async for chunk in response.content.iter_chunked(16 * 1024):
+                        if len(body) + len(chunk) > _IP_INFORMATION_MAX_RESPONSE_BYTES:
+                            raise SpeedportProtocolError(
+                                "Router response exceeded the private read limit"
+                            )
+                        body.extend(chunk)
+                    text = body.decode("utf-8", errors="replace")
                 if response.status in {301, 302, 303, 307, 308}:
                     location = response.headers.get("Location", "")
                     if "login" in location.casefold():

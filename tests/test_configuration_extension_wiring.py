@@ -99,7 +99,12 @@ async def test_private_prerequisites_have_fixed_sources(
             "get_json",
             AsyncMock(
                 side_effect=[
-                    {},
+                    {
+                        "ex5g_serial_number": "receiver-test",
+                        "ex5g_model_name": "receiver-model",
+                    }
+                    if setting_id == "receiver_bonding"
+                    else {},
                     {
                         "easy_support_deactive": "1",
                         "unrelated_secret": "DO-NOT-PROJECT",

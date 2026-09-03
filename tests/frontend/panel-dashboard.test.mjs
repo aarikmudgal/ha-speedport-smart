@@ -29,7 +29,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 25, routers: [first, second]};
+  panel._metadata = {schema_version: 26, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -174,6 +174,24 @@ test("actual panel render is read-only and contains graph plus headlines without
   assert.ok(html.includes('data-more-info="sensor.a_wifi"'));
   assert.doesNotMatch(html, /data-control=|data-open-setting=|Private admin result|data-admin-feature=/);
   assert.equal(calls.length, before);
+});
+
+test("WAN readouts delegate more-info to their actual HA entities without router I/O", async () => {
+  const {panel, calls} = fixture();
+  panel._hass.states["sensor.a_upload"].state = "unavailable";
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const html = panel.shadowRoot.innerHTML.split("</style>").at(-1);
+  const targets = [...html.matchAll(/<button\b[^>]*class="sp-traffic-metric[^>]*data-more-info="([^"]+)"/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(targets, ["sensor.a_download", "sensor.a_upload"]);
+  const sent = calls.length;
+  const events = [];
+  panel.dispatchEvent = (event) => {events.push(event); return true;};
+  for (const moreInfo of targets) panel._handleClick({target: {closest: () => ({dataset: {moreInfo}})}});
+  assert.deepEqual(events.map((event) => [event.type, event.detail.entityId, event.bubbles, event.composed]),
+    [["hass-more-info", "sensor.a_download", true, true], ["hass-more-info", "sensor.a_upload", true, true]]);
+  assert.equal(calls.length, sent);
 });
 
 test("actual panel keeps one graph binding on a stable host and disposes it on every scope exit", async () => {

@@ -126,6 +126,27 @@ def _receiver(raw: SettingValues) -> dict[str, Any]:
     }
 
 
+def receiver_identity_requires_read(raw: SettingValues) -> bool:
+    """Detect absent identity prerequisites without weakening field validation."""
+    return any(
+        raw.get(name) in (None, "")
+        for name in ("ex5g_serial_number", "ex5g_model_name")
+    )
+
+
+def merge_receiver_identity(
+    raw: SettingValues, firmware: SettingValues
+) -> dict[str, Any]:
+    """Join only validated identity from the native receiver-information page."""
+    identity = _receiver(firmware)
+    if any(
+        raw.get(name) not in (None, "") and raw[name] != value
+        for name, value in identity.items()
+    ):
+        raise ConfigurationError("receiver_identity_changed")
+    return {**raw, **identity}
+
+
 def _bond_read(raw: SettingValues) -> dict[str, Any]:
     _receiver(raw)
     if not _flag(_context(raw), "easy_support_deactive"):

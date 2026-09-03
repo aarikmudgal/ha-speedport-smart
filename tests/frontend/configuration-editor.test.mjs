@@ -23,6 +23,57 @@ const SETTING = {
 };
 const VALUES = {enabled: true, mode: 0, count: 2, name: "Example", start: "12:30"};
 const RESPONSE = {setting_id: SETTING.id, revision: "opaque-revision", expires_in: 120, values: VALUES};
+test("unloaded and failed enum reads show no invented current option and cannot save", async () => {
+  const calls = [];
+  const controller = createConfigurationEditorController({request: async (message) => {
+    calls.push(message); throw new Error("private backend detail");
+  }});
+  controller.open({entryId: "entry", setting: SETTING});
+  const selected = () => renderConfigurationEditor(controller, {pageMode: true})
+    .match(/<select[^>]*data-setting-field="mode"[^>]*>(.*?)<\/select>/s)?.[1];
+  assert.match(selected(), /<option value="" disabled selected>Current value unavailable<\/option>/);
+  assert.equal(await controller.load(), false);
+  assert.match(selected(), /<option value="" disabled selected>Current value unavailable<\/option>/);
+  assert.equal(controller.snapshot().loaded, false);
+  assert.equal(controller.setValue("mode", 1), false);
+  assert.equal(await controller.save(), false);
+  assert.equal(calls.length, 1);
+  assert.ok(!renderConfigurationEditor(controller).includes("private backend detail"));
+});
+
+test("successful enum read selects only its actual typed option without an unavailable placeholder", async () => {
+  const controller = createConfigurationEditorController({request: async () => RESPONSE});
+  controller.open({entryId: "entry", setting: SETTING});
+  assert.equal(await controller.load(), true);
+  const html = renderConfigurationEditor(controller, {pageMode: true});
+  assert.ok(!html.includes("Current value unavailable"));
+  assert.match(html, /<option value="0" selected>Normal<\/option>/);
+});
+
+for (const [code, status, explanation] of [
+  ["management_unavailable", "load_management_unavailable", "management access is unavailable"],
+  ["settings_busy", "load_busy", "Another router request is still running"],
+  ["action_busy", "load_busy", "Another router request is still running"],
+  ["rate_limited", "load_rate_limited", "requests too quickly"],
+  ["setting_unavailable", "load_setting_unavailable", "required state or prerequisites"],
+  ["unreviewed_private_error", "load_failed", "could not be loaded"],
+]) {
+  test(`read failure ${code} retains only an actionable safe reason and no revision`, async () => {
+    const controller = createConfigurationEditorController({request: async () => {
+      throw Object.assign(new Error("PRIVATE-SECRET-MESSAGE"), {code});
+    }});
+    controller.open({entryId: "entry", setting: SETTING});
+    assert.equal(await controller.load(), false);
+    assert.equal(controller.snapshot().status, status);
+    assert.equal(controller.snapshot().loaded, false);
+    assert.equal(await controller.save(), false);
+    const html = renderConfigurationEditor(controller);
+    assert.ok(html.includes(explanation));
+    assert.ok(!html.includes("PRIVATE-SECRET-MESSAGE"));
+    assert.match(html, /data-setting-action="save" disabled/);
+  });
+}
+
 function deferred() {
   let resolve; let reject;
   const promise = new Promise((yes, no) => {resolve = yes; reject = no;});
