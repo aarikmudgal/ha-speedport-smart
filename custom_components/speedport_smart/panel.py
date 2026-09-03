@@ -19,6 +19,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .management import ManagementRisk, get_entity_write_contract
@@ -41,7 +42,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 29
+PANEL_SCHEMA_VERSION: Final = 30
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -893,6 +894,7 @@ def _capability_panel_data(
             "label": "Live WAN counters",
             "supported": wan_supported,
             "polling_available": fast_available,
+            "availability_checked_at": dt_util.utcnow().isoformat(),
             "available": (
                 wan_supported
                 and fast_available
@@ -901,6 +903,7 @@ def _capability_panel_data(
             "effective_interval_seconds": wan_telemetry.get(
                 "effective_interval_seconds"
             ),
+            "observed_interval_seconds": wan_telemetry.get("observed_interval_seconds"),
             "mode": wan_telemetry.get("mode"),
             "state": wan_telemetry.get("state"),
             "target_interval_seconds": wan_telemetry.get("target_interval_seconds"),

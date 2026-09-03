@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
+from math import ceil, floor
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, TypeVar, cast
 
@@ -455,6 +456,8 @@ class SpeedportHub:
         self._admin_action_grant_expiry_cancel: Callable[[], None] | None = None
         self._management_generation = 0
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
+        self._counter_sample_interface: tuple[int, str | None, str | None] | None = None
+        self._wan_counter_grid_anchor: float | None = None
         self._wan_counter_probe_pending = False
         self._wan_counter_failures = 0
         self._wan_counter_retry_at = 0.0
@@ -569,6 +572,7 @@ class SpeedportHub:
                 "state": self._wan_counter_adaptation_state(monotonic_now),
                 "target_interval_seconds": self._wan_counter_target_interval,
                 "effective_interval_seconds": self._wan_counter_effective_interval,
+                "observed_interval_seconds": self._observed_wan_interval(),
                 "runtime_floor_seconds": self._wan_counter_runtime_floor,
                 "last_stable_interval_seconds": (
                     self._wan_counter_fastest_proven_interval
@@ -652,6 +656,31 @@ class SpeedportHub:
     ) -> None:
         """Attach one coordinator to hub."""
         self._coordinators[group] = coordinator
+
+    def align_fast_poll_clock(self) -> None:
+        """Anchor future WAN slots to UTC seconds once, then use monotonic time."""
+        if self._wan_counter_grid_anchor is None:
+            self._wan_counter_grid_anchor = (
+                self._monotonic_time() - datetime.now(UTC).microsecond / 1_000_000
+            )
+
+    def fast_poll_delay(self, maximum: float) -> float:
+        """Wake for the nearest due source without rounded HA timer phases."""
+        deadlines = [self._public_status_next_poll_at]
+        if self.has_capability("wan_counters") or self._wan_counter_probe_pending:
+            deadlines.append(
+                max(self._wan_counter_next_poll_at, self._wan_counter_retry_at)
+            )
+        return min(maximum, max(0.0, min(deadlines) - self._monotonic_time()))
+
+    def _observed_wan_interval(self) -> float | None:
+        """Report actual spacing only when a consecutive valid pair exists."""
+        if len(self._counter_samples) < _MIN_RATE_SAMPLES:
+            return None
+        elapsed = (
+            self._counter_samples[-1].sampled_at - self._counter_samples[-2].sampled_at
+        )
+        return elapsed if elapsed > 0 else None
 
     def coordinator(self, group: PollGroup | str) -> SpeedportDataUpdateCoordinator:
         """Return attached coordinator for group."""
@@ -2523,6 +2552,8 @@ class SpeedportHub:
                 self._monotonic_time() + self._public_status_interval
             )
 
+        # Status may have awaited a slow request while a WAN slot became due.
+        now = self._monotonic_time()
         report = self._capability_report
         wan_counters_confirmed = report is not None and report.wan_counters
         wan_retry_deferred = now < self._wan_counter_retry_at
@@ -2541,7 +2572,14 @@ class SpeedportHub:
         elif wan_counters_confirmed or self._wan_counter_probe_pending:
             # Rate-limit every ToTR64 attempt, including protocol errors that do not
             # enter the dedicated session-busy retry path.
-            self._wan_counter_next_poll_at = now + self._wan_counter_effective_interval
+            slot = self._wan_counter_next_poll_at
+            if not slot:
+                if self._wan_counter_grid_anchor is None:
+                    self._wan_counter_grid_anchor = now
+                slot = self._wan_counter_grid_anchor
+            interval = self._wan_counter_effective_interval
+            slot += floor((now - slot) / interval) * interval
+            self._wan_counter_next_poll_at = slot + interval
             try:
                 counters = await self.client.get_wan_counters(busy_retries=0)
             except SpeedportSessionBusyError as err:
@@ -2586,8 +2624,12 @@ class SpeedportHub:
                 self._wan_counter_failures = 0
                 self._wan_counter_retry_at = 0.0
                 self._record_wan_counter_success()
+                completed = self._monotonic_time()
+                interval = self._wan_counter_effective_interval
+                # Consume only the latest due slot. A slow response never queues
+                # missed polls, and small timer jitter never moves the grid.
                 self._wan_counter_next_poll_at = (
-                    self._monotonic_time() + self._wan_counter_effective_interval
+                    slot + (floor((completed - slot) / interval) + 1) * interval
                 )
                 self._confirm_tr064_capability(wan_counters=True)
                 self._endpoint_errors.pop("wan_counters", None)
@@ -2712,7 +2754,14 @@ class SpeedportHub:
         self._wan_counter_retry_at = (
             self._monotonic_time() + _WAN_COUNTER_COOLDOWN_SECONDS
         )
-        self._wan_counter_next_poll_at = self._wan_counter_retry_at
+        anchor = self._wan_counter_grid_anchor
+        interval = self._wan_counter_effective_interval
+        self._wan_counter_next_poll_at = (
+            self._wan_counter_retry_at
+            if anchor is None
+            else anchor
+            + ceil((self._wan_counter_retry_at - anchor) / interval) * interval
+        )
 
     def _record_wan_counter_success(self) -> None:
         """Probe toward the requested cadence only after sustained stable reads."""
@@ -3108,6 +3157,12 @@ class SpeedportHub:
         now = self._monotonic_time()
         sample = _CounterSample(now, received, sent)
 
+        interface = counters.interface
+        identity = (interface.index, interface.alias, interface.name)
+        if identity != self._counter_sample_interface:
+            self._counter_samples.clear()
+            self._counter_sample_interface = identity
+
         if self._counter_samples:
             previous = self._counter_samples[-1]
             if received < previous.received or sent < previous.sent:
@@ -3132,7 +3187,6 @@ class SpeedportHub:
                 download_rate = received_delta * 8 / elapsed
                 upload_rate = sent_delta * 8 / elapsed
 
-        interface = counters.interface
         wan: dict[str, Any] = {
             "bytes_received": received,
             "bytes_sent": sent,
@@ -3169,15 +3223,11 @@ class SpeedportHub:
         return wan
 
     def _rate_baseline(self, now: float) -> _CounterSample | None:
-        """Choose oldest sample within rolling rate window."""
+        """Use only the immediately previous valid sample for the live rate."""
         if len(self._counter_samples) < _MIN_RATE_SAMPLES:
             return None
-        eligible = [
-            sample
-            for sample in self._counter_samples
-            if 0 < now - sample.sampled_at <= self.rate_window_seconds
-        ]
-        return eligible[0] if eligible else self._counter_samples[-2]
+        previous = self._counter_samples[-2]
+        return previous if previous.sampled_at < now else None
 
     def _matches_command_readback(
         self,

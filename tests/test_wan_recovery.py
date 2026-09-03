@@ -125,6 +125,9 @@ async def test_every_supported_wan_error_cools_down_from_failure_completion(
     assert hub.wan_counter_telemetry["state"] == "learning"
     assert hub.wan_counter_telemetry["retrying"] is False
     assert mock_speedport_client.get_wan_counters.await_count == calls
+    # Cooldown expiry makes the next original-grid slot eligible; it does not
+    # shift the polling phase to a fractional failure-completion timestamp.
+    now[0] = hub._wan_counter_next_poll_at
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == calls + 1
     assert hub.wan_counter_telemetry["effective_interval_seconds"] == 4

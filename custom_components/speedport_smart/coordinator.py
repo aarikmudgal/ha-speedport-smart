@@ -64,6 +64,8 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
         """Initialize coordinator."""
         self.hub = hub
         self.group = group
+        self._fast_refresh_running = False
+        self._fast_refresh_reschedule_requested = False
         super().__init__(
             hass,
             logger=hub.logger,
@@ -72,12 +74,76 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
             update_interval=interval,
             always_update=False,
         )
+        if group is PollGroup.FAST:
+            hub.align_fast_poll_clock()
 
     @callback
     def _schedule_refresh(self) -> None:
         """Keep autonomous poll timers independent of an initiating admin request."""
         with autonomous_ha_context():
+            if self.group is PollGroup.FAST:
+                if (
+                    self.update_interval is None
+                    or self._shutdown_requested
+                    or (self.config_entry and self.config_entry.pref_disable_polling)
+                ):
+                    return
+                self._async_unsub_refresh()
+                if self._fast_refresh_running:
+                    self._fast_refresh_reschedule_requested = True
+                    return
+                delay = self.hub.fast_poll_delay(self.update_interval.total_seconds())
+                self._unsub_refresh = self.hass.loop.call_later(
+                    max(delay, 0.001), self._handle_fast_refresh
+                ).cancel
+                return
             super()._schedule_refresh()
+
+    @callback
+    def _handle_fast_refresh(self) -> None:
+        """Delegate each exact-deadline tick to HA's serialized lifecycle handler."""
+        self._unsub_refresh = None
+        if (
+            self._fast_refresh_running
+            or self._shutdown_requested
+            or self.hass.is_stopping
+        ):
+            return
+        self._fast_refresh_running = True
+        self._fast_refresh_reschedule_requested = False
+        if self.config_entry:
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._async_fast_refresh(),
+                name=f"{self.name} - refresh",
+                eager_start=True,
+            )
+        else:
+            self.hass.async_create_background_task(
+                self._async_fast_refresh(),
+                name=f"{self.name} - refresh",
+                eager_start=True,
+            )
+
+    async def _async_fast_refresh(self) -> None:
+        """Drop busy timer slots and schedule at most once after completion."""
+        try:
+            await self._handle_refresh_interval()
+        finally:
+            self._fast_refresh_running = False
+            reschedule = self._fast_refresh_reschedule_requested
+            self._fast_refresh_reschedule_requested = False
+            if (
+                reschedule
+                and self._listeners
+                and not self._shutdown_requested
+                and not self.hass.is_stopping
+                and (
+                    self.last_update_success
+                    or not isinstance(self.last_exception, ConfigEntryAuthFailed)
+                )
+            ):
+                self._schedule_refresh()
 
     @callback
     def async_set_updated_data(self, data: GroupSnapshot) -> None:

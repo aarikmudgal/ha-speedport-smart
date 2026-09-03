@@ -2357,7 +2357,9 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
     """Expose the adaptive WAN scheduler as read-only diagnostic state."""
 
     _attr_entity_registry_enabled_default = True
-    _unrecorded_attributes = frozenset({"retry_in_seconds", "success_streak"})
+    _unrecorded_attributes = frozenset(
+        {"retry_in_seconds", "success_streak", "observed_interval_seconds"}
+    )
     entity_description: SensorEntityDescription
 
     def __init__(
@@ -2432,6 +2434,9 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
             if telemetry.get(key) is not None
         }
         attributes["source_available"] = not self.hub.has_endpoint_error("wan_counters")
+        attributes["observed_interval_seconds"] = telemetry.get(
+            "observed_interval_seconds"
+        )
         return attributes
 
 

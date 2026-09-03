@@ -83,15 +83,17 @@ async def test_coordinator_success_and_error_mapping(
 
 
 @pytest.mark.parametrize("publication", [False, True])
+@pytest.mark.parametrize("group", [PollGroup.FAST, PollGroup.NORMAL])
 async def test_autonomous_poll_timer_detaches_only_private_request_context(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     publication: bool,  # noqa: FBT001 - explicit parameterized publication path
+    group: PollGroup,
 ) -> None:
     """Real HA loop.call_at timers cannot inherit a completed private approval."""
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     coordinator = SpeedportDataUpdateCoordinator(
-        hass, hub, PollGroup.NORMAL, timedelta(seconds=60)
+        hass, hub, group, timedelta(seconds=60)
     )
     marker = ContextVar("test_other_ha_context", default="absent")
     marker_token = marker.set("preserved")
@@ -119,7 +121,7 @@ async def test_autonomous_poll_timer_detaches_only_private_request_context(
                 remove = coordinator.async_add_listener(lambda: None)
                 if publication:
                     coordinator.async_set_updated_data(
-                        GroupSnapshot(PollGroup.NORMAL, {}, 1, datetime.now(UTC))
+                        GroupSnapshot(group, {}, 1, datetime.now(UTC))
                     )
                 cancel = coordinator._unsub_refresh  # noqa: SLF001
                 assert cancel is not None
@@ -134,6 +136,93 @@ async def test_autonomous_poll_timer_detaches_only_private_request_context(
         assert seen == ["preserved"]
     finally:
         marker.reset(marker_token)
+        await coordinator.async_shutdown()
+
+
+async def test_fast_timer_targets_actual_deadline_and_cancels_with_listener(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """No HA integer-phase early tick can replace the exact WAN deadline."""
+    now = [100.3]
+    hub = SpeedportHub(
+        hass,
+        mock_speedport_client,
+        fallback_identifier="entry",
+        monotonic_time=lambda: now[0],
+    )
+    await hub.async_setup()
+    hub._public_status_next_poll_at = float("inf")  # noqa: SLF001
+    hub._wan_counter_next_poll_at = 101.0  # noqa: SLF001
+    coordinator = SpeedportDataUpdateCoordinator(
+        hass, hub, PollGroup.FAST, timedelta(seconds=1)
+    )
+    with patch.object(hass.loop, "call_later") as schedule:
+        remove = coordinator.async_add_listener(lambda: None)
+        assert schedule.call_args.args[0] == pytest.approx(0.7)
+        assert schedule.call_args.args[1] == coordinator._handle_fast_refresh  # noqa: SLF001
+        handle = schedule.return_value
+        remove()
+        handle.cancel.assert_called_once()
+    await coordinator.async_shutdown()
+    with patch.object(hass.loop, "call_later") as schedule:
+        coordinator._schedule_refresh()  # noqa: SLF001
+        schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("authentication_failure", [False, True])
+@pytest.mark.parametrize("previous_authentication_failure", [False, True])
+async def test_publication_during_fast_read_cannot_queue_another_handler(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    authentication_failure: bool,  # noqa: FBT001 - parameterized lifecycle branch
+    previous_authentication_failure: bool,  # noqa: FBT001 - retained HA exception
+) -> None:
+    """One FAST handler owns the request and deferred schedule through completion."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    coordinator = SpeedportDataUpdateCoordinator(
+        hass, hub, PollGroup.FAST, timedelta(seconds=1)
+    )
+    if previous_authentication_failure:
+        coordinator.last_exception = ConfigEntryAuthFailed("previous failure")
+    entered, release = asyncio.Event(), asyncio.Event()
+    tasks = []
+    snapshot = GroupSnapshot(PollGroup.FAST, {}, 1, datetime.now(UTC))
+
+    async def read(_group: PollGroup) -> GroupSnapshot:
+        entered.set()
+        await release.wait()
+        if authentication_failure:
+            raise SpeedportInvalidCredentialsError("synthetic")
+        return snapshot
+
+    def create_task(coroutine: object, **_kwargs: object) -> asyncio.Task:
+        task = asyncio.create_task(coroutine)  # type: ignore[arg-type]
+        tasks.append(task)
+        return task
+
+    hub.async_update_group = AsyncMock(side_effect=read)  # type: ignore[method-assign]
+    try:
+        with (
+            patch.object(hass.loop, "call_later") as schedule,
+            patch.object(hass, "async_create_background_task", side_effect=create_task),
+        ):
+            remove = coordinator.async_add_listener(lambda: None)
+            coordinator._handle_fast_refresh()  # noqa: SLF001
+            await entered.wait()
+            for _ in range(2):
+                coordinator.async_set_updated_data(snapshot)
+                coordinator._handle_fast_refresh()  # noqa: SLF001
+            assert len(tasks) == 1
+            assert schedule.call_count == 1
+            assert hub.async_update_group.await_count == 1
+            release.set()
+            await asyncio.gather(*tasks)
+            assert schedule.call_count == (1 if authentication_failure else 2)
+            remove()
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
         await coordinator.async_shutdown()
 
 

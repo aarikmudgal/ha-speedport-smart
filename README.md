@@ -36,9 +36,11 @@ The integration domain is **speedport_smart**. The public integration name is
 ## Dashboard preview
 
 The bundled dashboard follows Home Assistant's active light or dark theme and
-adapts to both desktop and mobile layouts. These dark-theme captures contain
-only the router model and generic availability states; network and household
-identifiers are excluded.
+adapts to both desktop and mobile layouts. These current dark-theme previews use
+only synthetic names, traffic and connection data, rendered by the actual
+dashboard. No private router or household information is shown. The captures
+show the top of the Dashboard; see the [dashboard guide](docs/dashboard.md) for
+the remaining connection cards and Administration navigation.
 
 ### Desktop
 

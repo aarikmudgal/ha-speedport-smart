@@ -123,6 +123,30 @@ test("a genuinely newer diagnostic clock wins over older precise metadata", asyn
   assert.equal(view.current().lastSampleAt, BASE + 60000);
 });
 
+test("fresh native recovery resumes graph immediately without waiting for metadata or rereading history", async (t) => {
+  const view = fixture(t, "7");
+  view.setTime(10);
+  view.source.available = false;
+  view.source.polling_available = false;
+  view.source.availability_checked_at = iso(5);
+  view.source.last_sampled_at = iso(4);
+  view.router.entities.push({entity_id: "sensor.polling", domain: "sensor", translation_key: "wan_polling_state"});
+  view.states["sensor.polling"] = {state: "stable", last_updated: iso(4), attributes: {source_available: true}};
+  await view.sync();
+  assert.equal(view.current().current, null);
+  for (const [seconds, value] of [[11, "10"], [12, "20"], [13, "30"]]) {
+    view.setTime(seconds);
+    view.panel.hass = {...view.panel._hass, states: {...view.panel._hass.states,
+      "sensor.polling": {state: "stable", last_updated: iso(seconds), attributes: {source_available: true}},
+      "sensor.download": {state: value, last_updated: iso(seconds), attributes: {unit_of_measurement: "Mbit/s"}},
+    }};
+    assert.equal(view.current().current, Number(value));
+  }
+  assert.equal(view.source.polling_available, false, "metadata must remain unchanged");
+  assert.equal(view.calls.length, 1, "no metadata fetch or extra Recorder read");
+  assert.equal(view.calls[0].type, "history/history_during_period");
+});
+
 for (const [label, metadata, diagnostic, expected] of [
   ["invalid metadata", "invalid", iso(60), 60],
   ["future metadata", iso(67), iso(60), 60],

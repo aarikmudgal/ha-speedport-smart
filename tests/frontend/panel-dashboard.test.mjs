@@ -30,7 +30,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 29, routers: [first, second]};
+  panel._metadata = {schema_version: 30, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -57,13 +57,34 @@ test("dashboard shows fixed sixty-second cooldown without changing cadence or re
   for (const [remaining, text] of [[60, "1 min"], [45, "45 s"], [0.2, "1 s"]]) {
     const html = panel._renderDashboard(first, first.entities.filter((item) => !item.control),
       {wan_counters: recoverySource({retry_in_seconds: remaining})});
-    assert.ok(html.includes("WAN samples every 3 s · Cooldown"));
+    assert.ok(html.includes("WAN cadence 3 s · Cooldown"));
     assert.ok(html.includes(`Retry in ~${text}`));
     assert.ok(!html.includes("5 min cooldown"));
     assert.ok(!html.includes("will start"));
   }
   assert.equal(calls.length, 0);
   assert.equal(panel._trafficHistory.snapshot(), null);
+});
+
+test("WAN cadence distinguishes configured cadence from the last achieved sample interval", () => {
+  const {panel, first, calls} = fixture();
+  for (const [observed, display] of [[2.34, "2.34"], [1, "1"], [60.1234, "60.12"]]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), state: "stable", retrying: false, effective_interval_seconds: 1,
+      observed_interval_seconds: observed,
+    }});
+    assert.ok(html.includes("WAN cadence 1 s · Stable"));
+    assert.ok(html.includes(`Last sample interval ${display} s`));
+    assert.ok(!html.includes("WAN samples every"));
+  }
+  for (const observed of [null, undefined, 0, -1, "2.3", NaN, Infinity, {}, []]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), observed_interval_seconds: observed,
+    }});
+    assert.ok(!html.includes("Last sample interval"));
+    assert.ok(html.includes("Cooldown"));
+  }
+  assert.equal(calls.length, 0);
 });
 
 for (const [source, text] of [
@@ -137,6 +158,78 @@ test("fresh Learning attributes override stale counters while malformed values s
     assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: cooldown}).includes("Retry in ~"));
   }
   assert.equal(calls.length, 0);
+});
+
+test("only genuinely newer healthy scheduler evidence overrides cached failed polling metadata", (t) => {
+  const now = Date.parse("2026-09-03T12:00:10Z");
+  t.mock.method(Date, "now", () => now);
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = {...recoverySource(), supported: true, available: false, polling_available: false,
+    availability_checked_at: new Date(now - 5000).toISOString()};
+  const fresh = {state: "stable", last_updated: new Date(now - 1000).toISOString(), attributes: {source_available: true}};
+  const merged = liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": fresh});
+  assert.equal(merged.available, true);
+  assert.equal(merged.retrying, false);
+  assert.equal(source.available, false);
+  for (const candidate of [
+    {...fresh, state: "unknown"}, {...fresh, state: "unavailable"}, {...fresh, state: "cooldown"},
+    {...fresh, state: "retrying"}, {...fresh, state: "arbitrary"}, {...fresh, last_updated: undefined},
+    {...fresh, last_updated: "invalid"}, {...fresh, last_updated: new Date(now - 5000).toISOString()},
+    {...fresh, last_updated: new Date(now - 10000).toISOString()},
+    {...fresh, last_updated: new Date(now + 5001).toISOString()},
+    {...fresh, attributes: {source_available: false}}, {...fresh, attributes: {source_available: "true"}},
+  ]) {
+    assert.equal(liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": candidate}).available, false);
+  }
+  for (const changed of [
+    {...source, availability_checked_at: undefined}, {...source, availability_checked_at: "invalid"},
+    {...source, availability_checked_at: new Date(now + 5001).toISOString()}, {...source, supported: false},
+  ]) assert.equal(liveWanSourceFromEntityStates(changed, entities, {"sensor.poll_state": fresh}).available, false);
+  const old = {...source, availability_checked_at: new Date(now - 60000).toISOString()};
+  assert.equal(liveWanSourceFromEntityStates(old, entities, {"sensor.poll_state": {...fresh, last_updated: new Date(now - 31000).toISOString()}}).available, false);
+  const newerFailure = {...source, polling_available: true, availability_checked_at: new Date(now).toISOString()};
+  assert.equal(liveWanSourceFromEntityStates(newerFailure, entities, {"sensor.poll_state": fresh}).available, false);
+});
+
+test("retained healthy attributes cannot revive an unavailable or unsupported WAN scheduler", () => {
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  for (const state of ["unknown", "unavailable", "cooldown", "retrying"]) {
+    const source = liveWanSourceFromEntityStates({...recoverySource(), available: true, polling_available: true}, entities,
+      {"sensor.poll_state": {state, attributes: {source_available: true}}});
+    assert.equal(source.available, false);
+  }
+});
+
+test("live achieved interval attributes override metadata without coercing missing data to zero", () => {
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = {...recoverySource(), state: "stable", retrying: false, observed_interval_seconds: 4};
+  for (const value of [1, 2.35, 59.2]) {
+    assert.equal(liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": {
+      state: "stable", attributes: {observed_interval_seconds: value},
+    }}).observed_interval_seconds, value);
+  }
+  for (const value of [null, undefined, -1, 0, Infinity, NaN, "2", {}, []]) {
+    assert.equal(liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": {
+      state: "stable", attributes: {observed_interval_seconds: value},
+    }}).observed_interval_seconds, undefined);
+  }
+});
+
+test("retained measured intervals disappear immediately on live failure and stay hidden during recovery warmup", () => {
+  const {panel, first} = fixture();
+  const source = {...recoverySource(), available: true, state: "stable", retrying: false, observed_interval_seconds: 1};
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  for (const state of ["cooldown", "retrying", "unavailable", "unknown"]) {
+    const live = liveWanSourceFromEntityStates(source, entities, {"sensor.poll_state": {
+      state, attributes: {source_available: true, observed_interval_seconds: 1},
+    }});
+    assert.equal(live.observed_interval_seconds, undefined);
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: live}).includes("Last sample interval"));
+  }
+  for (const changed of [{available: false}, {supported: false}, {retrying: true}, {state: "cooldown"},
+    {state: "learning", observed_interval_seconds: null}]) {
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: {...source, ...changed}}).includes("Last sample interval"));
+  }
 });
 
 for (const [language, label] of [["en", "Cooldown"], ["de", "Abkühlphase"]]) {

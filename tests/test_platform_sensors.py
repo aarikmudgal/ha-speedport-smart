@@ -432,13 +432,21 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
             "success_samples_required": 5,
             "cooldown_seconds": 60,
             "source_available": True,
+            "observed_interval_seconds": None,
         }
+        telemetry["observed_interval_seconds"] = 1.234
+        assert (
+            entities["wan_polling_state"].extra_state_attributes[
+                "observed_interval_seconds"
+            ]
+            == 1.234
+        )
         telemetry["state"] = "cooldown"
         telemetry["retry_in_seconds"] = 60.0
         assert entities["wan_polling_state"].native_value == "cooldown"
         assert entities["wan_polling_state"].available
         state_entity = entities["wan_polling_state"]
-        assert {"retry_in_seconds", "success_streak"} <= (
+        assert {"retry_in_seconds", "success_streak", "observed_interval_seconds"} <= (
             state_entity._unrecorded_attributes  # noqa: SLF001
         )
         hub.coordinator(PollGroup.FAST).last_update_success = False
