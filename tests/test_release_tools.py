@@ -137,7 +137,7 @@ def test_resolve_stable_and_beta_release_metadata() -> None:
         base_version="0.1.0",
         channel="stable",
         prerelease=False,
-        release_name="Telekom Speedport Smart v0.1.0",
+        release_name="v0.1.0",
         tag="v0.1.0",
         version="0.1.0",
     )
@@ -151,7 +151,7 @@ def test_resolve_stable_and_beta_release_metadata() -> None:
         base_version="0.3.0",
         channel="beta",
         prerelease=True,
-        release_name=("Telekom Speedport Smart v0.3.0-beta.41.2 (feat/live-polling)"),
+        release_name="v0.3.0-beta.41.2",
         tag="v0.3.0-beta.41.2",
         version="0.3.0-beta.41.2",
     )

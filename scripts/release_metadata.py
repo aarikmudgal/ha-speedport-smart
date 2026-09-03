@@ -153,7 +153,7 @@ def resolve_release(
             msg = f"Stable releases are only allowed from main, not {branch!r}"
             raise ValueError(msg)
         version = base_version
-        release_name = f"{INTEGRATION_NAME} v{version}"
+        release_name = f"v{version}"
         prerelease = False
     else:
         if FEATURE_BRANCH.fullmatch(branch) is None:
@@ -164,7 +164,7 @@ def resolve_release(
         if run_attempt is None or run_attempt < 1:
             raise ValueError("Beta releases require a positive GitHub run attempt")
         version = f"{base_version}-beta.{run_number}.{run_attempt}"
-        release_name = f"{INTEGRATION_NAME} v{version} ({branch})"
+        release_name = f"v{version}"
         prerelease = True
 
     return ReleaseMetadata(
