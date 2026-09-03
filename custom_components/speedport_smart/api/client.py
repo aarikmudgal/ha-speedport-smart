@@ -3346,13 +3346,15 @@ class SpeedportClient:
             await self._logout_unlocked()
             return await self._get_parameter_values_unlocked(names)
 
-    async def get_dsl_metrics(self) -> DslMetrics:
-        """Read normalized DSL telemetry from exact TR-181 leaf parameters."""
+    async def get_dsl_metrics(self, *, busy_retries: int | None = None) -> DslMetrics:
+        """Read DSL telemetry with an optional per-call busy retry policy."""
         self._ensure_open()
         async with self._lock:
             await self._logout_unlocked()
             names = self._dsl_parameter_names or _DSL_PARAMETER_NAMES
-            values, supported_names = await self._read_dsl_parameters_unlocked(names)
+            values, supported_names = await self._read_dsl_parameters_unlocked(
+                names, busy_retries=busy_retries
+            )
             self._dsl_parameter_names = supported_names
             return _make_dsl_metrics(values)
 
@@ -3446,11 +3448,13 @@ class SpeedportClient:
         return _make_wan_counters(updated_interface)
 
     async def _read_dsl_parameters_unlocked(
-        self, names: Sequence[str]
+        self, names: Sequence[str], *, busy_retries: int | None = None
     ) -> tuple[dict[str, ParameterValue], tuple[str, ...]]:
         """Read DSL leaves, isolating unsupported optional parameters."""
         try:
-            values = await self._get_parameter_values_unlocked(names)
+            values = await self._get_parameter_values_unlocked(
+                names, busy_retries=busy_retries
+            )
         except SpeedportSessionBusyError:
             raise
         except SpeedportUnsupportedError:
@@ -3458,7 +3462,9 @@ class SpeedportClient:
             supported_names: list[str] = []
             for name in names:
                 try:
-                    parameter = await self._get_parameter_values_unlocked((name,))
+                    parameter = await self._get_parameter_values_unlocked(
+                        (name,), busy_retries=busy_retries
+                    )
                 except SpeedportSessionBusyError:
                     raise
                 except SpeedportUnsupportedError:

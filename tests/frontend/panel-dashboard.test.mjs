@@ -30,7 +30,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 30, routers: [first, second]};
+  panel._metadata = {schema_version: 31, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -85,6 +85,59 @@ test("WAN cadence distinguishes configured cadence from the last achieved sample
     assert.ok(html.includes("Cooldown"));
   }
   assert.equal(calls.length, 0);
+});
+
+test("WAN averaging target is distinct from polling and reports materially different actual spans", () => {
+  const {panel, first, calls} = fixture();
+  for (const [window, span, extra] of [[5, 5.02, false], [5, 2, true], [5, 10, true], [10, 10, false]]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), state: "stable", retrying: false, effective_interval_seconds: 1,
+      observed_interval_seconds: 1.1, rate_window_seconds: window, rate_sample_span_seconds: span,
+    }});
+    assert.ok(html.includes("WAN cadence 1 s · Stable"));
+    assert.ok(html.includes(`${window} s average window`));
+    assert.ok(html.includes("Last sample interval 1.1 s"));
+    assert.equal(html.includes("Current average span"), extra);
+    if (extra) assert.ok(html.includes(`Current average span ${span} s`));
+  }
+  for (const window of [undefined, null, "5", 0, -1, Infinity, NaN, true, {}, []]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), rate_window_seconds: window, rate_sample_span_seconds: 10,
+    }});
+    assert.ok(!html.includes("average window"));
+    assert.ok(!html.includes("Current average span"));
+  }
+  for (const unavailable of [{state: "cooldown", retrying: true}, {available: false}, {supported: false}]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: {
+      ...recoverySource(), state: "stable", retrying: false, ...unavailable,
+      rate_window_seconds: 5, rate_sample_span_seconds: 10,
+    }});
+    assert.ok(html.includes("5 s average window"));
+    assert.ok(!html.includes("Current average span"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("live averaging telemetry keeps configured window but clears stale actual spans", () => {
+  const entity = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = {...recoverySource(), state: "stable", retrying: false, rate_window_seconds: 10, rate_sample_span_seconds: 10};
+  const healthy = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+    state: "stable", attributes: {rate_window_seconds: 5, rate_sample_span_seconds: 2},
+  }});
+  assert.equal(healthy.rate_window_seconds, 5);
+  assert.equal(healthy.rate_sample_span_seconds, 2);
+  for (const value of [null, undefined, "5", 0, -1, NaN, Infinity, false, {}]) {
+    const live = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+      state: "stable", attributes: {rate_window_seconds: value, rate_sample_span_seconds: value},
+    }});
+    assert.equal(live.rate_window_seconds, undefined);
+    assert.equal(live.rate_sample_span_seconds, undefined);
+  }
+  const cooldown = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+    state: "cooldown", attributes: {rate_window_seconds: 5, rate_sample_span_seconds: 10},
+  }});
+  assert.equal(cooldown.rate_window_seconds, 5);
+  assert.equal(cooldown.rate_sample_span_seconds, undefined);
 });
 
 for (const [source, text] of [

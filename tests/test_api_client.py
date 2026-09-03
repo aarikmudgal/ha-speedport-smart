@@ -1818,6 +1818,121 @@ async def test_busy_fault_retries_with_same_serial_owner() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cached_names", [False, True])
+async def test_runtime_dsl_read_surfaces_first_busy_fault(
+    *, cached_names: bool
+) -> None:
+    """Scheduled DSL reads stop at the first busy response without sleeping."""
+    session = _FakeSession()
+    session.add(_busy_fault(), status=500)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    if cached_names:
+        client._dsl_parameter_names = (  # noqa: SLF001
+            "Device.DSL.Channel.1.DownstreamCurrRate",
+        )
+
+    with (
+        patch("custom_components.speedport_smart.api.client.asyncio.sleep") as sleep,
+        pytest.raises(SpeedportSessionBusyError),
+    ):
+        await client.get_dsl_metrics(busy_retries=0)
+
+    sleep.assert_not_awaited()
+    assert len(session.requests) == 1
+    assert session.max_active == 1
+    assert not client._lock.locked()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_dsl_read_preserves_default_four_busy_retries() -> None:
+    """Omitted per-call policy retains all four serialized constructor retries."""
+    session = _FakeSession()
+    for _ in range(5):
+        session.add(_busy_fault(), status=500)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+
+    def assert_owned(_delay: float) -> None:
+        assert client._lock.locked()  # noqa: SLF001
+
+    with (
+        patch(
+            "custom_components.speedport_smart.api.client.asyncio.sleep",
+            side_effect=assert_owned,
+        ) as sleep,
+        pytest.raises(SpeedportSessionBusyError),
+    ):
+        await client.get_dsl_metrics()
+
+    assert sleep.await_args_list == [call(0.5), call(1.0), call(2.0), call(4.0)]
+    assert len(session.requests) == 5
+    assert session.max_active == 1
+    assert not client._lock.locked()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy_leaf", [False, True])
+async def test_dsl_optional_fallback_propagates_retry_policy(
+    *, busy_leaf: bool
+) -> None:
+    """Leaf isolation and the cached supported-name read share the override."""
+    rate_name = "Device.DSL.Channel.1.DownstreamCurrRate"
+    optional_name = "Device.DSL.Line.1.DownstreamNoiseMargin"
+    unsupported = _busy_fault().replace("9801", "9005")
+    session = _FakeSession()
+    session.add(unsupported, status=500)
+    session.add(_soap_response((rate_name, "100000", "unsignedInt")))
+    session.add(_busy_fault() if busy_leaf else unsupported, status=500)
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+    client._dsl_parameter_names = (rate_name, optional_name)  # noqa: SLF001
+
+    with patch("custom_components.speedport_smart.api.client.asyncio.sleep") as sleep:
+        if busy_leaf:
+            with pytest.raises(SpeedportSessionBusyError):
+                await client.get_dsl_metrics(busy_retries=0)
+            assert client._dsl_parameter_names == (  # noqa: SLF001
+                rate_name,
+                optional_name,
+            )
+        else:
+            metrics = await client.get_dsl_metrics(busy_retries=0)
+            assert metrics.downstream_current_bps == 100_000_000
+            assert client._dsl_parameter_names == (rate_name,)  # noqa: SLF001
+            session.add(_busy_fault(), status=500)
+            with pytest.raises(SpeedportSessionBusyError):
+                await client.get_dsl_metrics(busy_retries=0)
+            assert optional_name not in session.requests[-1][2]["data"]
+        sleep.assert_not_awaited()
+
+    assert len(session.requests) == (3 if busy_leaf else 4)
+    assert session.max_active == 1
+    assert not client._lock.locked()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_runtime_dsl_reads_remain_serialized() -> None:
+    """A zero retry policy never bypasses the shared client request owner."""
+    session = _FakeSession()
+    for rate in (100000, 110000):
+        session.add(
+            _soap_response(
+                ("Device.DSL.Channel.1.DownstreamCurrRate", str(rate), "unsignedInt")
+            ),
+            delay=0.001,
+        )
+    client = SpeedportClient(session, "speedport.ip")  # type: ignore[arg-type]
+
+    first, second = await asyncio.gather(
+        client.get_dsl_metrics(busy_retries=0),
+        client.get_dsl_metrics(busy_retries=0),
+    )
+
+    assert first.downstream_current_bps == 100_000_000
+    assert second.downstream_current_bps == 110_000_000
+    assert len(session.requests) == 2
+    assert session.max_active == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_wan_read_can_surface_first_busy_fault() -> None:
     """Adaptive polling observes the first 9801 instead of an internal retry burst."""
     session = _FakeSession()

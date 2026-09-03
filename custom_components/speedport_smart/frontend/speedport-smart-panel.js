@@ -1,24 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=30";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=30";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=30";
+import { requestPrivateApi } from "./private-api.js?schema=31";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=31";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=31";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=30";
-import { keepDialogFocus } from "./accessibility.js?schema=30";
+} from "./admin-navigation.js?schema=31";
+import { keepDialogFocus } from "./accessibility.js?schema=31";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=30";
+} from "./call-history-view.js?schema=31";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=30";
+} from "./file-transfer-editor.js?schema=31";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=30";
+} from "./maintenance-editor.js?schema=31";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=30";
+} from "./configuration-editor.js?schema=31";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,22 +33,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=30";
+} from "./controls.js?schema=31";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=30";
+} from "./entity-state.js?schema=31";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=30";
+} from "./render-state.js?schema=31";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=30";
+} from "./translations.js?schema=31";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -234,7 +234,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 30;
+const PANEL_SCHEMA_VERSION = 31;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3285,8 +3285,17 @@ export function liveWanSourceFromEntityStates(source, entities, states) {
     if (typeof observed === "number" && Number.isFinite(observed) && observed > 0) live.observed_interval_seconds = observed;
     else delete live.observed_interval_seconds;
   }
+  for (const key of ["rate_window_seconds", "rate_sample_span_seconds"]) {
+    if (!Object.hasOwn(schedulerAttributes, key)) continue;
+    const seconds = schedulerAttributes[key];
+    if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) live[key] = seconds;
+    else delete live[key];
+  }
   if (live.available === false || live.supported === false || live.retrying === true ||
-      !["learning", "stable"].includes(live.state)) delete live.observed_interval_seconds;
+      !["learning", "stable"].includes(live.state)) {
+    delete live.observed_interval_seconds;
+    delete live.rate_sample_span_seconds;
+  }
   const retryInSeconds = schedulerAttributes.retry_in_seconds;
   if (typeof retryInSeconds === "number" && Number.isFinite(retryInSeconds) && retryInSeconds >= 0) {
     live.retry_in_seconds = retryInSeconds;
@@ -7705,8 +7714,19 @@ export class SpeedportSmartPanel extends HTMLElement {
     const observedText = wan?.available === true && wan.supported !== false && wan.retrying !== true &&
       ["learning", "stable"].includes(wan.state) && typeof observed === "number" && Number.isFinite(observed) && observed > 0
       ? this._t("status.wan_observed_interval", {interval: new Intl.NumberFormat(this._language(), {maximumFractionDigits: 2}).format(observed)}) : "";
+    const window = wan?.rate_window_seconds;
+    const span = wan?.rate_sample_span_seconds;
+    const formatSeconds = (seconds) => new Intl.NumberFormat(this._language(), {maximumFractionDigits: 2}).format(seconds);
+    const averageText = typeof window === "number" && Number.isFinite(window) && window > 0
+      ? this._t("status.wan_average_window", {interval: formatSeconds(window)}) : "";
+    // The configured window is a target: warm-up and sparse replies can span
+    // less or more time. Keep materially different actual spans explicit.
+    const spanText = averageText && wan.available === true && wan.supported !== false && wan.retrying !== true &&
+      ["learning", "stable"].includes(wan.state) && typeof span === "number" && Number.isFinite(span) && span > 0 &&
+      Math.abs(span - window) >= window * 0.2
+      ? this._t("status.wan_average_span", {interval: formatSeconds(span)}) : "";
     const cadence = wan && Number.isFinite(interval) && interval > 0
-      ? `<p class="dashboard-cadence">${escapeHtml(this._t("status.wan_cadence", {interval}))} · ${escapeHtml(humanize(wan.state || wan.mode || ""))}${observedText ? ` · ${escapeHtml(observedText)}` : ""}${recovery ? ` · ${escapeHtml(recovery)}` : ""}</p>` : "";
+      ? `<p class="dashboard-cadence">${escapeHtml(this._t("status.wan_cadence", {interval}))} · ${escapeHtml(humanize(wan.state || wan.mode || ""))}${averageText ? ` · ${escapeHtml(averageText)}` : ""}${spanText ? ` · ${escapeHtml(spanText)}` : ""}${observedText ? ` · ${escapeHtml(observedText)}` : ""}${recovery ? ` · ${escapeHtml(recovery)}` : ""}</p>` : "";
     const deviceLink = router.root_device_id ? `<a href="/config/devices/device/${encodeURIComponent(router.root_device_id)}">All entities in Home Assistant</a>` : "";
     return `${overview}${cadence}<div class="dashboard-tools">${deviceLink}
       <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">

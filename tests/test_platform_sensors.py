@@ -116,6 +116,34 @@ async def test_wan_sensor_values_and_reset_semantics(
     assert utilization.native_value == 41.6
 
 
+async def test_wan_rate_entities_describe_average_without_recording_span_churn(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Native rate details distinguish configured averaging from actual span."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    _attach_coordinators(hass, hub)
+    telemetry = {"rate_window_seconds": 5.0, "rate_sample_span_seconds": 2.25}
+    with patch.object(
+        type(hub),
+        "wan_counter_telemetry",
+        new_callable=PropertyMock,
+        return_value=telemetry,
+    ):
+        for key in ("wan_download_rate", "wan_upload_rate"):
+            rate = SpeedportSensor(hub, _description(SENSOR_DESCRIPTIONS, key))
+            assert rate.extra_state_attributes == telemetry
+            assert "rate_sample_span_seconds" in rate._unrecorded_attributes  # noqa: SLF001
+            telemetry["rate_sample_span_seconds"] = None
+            assert rate.extra_state_attributes["rate_sample_span_seconds"] is None
+            telemetry["rate_sample_span_seconds"] = 2.25
+        cumulative = SpeedportSensor(
+            hub, _description(SENSOR_DESCRIPTIONS, "wan_bytes_received")
+        )
+        assert cumulative.extra_state_attributes is None
+
+
 async def test_internet_connected_since_is_diagnostic_timestamp(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
@@ -379,6 +407,8 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
         "success_streak": 3,
         "success_samples_required": 5,
         "cooldown_seconds": 60,
+        "rate_window_seconds": 5.0,
+        "rate_sample_span_seconds": 2.25,
         "last_sampled_at": "2026-09-01T10:00:00+00:00",
     }
     descriptions = {
@@ -431,6 +461,8 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
             "success_streak": 3,
             "success_samples_required": 5,
             "cooldown_seconds": 60,
+            "rate_window_seconds": 5.0,
+            "rate_sample_span_seconds": 2.25,
             "source_available": True,
             "observed_interval_seconds": None,
         }
@@ -446,7 +478,12 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
         assert entities["wan_polling_state"].native_value == "cooldown"
         assert entities["wan_polling_state"].available
         state_entity = entities["wan_polling_state"]
-        assert {"retry_in_seconds", "success_streak", "observed_interval_seconds"} <= (
+        assert {
+            "retry_in_seconds",
+            "success_streak",
+            "observed_interval_seconds",
+            "rate_sample_span_seconds",
+        } <= (
             state_entity._unrecorded_attributes  # noqa: SLF001
         )
         hub.coordinator(PollGroup.FAST).last_update_success = False

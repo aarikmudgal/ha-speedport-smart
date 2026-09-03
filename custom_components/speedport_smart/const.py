@@ -30,7 +30,7 @@ DEFAULT_FAST_INTERVAL: Final = timedelta(seconds=5)
 DEFAULT_WAN_INTERVAL: Final = 0
 DEFAULT_NORMAL_INTERVAL: Final = timedelta(seconds=30)
 DEFAULT_SLOW_INTERVAL: Final = timedelta(minutes=5)
-RATE_WINDOW_SECONDS: Final = 10.0
+RATE_WINDOW_SECONDS: Final = 5.0
 DEVICE_NAME_MAX_LENGTH: Final = 28
 DEVICE_NAME_PATTERN: Final = r"^[A-Za-z0-9-]{1,28}$"
 

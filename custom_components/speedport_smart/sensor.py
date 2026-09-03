@@ -2247,6 +2247,7 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
     """Sensor backed by normalized hub data."""
 
     _attr_entity_registry_enabled_default = True
+    _unrecorded_attributes = frozenset({"rate_sample_span_seconds"})
     entity_description: SpeedportSensorEntityDescription
 
     def __init__(
@@ -2293,6 +2294,12 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Return bounded metadata for compound read-only sensors."""
+        if self.entity_description.key in {"wan_download_rate", "wan_upload_rate"}:
+            telemetry = self.hub.wan_counter_telemetry
+            return {
+                "rate_window_seconds": telemetry.get("rate_window_seconds"),
+                "rate_sample_span_seconds": telemetry.get("rate_sample_span_seconds"),
+            }
         if self.entity_description.key == "wan_interface":
             interface_attributes = {
                 key: self.hub.get(("wan", "interface", key))
@@ -2358,7 +2365,12 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
 
     _attr_entity_registry_enabled_default = True
     _unrecorded_attributes = frozenset(
-        {"retry_in_seconds", "success_streak", "observed_interval_seconds"}
+        {
+            "retry_in_seconds",
+            "success_streak",
+            "observed_interval_seconds",
+            "rate_sample_span_seconds",
+        }
     )
     entity_description: SensorEntityDescription
 
@@ -2430,12 +2442,16 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
                 "success_streak",
                 "success_samples_required",
                 "cooldown_seconds",
+                "rate_window_seconds",
             )
             if telemetry.get(key) is not None
         }
         attributes["source_available"] = not self.hub.has_endpoint_error("wan_counters")
         attributes["observed_interval_seconds"] = telemetry.get(
             "observed_interval_seconds"
+        )
+        attributes["rate_sample_span_seconds"] = telemetry.get(
+            "rate_sample_span_seconds"
         )
         return attributes
 

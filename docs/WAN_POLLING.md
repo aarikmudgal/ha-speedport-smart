@@ -33,10 +33,33 @@ queued or replayed in a burst. A valid slow response is accepted, not discarded
 merely because another time slot passed. There are no overlapping WAN responses
 that need to be reordered or backfilled into history.
 
-Live rates use the byte difference between consecutive valid counter samples,
-divided by their actual elapsed monotonic time. They are not smoothed over a
-ten-second window. A delayed read therefore represents traffic averaged over
-that longer sampling interval, not a fabricated one-second measurement.
+Rates use a **five-second average window**, independently of the polling
+interval. Some router firmware returns the same cumulative counters for several
+one-second requests, then advances them in a batch. Treating each duplicate as
+instantaneous zero traffic creates misleading zero/spike readings. Faster
+requests cannot recover one-second measurements that the source does not expose.
+
+The average uses the actual byte difference from the retained valid sample
+nearest five seconds earlier, divided by the real elapsed monotonic time. It
+does not interpolate counters or hold a nonzero rate indefinitely. During startup
+or slow polling, the available sample span can differ from five seconds. The
+dashboard labels the configured window and shows the actual span when materially
+different; the rate entities expose both as attributes. Once unchanged counters
+fill the averaging window, the rate returns to zero.
+
+NORMAL polling publishes any due WAN sample after its protected reads have
+finished logout and session settling, before optional DSL telemetry. It uses the
+same WAN deadline and cooldown as FAST polling, so a waiting FAST update does
+not repeat that request. The operation lock stays held and administrator
+transactions remain atomic; there are no concurrent SOAP and web sessions.
+Scheduled DSL reads make one attempt on a busy response and use the existing
+deferred retry policy instead of sleeping through up to 7.5 seconds of inline
+retries. Discovery and explicitly requested DSL reads retain their retry defaults.
+
+Slow individual requests and protected batches can still delay samples. This
+change reduces avoidable blocking; it does not guarantee uninterrupted
+one-second delivery. Downloaded diagnostics separate polling lock wait, router
+work and total update time, plus NORMAL feature-read and DSL-read durations.
 
 After a failed read, current rates are unavailable until enough fresh counter
 samples arrive; retained or historical data is not presented as a new live

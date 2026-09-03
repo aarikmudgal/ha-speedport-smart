@@ -249,7 +249,7 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   const frontendSchema = panel.match(/PANEL_SCHEMA_VERSION = (\d+)/)?.[1];
   const backendSchema = backend.match(/PANEL_SCHEMA_VERSION: Final = (\d+)/)?.[1];
   assert.ok(frontendSchema);
-  assert.equal(frontendSchema, "30");
+  assert.equal(frontendSchema, "31");
   assert.equal(frontendSchema, backendSchema);
   assert.match(panel, new RegExp(`accessibility\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`translations\\.js\\?schema=${frontendSchema}`));

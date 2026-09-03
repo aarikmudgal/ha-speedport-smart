@@ -442,6 +442,7 @@ class SpeedportHub:
         )
         self._generation = 0
         self._operation_lock = asyncio.Lock()
+        self._poll_timing_ms: dict[PollGroup, dict[str, float]] = {}
         self._configuration_session = ConfigurationSession(clock=self._monotonic_time)
         self.file_transfer_session = FileTransferSession(clock=self._monotonic_time)
         self.online_phonebook_session = OnlinePhonebookSession(
@@ -573,6 +574,8 @@ class SpeedportHub:
                 "target_interval_seconds": self._wan_counter_target_interval,
                 "effective_interval_seconds": self._wan_counter_effective_interval,
                 "observed_interval_seconds": self._observed_wan_interval(),
+                "rate_window_seconds": self.rate_window_seconds,
+                "rate_sample_span_seconds": self._rate_sample_span(),
                 "runtime_floor_seconds": self._wan_counter_runtime_floor,
                 "last_stable_interval_seconds": (
                     self._wan_counter_fastest_proven_interval
@@ -2181,10 +2184,26 @@ class SpeedportHub:
 
     async def async_update_group(self, group: PollGroup) -> GroupSnapshot:
         """Update one group while keeping multi-request router work serialized."""
+        queued_at = time.perf_counter()
         async with self._operation_lock:
-            return await self._async_update_group_locked(group)
+            acquired_at = time.perf_counter()
+            timing = self._poll_timing_ms[group] = {
+                "lock_wait_ms": round((acquired_at - queued_at) * 1_000, 3)
+            }
+            try:
+                return await self._async_update_group_locked(
+                    group, allow_wan_checkpoint=True
+                )
+            finally:
+                completed_at = time.perf_counter()
+                timing["router_work_ms"] = round(
+                    (completed_at - acquired_at) * 1_000, 3
+                )
+                timing["total_update_ms"] = round((completed_at - queued_at) * 1_000, 3)
 
-    async def _async_update_group_locked(self, group: PollGroup) -> GroupSnapshot:
+    async def _async_update_group_locked(
+        self, group: PollGroup, *, allow_wan_checkpoint: bool = False
+    ) -> GroupSnapshot:
         """Update one group while operation lock is held."""
         started_at = time.perf_counter()
         if self._closed:
@@ -2195,7 +2214,9 @@ class SpeedportHub:
             if group is PollGroup.FAST:
                 partial = await self._async_fetch_fast()
             elif group is PollGroup.NORMAL:
-                partial = await self._async_fetch_normal()
+                partial = await self._async_fetch_normal(
+                    allow_wan_checkpoint=allow_wan_checkpoint
+                )
             else:
                 partial = await self._async_fetch_families(
                     self._feature_families - NORMAL_FAMILIES - FAST_FAMILIES
@@ -2552,7 +2573,16 @@ class SpeedportHub:
                 self._monotonic_time() + self._public_status_interval
             )
 
-        # Status may have awaited a slow request while a WAN slot became due.
+        return _deep_merge_dicts(
+            partial, await self._async_fetch_wan_counters(status=status)
+        )
+
+    async def _async_fetch_wan_counters(
+        self, *, status: RouterStatus | None = None
+    ) -> dict[str, Any]:
+        """Read only due WAN counters under the existing operation lock."""
+        partial: dict[str, Any] = {}
+        # Earlier work may have awaited a slow request while a slot became due.
         now = self._monotonic_time()
         report = self._capability_report
         wan_counters_confirmed = report is not None and report.wan_counters
@@ -2660,18 +2690,76 @@ class SpeedportHub:
             for family, error_name in self._endpoint_errors.items()
         )
 
-    async def _async_fetch_normal(self) -> dict[str, Any]:
+    async def _async_publish_due_wan_locked(self) -> None:
+        """
+        Publish due counters after owned-session cleanup, before optional work.
+
+        Keep the outer operation lock: neither an administrator write nor another
+        router request may interleave with the still-pending NORMAL snapshot.
+        Public status is not read or marked as newly sampled here.
+        """
+        coordinator = self._coordinators.get(PollGroup.FAST)
+        if (
+            coordinator is None
+            or not (
+                self.has_capability("wan_counters") or self._wan_counter_probe_pending
+            )
+            or self._monotonic_time()
+            < max(self._wan_counter_next_poll_at, self._wan_counter_retry_at)
+        ):
+            return
+        partial = await self._async_fetch_wan_counters()
+        if not partial:
+            return
+        now = datetime.now(UTC)
+        transitions = self._merge_data(partial)
+        self._generation += 1
+        self._last_transitions = transitions
+        self._last_successful_update = now
+        self._poll_group_succeeded[PollGroup.FAST] = True
+        self._poll_group_last_success[PollGroup.FAST] = now
+        self._poll_group_last_error[PollGroup.FAST] = None
+        coordinator.async_set_updated_data(
+            GroupSnapshot(
+                group=PollGroup.FAST,
+                data=self._data,
+                generation=self._generation,
+                updated_at=now,
+                transitions=transitions,
+            )
+        )
+
+    async def _async_fetch_normal(
+        self, *, allow_wan_checkpoint: bool = False
+    ) -> dict[str, Any]:
         """Fetch medium-frequency feature data and verified DSL telemetry."""
+        family_started = time.perf_counter()
         await self._async_retry_degraded_access()
         partial = await self._async_fetch_families(NORMAL_FAMILIES)
+        timing = (
+            self._poll_timing_ms.get(PollGroup.NORMAL) if allow_wan_checkpoint else None
+        )
+        if timing is not None:
+            timing["feature_reads_ms"] = round(
+                (time.perf_counter() - family_started) * 1_000, 3
+            )
+        # _async_fetch_families has completed its owned logout and settle wait.
+        # Command verification does not opt in: its transaction stays unchanged.
+        if allow_wan_checkpoint:
+            await self._async_publish_due_wan_locked()
         now = self._monotonic_time()
         if (
             self.has_capability("dsl")
             and self.has_capability("tr064")
             and now >= self._dsl_metrics_retry_at
         ):
+            dsl_started = time.perf_counter()
             try:
-                metrics = await self.client.get_dsl_metrics()
+                # The hub already schedules a retry after busy responses. Do not
+                # sleep through exponential SOAP retries while WAN waits on us.
+                metrics = await self.client.get_dsl_metrics(
+                    busy_retries=0 if allow_wan_checkpoint else None
+                )
             except SpeedportSessionBusyError as err:
                 self._defer_dsl_metrics_busy_retry()
                 self._endpoint_errors["dsl_metrics"] = safe_error_class_name(err)
@@ -2702,6 +2790,11 @@ class SpeedportHub:
                     partial,
                     {"dsl": self._normalise_dsl_metrics(metrics)},
                 )
+            finally:
+                if timing is not None:
+                    timing["dsl_read_ms"] = round(
+                        (time.perf_counter() - dsl_started) * 1_000, 3
+                    )
         return partial
 
     def _normalise_dsl_metrics(self, metrics: DslMetrics) -> dict[str, Any]:
@@ -3223,11 +3316,25 @@ class SpeedportHub:
         return wan
 
     def _rate_baseline(self, now: float) -> _CounterSample | None:
-        """Use only the immediately previous valid sample for the live rate."""
+        """Choose a real counter sample nearest the bounded averaging window."""
         if len(self._counter_samples) < _MIN_RATE_SAMPLES:
             return None
-        previous = self._counter_samples[-2]
-        return previous if previous.sampled_at < now else None
+        if self._counter_samples[-2].sampled_at >= now:
+            return None
+        cutoff = now - self.rate_window_seconds
+        return min(
+            (sample for sample in self._counter_samples if sample.sampled_at < now),
+            key=lambda sample: abs(sample.sampled_at - cutoff),
+            default=None,
+        )
+
+    def _rate_sample_span(self) -> float | None:
+        """Report the actual average span, not time since the last poll."""
+        if not self._counter_samples:
+            return None
+        sampled_at = self._counter_samples[-1].sampled_at
+        baseline = self._rate_baseline(sampled_at)
+        return sampled_at - baseline.sampled_at if baseline is not None else None
 
     def _matches_command_readback(
         self,
@@ -3495,6 +3602,7 @@ class SpeedportHub:
                 group.value: {
                     "available": self._poll_group_succeeded[group] is True,
                     **dict(self.poll_group_health(group)),
+                    **self._poll_timing_ms.get(group, {}),
                     "update_interval_seconds": (
                         coordinator.update_interval.total_seconds()
                         if coordinator.update_interval

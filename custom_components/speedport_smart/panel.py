@@ -42,7 +42,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 30
+PANEL_SCHEMA_VERSION: Final = 31
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -904,6 +904,8 @@ def _capability_panel_data(
                 "effective_interval_seconds"
             ),
             "observed_interval_seconds": wan_telemetry.get("observed_interval_seconds"),
+            "rate_window_seconds": wan_telemetry.get("rate_window_seconds"),
+            "rate_sample_span_seconds": wan_telemetry.get("rate_sample_span_seconds"),
             "mode": wan_telemetry.get("mode"),
             "state": wan_telemetry.get("state"),
             "target_interval_seconds": wan_telemetry.get("target_interval_seconds"),

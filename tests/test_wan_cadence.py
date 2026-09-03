@@ -109,12 +109,12 @@ async def test_status_delay_rechecks_wan_due_after_await(
     assert hub._wan_counter_next_poll_at == pytest.approx(102.2)
 
 
-async def test_live_rate_uses_previous_sample_and_resets_interval_on_failure(
+async def test_live_average_uses_available_span_and_resets_on_failure(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
 ) -> None:
-    """New traffic appears in the next delta rather than a ten-second average."""
+    """Average warm-up uses real elapsed time and errors clear the whole window."""
     now = [100.0]
     hub = await _hub(hass, mock_speedport_client, now)
     for seconds, received in [(100, 0), (101, 0), (102, 1_000_000)]:
@@ -125,23 +125,27 @@ async def test_live_rate_uses_previous_sample_and_resets_interval_on_failure(
             bytes_sent=received,
         )
         await hub.async_update_group(PollGroup.FAST)
-    assert hub.get("wan.download_rate_bps") == 8_000_000
+    assert hub.get("wan.download_rate_bps") == 4_000_000
     assert hub.wan_counter_telemetry["observed_interval_seconds"] == 1
+    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] == 2
     mock_speedport_client.get_wan_counters.side_effect = SpeedportConnectionError(
         "synthetic"
     )
     now[0] = 103
     await hub.async_update_group(PollGroup.FAST)
     assert hub.wan_counter_telemetry["observed_interval_seconds"] is None
+    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] is None
     assert hub.get("wan.download_rate_bps") is None
     mock_speedport_client.get_wan_counters.side_effect = None
     now[0] = 163
     await hub.async_update_group(PollGroup.FAST)
     assert hub.wan_counter_telemetry["observed_interval_seconds"] is None
+    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] is None
     assert hub.get("wan.download_rate_bps") is None
     now[0] = 164.25
     await hub.async_update_group(PollGroup.FAST)
     assert hub.wan_counter_telemetry["observed_interval_seconds"] == 1.25
+    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] == 1.25
 
 
 async def test_interface_change_cannot_mix_counter_baselines(
