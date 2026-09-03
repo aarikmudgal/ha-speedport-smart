@@ -963,3 +963,19 @@ test("focused graph refresh replaces only data content and never detaches the na
   assert.equal(refreshTrafficHistoryContent({}, controller.snapshot()), false);
   assert.equal(refreshTrafficHistoryContent(host, null), false);
 });
+
+test("mobile WAN readouts remain two equal shrinkable columns without reducing clickable metric prominence", async () => {
+  const rules = [...TRAFFIC_HISTORY_STYLES.matchAll(/\.sp-traffic-metrics\{([^}]+)\}/g)].map((match) => match[1]);
+  assert.match(rules[0], /display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.ok(rules.every((rule) => !/flex-wrap|display:flex|grid-template-columns:1fr/.test(rule)));
+  assert.match(TRAFFIC_HISTORY_STYLES, /@media\(max-width:480px\).*\.sp-traffic-metrics\{gap:16px\}/s);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*min-width:0/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{font-size:clamp\(28px,2\.6vw,36px\)[^}]*overflow-wrap:anywhere/);
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END, "987654.32", "unavailable")});
+  const html = renderTrafficHistory(controller.snapshot());
+  assert.equal((html.match(/<button[^>]*class="sp-traffic-metric/g) ?? []).length, 2);
+  assert.match(html, new RegExp(`data-more-info="${DOWN}"`));
+  assert.match(html, new RegExp(`data-more-info="${UP}"`));
+  assert.equal(calls.length, 1);
+});
