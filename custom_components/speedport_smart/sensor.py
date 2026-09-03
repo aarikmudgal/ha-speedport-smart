@@ -120,7 +120,7 @@ WAN_TELEMETRY_SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         key="wan_polling_state",
         translation_key="wan_polling_state",
         device_class=SensorDeviceClass.ENUM,
-        options=["learning", "stable", "retrying", "limited"],
+        options=["learning", "stable", "cooldown", "retrying", "limited"],
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
@@ -2357,6 +2357,7 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
     """Expose the adaptive WAN scheduler as read-only diagnostic state."""
 
     _attr_entity_registry_enabled_default = True
+    _unrecorded_attributes = frozenset({"retry_in_seconds", "success_streak"})
     entity_description: SensorEntityDescription
 
     def __init__(
@@ -2425,6 +2426,8 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
                 "last_stable_interval_seconds",
                 "retry_in_seconds",
                 "success_streak",
+                "success_samples_required",
+                "cooldown_seconds",
             )
             if telemetry.get(key) is not None
         }

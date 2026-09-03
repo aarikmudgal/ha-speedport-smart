@@ -1032,6 +1032,8 @@ def _attribute_surfaces() -> tuple[_ReadSurfaceDeclaration, ...]:
         ("last_stable_interval_seconds", ReadValueKind.DURATION),
         ("retry_in_seconds", ReadValueKind.DURATION),
         ("success_streak", ReadValueKind.COUNT),
+        ("success_samples_required", ReadValueKind.COUNT),
+        ("cooldown_seconds", ReadValueKind.DURATION),
     ):
         add(
             f"runtime.wan_counter_telemetry.{field}",

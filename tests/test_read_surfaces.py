@@ -337,6 +337,8 @@ def test_fixed_entity_attributes_have_exact_publication_ownership() -> None:
         "sensor:wan_polling_state:attribute:last_stable_interval_seconds",
         "sensor:wan_polling_state:attribute:retry_in_seconds",
         "sensor:wan_polling_state:attribute:success_streak",
+        "sensor:wan_polling_state:attribute:success_samples_required",
+        "sensor:wan_polling_state:attribute:cooldown_seconds",
         "sensor:wan_polling_state:attribute:source_available",
         "sensor:endpoint_failures:attribute:failures",
         "sensor:management_access:attribute:owner_ip_address",

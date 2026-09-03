@@ -111,9 +111,8 @@ FAST_FAMILIES: Final[frozenset[str]] = frozenset()
 _MIN_RATE_SAMPLES: Final = 2
 _RATE_RETENTION_WINDOWS: Final = 2.0
 _WAN_COUNTER_SAFE_START_SECONDS: Final = 5.0
-_WAN_COUNTER_MAX_INTERVAL_SECONDS: Final = 60.0
-_WAN_COUNTER_BUSY_RETRY_BASE_SECONDS: Final = 5.0
-_WAN_COUNTER_ADAPT_SUCCESS_SAMPLES: Final = 12
+_WAN_COUNTER_COOLDOWN_SECONDS: Final = 60.0
+_WAN_COUNTER_ADAPT_SUCCESS_SAMPLES: Final = 5
 _WAN_COUNTER_ADAPT_STEP_SECONDS: Final = 1.0
 _DSL_BUSY_RETRY_SECONDS: Final = 5.0
 _DSL_TRANSIENT_RETRY_SECONDS: Final = 60.0
@@ -419,6 +418,7 @@ class SpeedportHub:
         self._wan_counter_fastest_proven_interval: float | None = None
         self._wan_counter_runtime_floor = self._wan_counter_target_interval
         self._wan_counter_success_streak = 0
+        self._wan_counter_cadence_proven = False
         self._monotonic_time = monotonic_time or hass.loop.time
         self.logger = _LOGGER
 
@@ -457,7 +457,6 @@ class SpeedportHub:
         self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
         self._wan_counter_probe_pending = False
         self._wan_counter_failures = 0
-        self._wan_counter_busy_failures = 0
         self._wan_counter_retry_at = 0.0
         self._wan_counter_next_poll_at = 0.0
         self._dsl_metrics_failures = 0
@@ -575,6 +574,8 @@ class SpeedportHub:
                     self._wan_counter_fastest_proven_interval
                 ),
                 "success_streak": self._wan_counter_success_streak,
+                "success_samples_required": _WAN_COUNTER_ADAPT_SUCCESS_SAMPLES,
+                "cooldown_seconds": _WAN_COUNTER_COOLDOWN_SECONDS,
                 "retrying": (monotonic_now < self._wan_counter_retry_at),
                 "retry_in_seconds": max(
                     self._wan_counter_retry_at - monotonic_now,
@@ -2554,8 +2555,8 @@ class SpeedportHub:
                     )
             except SpeedportUnsupportedError as err:
                 self._counter_samples.clear()
-                self._wan_counter_busy_failures = 0
                 self._wan_counter_success_streak = 0
+                self._wan_counter_cadence_proven = False
                 self._wan_counter_retry_at = 0.0
                 self._wan_counter_next_poll_at = (
                     self._monotonic_time() + self._wan_counter_effective_interval
@@ -2565,6 +2566,7 @@ class SpeedportHub:
                     self._endpoint_errors.pop("wan_counters", None)
                 else:
                     self._wan_counter_failures += 1
+                    self._defer_wan_counter_retry()
                     self._endpoint_errors["wan_counters"] = safe_error_class_name(err)
                     partial["wan"] = _deep_merge_dicts(
                         cast("dict[str, Any]", partial.get("wan", {})),
@@ -2572,12 +2574,7 @@ class SpeedportHub:
                     )
             except SpeedportError as err:
                 self._counter_samples.clear()
-                self._wan_counter_busy_failures = 0
-                self._wan_counter_success_streak = 0
-                self._wan_counter_retry_at = 0.0
-                self._wan_counter_next_poll_at = (
-                    self._monotonic_time() + self._wan_counter_effective_interval
-                )
+                self._defer_wan_counter_retry()
                 self._endpoint_errors["wan_counters"] = safe_error_class_name(err)
                 if wan_counters_confirmed:
                     partial["wan"] = _deep_merge_dicts(
@@ -2587,7 +2584,6 @@ class SpeedportHub:
             else:
                 self._wan_counter_probe_pending = False
                 self._wan_counter_failures = 0
-                self._wan_counter_busy_failures = 0
                 self._wan_counter_retry_at = 0.0
                 self._record_wan_counter_success()
                 self._wan_counter_next_poll_at = (
@@ -2710,46 +2706,17 @@ class SpeedportHub:
         self._dsl_metrics_retry_at = self._monotonic_time() + delay
 
     def _defer_wan_counter_retry(self) -> None:
-        """Adaptively back off a ToTR64 lease without blocking web access."""
-        self._wan_counter_busy_failures += 1
+        """Pause WAN reads for a fixed minute, then retry the same cadence."""
         self._wan_counter_success_streak = 0
-        now = self._monotonic_time()
-        if (
-            self._wan_counter_effective_interval
-            < self._wan_counter_last_stable_interval
-        ):
-            self._wan_counter_effective_interval = (
-                self._wan_counter_last_stable_interval
-            )
-            self._wan_counter_runtime_floor = max(
-                self._wan_counter_runtime_floor,
-                self._wan_counter_last_stable_interval,
-            )
-        exponent = min(self._wan_counter_busy_failures - 1, 4)
-        retry_delay = min(
-            _WAN_COUNTER_BUSY_RETRY_BASE_SECONDS * (2**exponent),
-            _WAN_COUNTER_MAX_INTERVAL_SECONDS,
+        self._wan_counter_cadence_proven = False
+        self._wan_counter_retry_at = (
+            self._monotonic_time() + _WAN_COUNTER_COOLDOWN_SECONDS
         )
-        self._wan_counter_retry_at = now + max(
-            self._wan_counter_effective_interval,
-            retry_delay,
-        )
+        self._wan_counter_next_poll_at = self._wan_counter_retry_at
 
     def _record_wan_counter_success(self) -> None:
         """Probe toward the requested cadence only after sustained stable reads."""
-        adaptation_target = max(
-            self._wan_counter_target_interval,
-            self._wan_counter_runtime_floor,
-        )
-        if (
-            self._wan_counter_runtime_floor > self._wan_counter_target_interval
-            and self._wan_counter_effective_interval <= adaptation_target
-        ) or (
-            self._wan_counter_effective_interval <= self._wan_counter_target_interval
-            and self._wan_counter_fastest_proven_interval is not None
-            and self._wan_counter_effective_interval
-            >= self._wan_counter_last_stable_interval
-        ):
+        if self._wan_counter_cadence_proven:
             self._wan_counter_success_streak = 0
             return
         self._wan_counter_success_streak += 1
@@ -2768,10 +2735,14 @@ class SpeedportHub:
             self._wan_counter_last_stable_interval,
             self._wan_counter_effective_interval,
         )
-        self._wan_counter_effective_interval = max(
-            adaptation_target,
+        next_interval = max(
+            self._wan_counter_target_interval,
             self._wan_counter_effective_interval - _WAN_COUNTER_ADAPT_STEP_SECONDS,
         )
+        self._wan_counter_cadence_proven = (
+            next_interval == self._wan_counter_effective_interval
+        )
+        self._wan_counter_effective_interval = next_interval
         self._wan_counter_success_streak = 0
 
     def _defer_dsl_metrics_busy_retry(self) -> None:
@@ -3487,14 +3458,8 @@ class SpeedportHub:
     def _wan_counter_adaptation_state(self, now: float) -> str:
         """Return a stable, UI-safe WAN telemetry scheduler state."""
         if now < self._wan_counter_retry_at:
-            return "retrying"
-        if self._wan_counter_runtime_floor > self._wan_counter_target_interval:
-            return "limited"
-        if self._wan_counter_effective_interval > self._wan_counter_target_interval or (
-            self._wan_counter_auto_interval
-            and self._wan_counter_effective_interval
-            < self._wan_counter_last_stable_interval
-        ):
+            return "cooldown"
+        if not self._wan_counter_cadence_proven:
             return "learning"
         return "stable"
 

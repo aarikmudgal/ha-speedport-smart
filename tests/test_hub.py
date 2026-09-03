@@ -728,12 +728,12 @@ async def test_fast_wan_busy_uses_telemetry_backoff_only(
     assert hub.get("management.access.state") == "available"
     assert hub.get("diagnostics.problem") is False
 
-    now[0] = 106.0
+    now[0] = 160.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 2
     assert hub.get("management.access.state") == "available"
 
-    now[0] = 107.0
+    now[0] = 161.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_status.await_count == 4
     assert mock_speedport_client.get_wan_counters.await_count == 2
@@ -792,7 +792,7 @@ async def test_wan_transient_failures_preserve_totals_and_do_not_inflate_busy_re
     mock_speedport_client: MagicMock,
     wan_interface: WanInterface,
 ) -> None:
-    """Transient failures retain totals and do not poison 9801 backoff."""
+    """Transient failures retain totals and keep the fixed WAN cooldown."""
     now = [100.0]
     hub = SpeedportHub(
         hass,
@@ -844,7 +844,7 @@ async def test_wan_transient_failures_preserve_totals_and_do_not_inflate_busy_re
     await hub.async_update_group(PollGroup.FAST)
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-    assert telemetry["retry_in_seconds"] == 5.0
+    assert telemetry["retry_in_seconds"] == 60.0
     assert hub.get("wan.bytes_received") == 20_000
 
 
@@ -863,11 +863,11 @@ async def test_wan_failure_breaks_clean_cadence_proof_streak(
     )
     await hub.async_setup()
 
-    for _ in range(11):
+    for _ in range(4):
         await hub.async_update_group(PollGroup.FAST)
         now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
 
-    assert hub._wan_counter_success_streak == 11  # noqa: SLF001
+    assert hub._wan_counter_success_streak == 4  # noqa: SLF001
     assert hub._wan_counter_effective_interval == 5.0  # noqa: SLF001
     mock_speedport_client.get_wan_counters.side_effect = SpeedportConnectionError(
         "temporary"
@@ -909,14 +909,14 @@ async def test_slow_wan_error_reschedules_from_request_completion(
     await hub.async_update_group(PollGroup.FAST)
 
     assert now[0] == 110.0
-    assert hub._wan_counter_next_poll_at == 112.0  # noqa: SLF001
+    assert hub._wan_counter_next_poll_at == 170.0  # noqa: SLF001
     assert mock_speedport_client.get_wan_counters.await_count == 1
 
-    now[0] = 111.0
+    now[0] = 169.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 1
 
-    now[0] = 112.0
+    now[0] = 170.0
     await hub.async_update_group(PollGroup.FAST)
     assert mock_speedport_client.get_wan_counters.await_count == 2
 
@@ -954,7 +954,7 @@ async def test_pending_wan_counter_capability_recovers_after_busy_setup(
     assert hub.has_capability("wan_counters")
     assert hub.get("wan.bytes_received") is None
 
-    now[0] = 106.0
+    now[0] = 160.0
     await hub.async_update_group(PollGroup.FAST)
 
     assert hub.has_capability("wan_counters")
@@ -1008,11 +1008,11 @@ async def test_pending_wan_counter_capability_is_removed_after_unsupported_probe
     assert "wan_counters" not in hub.capability_report.failures
 
 
-async def test_repeated_wan_busy_uses_exponential_retry_without_raising_floor(
+async def test_repeated_wan_busy_uses_fixed_cooldown_without_raising_floor(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """Repeated 9801 responses slow retries without rejecting a proven cadence."""
+    """Repeated 9801 responses always wait one minute without raising cadence."""
     now = [100.0]
     mock_speedport_client.get_wan_counters.side_effect = SpeedportSessionBusyError(
         "busy"
@@ -1025,23 +1025,23 @@ async def test_repeated_wan_busy_uses_exponential_retry_without_raising_floor(
     )
     await hub.async_setup()
 
-    for retry_seconds in (5.0, 10.0, 20.0, 40.0, 60.0):
+    for _ in range(5):
         await hub.async_update_group(PollGroup.FAST)
         telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-        assert telemetry["retry_in_seconds"] == retry_seconds
+        assert telemetry["retry_in_seconds"] == 60.0
         assert telemetry["runtime_floor_seconds"] == 1.0
         assert hub.get("management.access.state") == "available"
         assert hub.get("diagnostics.problem") is False
-        now[0] += retry_seconds
+        now[0] += 60.0
 
     assert mock_speedport_client.get_wan_counters.await_count == 5
 
 
-async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_busy(
+async def test_wan_counter_auto_cadence_learns_and_retries_same_cadence_after_busy(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """Auto cadence learns 5→4→3→2→1 and holds after a busy response."""
+    """Auto learns every five samples and resumes the failed cadence after cooldown."""
     now = [100.0]
     hub = SpeedportHub(
         hass,
@@ -1054,7 +1054,7 @@ async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_bus
     await hub.async_setup()
 
     for expected_interval in (4.0, 3.0, 2.0, 1.0):
-        for _ in range(12):
+        for _ in range(5):
             await hub.async_update_group(PollGroup.FAST)
             now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
         assert hub._wan_counter_effective_interval == expected_interval  # noqa: SLF001
@@ -1069,22 +1069,22 @@ async def test_wan_counter_auto_cadence_learns_independently_and_holds_after_bus
     await hub.async_update_group(PollGroup.FAST)
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-    assert telemetry["effective_interval_seconds"] == 2.0
-    assert telemetry["state"] == "retrying"
-    assert telemetry["runtime_floor_seconds"] == 2.0
+    assert telemetry["effective_interval_seconds"] == 1.0
+    assert telemetry["state"] == "cooldown"
+    assert telemetry["runtime_floor_seconds"] == 1.0
     assert telemetry["last_stable_interval_seconds"] == 2.0
     assert hub.get("wan.bytes_received") == confirmed_total
     assert hub.get("diagnostics.problem") is False
 
     mock_speedport_client.get_wan_counters.side_effect = None
     now[0] = hub._wan_counter_retry_at  # noqa: SLF001
-    for _ in range(12):
+    for _ in range(5):
         await hub.async_update_group(PollGroup.FAST)
         now[0] = hub._wan_counter_next_poll_at  # noqa: SLF001
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]
-    assert telemetry["effective_interval_seconds"] == 2.0
-    assert telemetry["state"] == "limited"
+    assert telemetry["effective_interval_seconds"] == 1.0
+    assert telemetry["state"] == "stable"
     assert "wan_counters" not in hub.diagnostics()["endpoint_errors"]
 
 
@@ -1106,7 +1106,7 @@ def test_wan_auto_target_is_stable_only_after_target_samples_are_proven(
     initial = hub.diagnostics()["telemetry"]["wan_counters"]
     assert initial["state"] == "learning"
     assert initial["last_stable_interval_seconds"] is None
-    for _ in range(12):
+    for _ in range(5):
         hub._record_wan_counter_success()  # noqa: SLF001
 
     telemetry = hub.diagnostics()["telemetry"]["wan_counters"]

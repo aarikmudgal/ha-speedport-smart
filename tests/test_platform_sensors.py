@@ -376,7 +376,9 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
         "last_stable_interval_seconds": 5.0,
         "target_interval_seconds": 1.0,
         "retry_in_seconds": 0.0,
-        "success_streak": 7,
+        "success_streak": 3,
+        "success_samples_required": 5,
+        "cooldown_seconds": 60,
         "last_sampled_at": "2026-09-01T10:00:00+00:00",
     }
     descriptions = {
@@ -426,9 +428,19 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
             "runtime_floor_seconds": 1.0,
             "last_stable_interval_seconds": 5.0,
             "retry_in_seconds": 0.0,
-            "success_streak": 7,
+            "success_streak": 3,
+            "success_samples_required": 5,
+            "cooldown_seconds": 60,
             "source_available": True,
         }
+        telemetry["state"] = "cooldown"
+        telemetry["retry_in_seconds"] = 60.0
+        assert entities["wan_polling_state"].native_value == "cooldown"
+        assert entities["wan_polling_state"].available
+        state_entity = entities["wan_polling_state"]
+        assert {"retry_in_seconds", "success_streak"} <= (
+            state_entity._unrecorded_attributes  # noqa: SLF001
+        )
         hub.coordinator(PollGroup.FAST).last_update_success = False
         assert all(entity.available for entity in entities.values())
 

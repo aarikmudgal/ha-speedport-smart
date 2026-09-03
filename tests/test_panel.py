@@ -266,12 +266,12 @@ async def test_panel_registration_uses_current_schema_cache_key() -> None:
     ):
         await panel_module.async_register_panel(hass)
 
-    assert panel_module.PANEL_SCHEMA_VERSION == 27
+    assert panel_module.PANEL_SCHEMA_VERSION == 28
     register_panel.assert_awaited_once()
     assert register_panel.await_args.kwargs["module_url"] == (
-        "/speedport_smart_frontend/speedport-smart-panel.js?schema=27"
+        "/speedport_smart_frontend/speedport-smart-panel.js?schema=28"
     )
-    assert register_panel.await_args.kwargs["config"] == {"schema_version": 27}
+    assert register_panel.await_args.kwargs["config"] == {"schema_version": 28}
 
 
 def test_powerline_child_entities_use_the_lan_section() -> None:
@@ -928,12 +928,15 @@ def test_wan_source_metadata_exposes_retry_cadence_and_sample_time() -> None:
     hub.wan_counter_telemetry = {
         "effective_interval_seconds": 3.0,
         "mode": "auto",
-        "state": "learning",
+        "state": "cooldown",
         "target_interval_seconds": 1.0,
         "runtime_floor_seconds": 1.0,
         "last_stable_interval_seconds": 4.0,
         "retrying": True,
         "retry_in_seconds": 2.0,
+        "success_streak": 0,
+        "success_samples_required": 5,
+        "cooldown_seconds": 60,
         "last_sampled_at": "2026-09-01T10:00:00+00:00",
     }
     hub.diagnostics.return_value = {
@@ -954,12 +957,15 @@ def test_wan_source_metadata_exposes_retry_cadence_and_sample_time() -> None:
         "available": False,
         "effective_interval_seconds": 3.0,
         "mode": "auto",
-        "state": "learning",
+        "state": "cooldown",
         "target_interval_seconds": 1.0,
         "runtime_floor_seconds": 1.0,
         "last_stable_interval_seconds": 4.0,
         "retrying": True,
         "retry_in_seconds": 2.0,
+        "success_streak": 0,
+        "success_samples_required": 5,
+        "cooldown_seconds": 60,
         "last_sampled_at": "2026-09-01T10:00:00+00:00",
     }
 

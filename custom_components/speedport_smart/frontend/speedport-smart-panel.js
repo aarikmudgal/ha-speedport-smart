@@ -1,24 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=27";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=27";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=27";
+import { requestPrivateApi } from "./private-api.js?schema=28";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=28";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=28";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=27";
-import { keepDialogFocus } from "./accessibility.js?schema=27";
+} from "./admin-navigation.js?schema=28";
+import { keepDialogFocus } from "./accessibility.js?schema=28";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=27";
+} from "./call-history-view.js?schema=28";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=27";
+} from "./file-transfer-editor.js?schema=28";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=27";
+} from "./maintenance-editor.js?schema=28";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=27";
+} from "./configuration-editor.js?schema=28";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,22 +33,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=27";
+} from "./controls.js?schema=28";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=27";
+} from "./entity-state.js?schema=28";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=27";
+} from "./render-state.js?schema=28";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=27";
+} from "./translations.js?schema=28";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -234,7 +234,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 27;
+const PANEL_SCHEMA_VERSION = 28;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3254,9 +3254,9 @@ export function liveWanSourceFromEntityStates(source, entities, states) {
 
   const schedulerEntityState = stateFor("wan_polling_state");
   const schedulerState = usableState(schedulerEntityState);
-  if (["learning", "stable", "retrying", "limited"].includes(schedulerState)) {
+  if (["learning", "stable", "cooldown", "retrying", "limited"].includes(schedulerState)) {
     live.state = schedulerState;
-    live.retrying = schedulerState === "retrying";
+    live.retrying = ["cooldown", "retrying"].includes(schedulerState);
   } else if (schedulerEntityState) {
     live.available = false;
     live.retrying = false;
@@ -3267,9 +3267,17 @@ export function liveWanSourceFromEntityStates(source, entities, states) {
       source.polling_available !== false &&
       schedulerAttributes.source_available;
   }
-  const retryInSeconds = Number(schedulerAttributes.retry_in_seconds);
-  if (Number.isFinite(retryInSeconds) && retryInSeconds >= 0) {
+  const retryInSeconds = schedulerAttributes.retry_in_seconds;
+  if (typeof retryInSeconds === "number" && Number.isFinite(retryInSeconds) && retryInSeconds >= 0) {
     live.retry_in_seconds = retryInSeconds;
+  } else if (Object.hasOwn(schedulerAttributes, "retry_in_seconds")) {
+    delete live.retry_in_seconds;
+  }
+  for (const [key, minimum, maximum] of [["success_streak", 0, 5], ["success_samples_required", 5, 5], ["cooldown_seconds", 60, 60]]) {
+    if (!Object.hasOwn(schedulerAttributes, key)) continue;
+    const value = schedulerAttributes[key];
+    if (Number.isSafeInteger(value) && value >= minimum && value <= maximum) live[key] = value;
+    else delete live[key];
   }
 
   const interval = positiveNumberState(stateFor("wan_polling_interval"));
@@ -3293,7 +3301,7 @@ export function wanTelemetryPresentation(
 ) {
   const isWanSource = source?.id === "wan_counters";
   const retrying =
-    isWanSource && (source.retrying === true || source.state === "retrying");
+    isWanSource && (source.retrying === true || ["cooldown", "retrying"].includes(source.state));
   const degraded =
     isWanSource &&
     source?.supported !== false &&
@@ -3318,7 +3326,7 @@ export function wanTelemetryPresentation(
       : undefined;
   const schedulerState =
     isWanSource &&
-    ["learning", "stable", "retrying", "limited"].includes(source?.state)
+    ["learning", "stable", "cooldown", "retrying", "limited"].includes(source?.state)
       ? source.state
       : undefined;
   const sampleAgeSeconds =
@@ -3330,13 +3338,15 @@ export function wanTelemetryPresentation(
     retrying && Number.isFinite(retryIn) && retryIn > 0 ? retryIn : undefined;
   const availability = entityAvailability(meta, state);
   const rateStatusKey = WAN_RATE_KEYS.has(meta?.translation_key)
-    ? availability === "available"
-      ? "status.recent_rate"
-      : retrying
-        ? "status.rate_retrying"
-        : degraded
-          ? "status.rate_unavailable"
-          : "status.rate_warming"
+    ? isWanSource && source.state === "cooldown"
+      ? "status.rate_cooldown"
+      : availability === "available"
+        ? "status.recent_rate"
+        : retrying
+          ? "status.rate_retrying"
+          : degraded
+            ? "status.rate_unavailable"
+            : "status.rate_warming"
     : undefined;
   return {
     degraded,
@@ -3764,7 +3774,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       .filter((time) => Number.isFinite(time) && time <= now);
     const sampledAt = observationTimes.length ? Math.max(...observationTimes) : undefined;
     this._trafficHistory.open({entryId: router.entry_id, userId, entities, states: this._hass.states,
-      stale: source?.available === false || source?.retrying === true || source?.supported === false,
+      stale: source?.available === false || source?.retrying === true || source?.state === "cooldown" || source?.supported === false,
       staleAfterMs: Math.max(30000, (Number(source?.effective_interval_seconds) || 10) * 4000), sampledAt,
     });
   }
@@ -5881,7 +5891,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     const statusLabel = unsupported
       ? this._t("status.not_detected")
       : retrying
-        ? this._t("status.telemetry_retrying")
+        ? this._t(telemetry.schedulerState === "cooldown" ? "status.telemetry_cooldown" : "status.telemetry_retrying")
         : source.available
           ? this._t("status.ready_now")
           : this._t("status.temporarily_unavailable");
@@ -6273,7 +6283,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           ACCESS_SOURCE_INFO[sourceId] || ACCESS_SOURCE_INFO.protected_json;
         const sourceState = sourceStates[sourceId];
         const sourceRetrying =
-          sourceId === "wan_counters" && sourceState?.retrying === true;
+          sourceId === "wan_counters" && (sourceState?.retrying === true || sourceState?.state === "cooldown");
         const statusClass = sourceState
           ? sourceState.supported === false
             ? "unsupported"
@@ -6287,7 +6297,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           ? sourceState.supported === false
             ? this._t("status.not_detected")
             : sourceRetrying
-              ? this._t("status.telemetry_retrying")
+              ? this._t(sourceState.state === "cooldown" ? "status.telemetry_cooldown" : "status.telemetry_retrying")
               : sourceState.available
                 ? this._t("status.available_now")
                 : this._t("status.temporarily_unavailable")
@@ -7639,6 +7649,21 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
   }
 
+  _wanRecoveryDetails(source) {
+    if (source?.state === "learning" && source.retrying !== true && source.success_samples_required === 5 &&
+        Number.isSafeInteger(source.success_streak) && source.success_streak >= 0 && source.success_streak <= 5) {
+      return `Successful polls ${source.success_streak}/${source.success_samples_required}`;
+    }
+    const remaining = source?.retry_in_seconds;
+    if (source?.state !== "cooldown" || source.cooldown_seconds !== 60 ||
+        typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 60) return "";
+    if (remaining === 0) return "Waiting for next poll";
+    // Report the last received estimate. No browser timer, extra router request
+    // or exact dispatch promise; failures always start the same 60-second wait.
+    const duration = formatPanelDurationSeconds(Math.ceil(remaining), this._locale(), this._language());
+    return `Retry in ~${duration}`;
+  }
+
   _renderDashboard(router, reporting, accessSourceStates) {
     const overview = renderDashboardOverview({
       router: {...router, entities: reporting}, states: this._hass?.states,
@@ -7647,8 +7672,9 @@ export class SpeedportSmartPanel extends HTMLElement {
     });
     const wan = accessSourceStates.wan_counters;
     const interval = Number(wan?.effective_interval_seconds);
+    const recovery = this._wanRecoveryDetails(wan);
     const cadence = wan && Number.isFinite(interval) && interval > 0
-      ? `<p class="dashboard-cadence">WAN samples every ${escapeHtml(interval)} s · ${escapeHtml(humanize(wan.state || wan.mode || ""))}</p>` : "";
+      ? `<p class="dashboard-cadence">WAN samples every ${escapeHtml(interval)} s · ${escapeHtml(humanize(wan.state || wan.mode || ""))}${recovery ? ` · ${escapeHtml(recovery)}` : ""}</p>` : "";
     const deviceLink = router.root_device_id ? `<a href="/config/devices/device/${encodeURIComponent(router.root_device_id)}">All entities in Home Assistant</a>` : "";
     return `${overview}${cadence}<div class="dashboard-tools">${deviceLink}
       <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">

@@ -12,7 +12,7 @@ class TestElement {
 }
 globalThis.HTMLElement = TestElement;
 globalThis.customElements = {define() {}, get() {}};
-const {SpeedportSmartPanel} = await import("../../custom_components/speedport_smart/frontend/speedport-smart-panel.js?test=dashboard-integration");
+const {SpeedportSmartPanel, liveWanSourceFromEntityStates, wanTelemetryPresentation} = await import("../../custom_components/speedport_smart/frontend/speedport-smart-panel.js?test=dashboard-integration");
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise((done) => {resolve = done;}); return {promise, resolve}; }
@@ -29,7 +29,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 27, routers: [first, second]};
+  panel._metadata = {schema_version: 28, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -43,6 +43,126 @@ function fixture(options = {}) {
   }
   return {panel, calls, first, second};
 }
+
+function recoverySource(overrides = {}) {
+  return {id: "wan_counters", available: true, state: "cooldown", mode: "auto",
+    effective_interval_seconds: 3, cooldown_seconds: 60,
+    retry_in_seconds: 45, retrying: true, success_streak: 0,
+    success_samples_required: 5, ...overrides};
+}
+
+test("dashboard shows fixed sixty-second cooldown without changing cadence or requesting data", () => {
+  const {panel, first, calls} = fixture();
+  for (const [remaining, text] of [[60, "1 min"], [45, "45 s"], [0.2, "1 s"]]) {
+    const html = panel._renderDashboard(first, first.entities.filter((item) => !item.control),
+      {wan_counters: recoverySource({retry_in_seconds: remaining})});
+    assert.ok(html.includes("WAN samples every 3 s · Cooldown"));
+    assert.ok(html.includes(`Retry in ~${text}`));
+    assert.ok(!html.includes("5 min cooldown"));
+    assert.ok(!html.includes("will start"));
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(panel._trafficHistory.snapshot(), null);
+});
+
+for (const [source, text] of [
+  [recoverySource({retry_in_seconds: 0}), "Waiting for next poll"],
+  [recoverySource({available: false}), "Retry in ~45 s"],
+  [recoverySource({polling_available: false}), "Retry in ~45 s"],
+  [recoverySource({state: "learning", retrying: false}), "Successful polls 0/5"],
+  [recoverySource({state: "learning", retrying: false, success_streak: 4}), "Successful polls 4/5"],
+  [recoverySource({state: "learning", retrying: false, success_streak: 5}), "Successful polls 5/5"],
+]) {
+  test(`dashboard cadence distinguishes ${source.state}/${source.retry_in_seconds}/${source.success_streak}/${source.available}/${source.polling_available}`, () => {
+    const {panel, first, calls} = fixture();
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: source});
+    assert.ok(html.includes(text));
+    assert.ok(!html.includes("Retry in ~0 s"));
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("missing, malformed, settled and obsolete metadata do not invent progress or retry timing", () => {
+  const {panel, first, calls} = fixture();
+  for (const source of [
+    {id: "wan_counters", effective_interval_seconds: 5, state: "limited"},
+    {id: "wan_counters", effective_interval_seconds: 5, state: "limited", recovery_cooldown_seconds: 300,
+      next_probe_in_seconds: 270, recovery_success_samples: 6, recovery_required_success_samples: 12},
+    ...["stable", "manual", "unknown", "retrying", "limited"].map((state) => recoverySource({state})),
+    ...[undefined, null, "45", -1, 61, NaN, Infinity, false, []].map((retry_in_seconds) => recoverySource({retry_in_seconds})),
+    ...[undefined, null, 300, "60"].map((cooldown_seconds) => recoverySource({cooldown_seconds})),
+    ...[undefined, null, "4", -1, 6, 0.5].map((success_streak) => recoverySource({state: "learning", retrying: false, success_streak})),
+    ...[undefined, null, "5", 0, 12, 0.5].map((success_samples_required) => recoverySource({state: "learning", retrying: false, success_samples_required})),
+  ]) {
+    const html = panel._renderDashboard(first, first.entities, {wan_counters: source});
+    assert.ok(!html.includes("Faster trial"));
+    assert.ok(!html.includes("Retry in ~"));
+    assert.ok(!html.includes("Successful polls"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("live Cooldown sensor overrides cached Learning state and remains degraded", () => {
+  const source = liveWanSourceFromEntityStates(recoverySource({state: "learning", retrying: false}),
+    [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}],
+    {"sensor.poll_state": {state: "cooldown", attributes: {source_available: false, retry_in_seconds: 30,
+      cooldown_seconds: 60, success_samples_required: 5, success_streak: 0}}});
+  assert.equal(source.state, "cooldown");
+  assert.equal(source.retrying, true);
+  assert.equal(source.retry_in_seconds, 30);
+  const presentation = wanTelemetryPresentation(undefined, undefined, source);
+  assert.equal(presentation.schedulerState, "cooldown");
+  assert.equal(presentation.retrying, true);
+  assert.equal(presentation.degraded, true);
+});
+
+test("fresh Learning attributes override stale counters while malformed values stay unknown", () => {
+  const {panel, first, calls} = fixture();
+  const entities = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
+  const source = liveWanSourceFromEntityStates(recoverySource(), entities,
+    {"sensor.poll_state": {state: "learning", attributes: {source_available: true, retry_in_seconds: 0,
+      success_streak: 2, success_samples_required: 5, cooldown_seconds: 60}}});
+  assert.equal(source.retrying, false);
+  assert.equal(source.success_streak, 2);
+  assert.ok(panel._renderDashboard(first, first.entities, {wan_counters: source}).includes("Successful polls 2/5"));
+  for (const invalid of [null, false, "2", NaN, Infinity, -1]) {
+    const malformed = liveWanSourceFromEntityStates(source, entities,
+      {"sensor.poll_state": {state: "learning", attributes: {success_streak: invalid}}});
+    assert.equal(malformed.success_streak, undefined);
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: malformed}).includes("Successful polls"));
+    const cooldown = liveWanSourceFromEntityStates(recoverySource(), entities,
+      {"sensor.poll_state": {state: "cooldown", attributes: {retry_in_seconds: invalid}}});
+    assert.equal(cooldown.retry_in_seconds, undefined);
+    assert.ok(!panel._renderDashboard(first, first.entities, {wan_counters: cooldown}).includes("Retry in ~"));
+  }
+  assert.equal(calls.length, 0);
+});
+
+for (const [language, label] of [["en", "Cooldown"], ["de", "Abkühlphase"]]) {
+  test(`detailed ${language} WAN cooldown labels never claim the router is busy`, () => {
+    const {panel, first, calls} = fixture();
+    panel._hass.language = language; panel._hass.locale.language = language;
+    const source = recoverySource({retrying: false});
+    const meta = first.entities[0];
+    assert.equal(wanTelemetryPresentation(meta, panel._hass.states[meta.entity_id], source).rateStatusKey, "status.rate_cooldown");
+    for (const html of [panel._renderSource(source),
+      panel._renderSection("bandwidth", [meta], first, {wan_counters: source}),
+      panel._renderEntity(meta, {hero: true, sourceState: source})]) {
+      assert.ok(html.toLowerCase().includes(label.toLowerCase()));
+      assert.doesNotMatch(html, /telemetry busy|Telemetrie belegt|recent aggregate WAN rate|aktuelle gesamte WAN-Rate/);
+    }
+    assert.equal(calls.length, 0);
+  });
+}
+
+test("explicit Cooldown keeps cached graph samples non-live even without a retry flag", async () => {
+  const {panel, first, calls} = fixture();
+  first.access_sources = [recoverySource({retrying: false})];
+  panel._syncTrafficHistory(); await settle();
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, null);
+  assert.equal(panel._trafficHistory.snapshot().series.upload.current, null);
+  assert.equal(calls.length, 1);
+});
 
 test("dashboard history reads exactly the two selected router WAN entities once", async () => {
   const {panel, calls} = fixture();
