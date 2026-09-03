@@ -12,6 +12,7 @@ from .configuration import (
     boolean,
     choice,
 )
+from .const import RECEIVER_LED_MODE_CODES
 
 if TYPE_CHECKING:
     from .configuration import SettingValues
@@ -172,7 +173,12 @@ def _bond_revision(raw: SettingValues) -> dict[str, Any]:
 
 def _led_read(raw: SettingValues) -> dict[str, Any]:
     _receiver(raw)
-    return {"ex5g_led_mode": _LED.read(raw)}
+    value = raw.get("ex5g_led_mode")
+    # The native page submits decimal codes but LTE.json also returns the exact
+    # On/Timer/Off spellings already supported by the native entity contract.
+    if type(value) is str and value in RECEIVER_LED_MODE_CODES:
+        value = str(RECEIVER_LED_MODE_CODES[value])
+    return {"ex5g_led_mode": _LED.read({"ex5g_led_mode": value})}
 
 
 def _led_build(
@@ -194,7 +200,7 @@ def _led_verify(
         _led_build(before, changes)
         return (
             _receiver(before) == _receiver(after)
-            and _LED.read(after) == changes["ex5g_led_mode"]
+            and _led_read(after)["ex5g_led_mode"] == changes["ex5g_led_mode"]
         )
     except ConfigurationError:
         return False

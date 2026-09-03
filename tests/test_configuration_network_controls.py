@@ -230,6 +230,73 @@ async def test_receiver_led_exact_readback_rejects_receiver_replacement() -> Non
     write.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("wire", "code"),
+    [("On", "0"), ("Timer", "1"), ("Off", "2"), ("0", "0"), ("1", "1"), ("2", "2")],
+)
+def test_receiver_led_proven_read_aliases_preserve_numeric_contract(
+    wire: str, code: str
+) -> None:
+    """Native symbolic reads and decimal reads produce the same private revision."""
+    raw = {**_raw(), "ex5g_led_mode": wire}
+    numeric = {**raw, "ex5g_led_mode": code}
+    assert _LED.read(raw) == {"ex5g_led_mode": code}
+    assert _LED.revision(raw) == _LED.revision(numeric)
+    for target in ("0", "1", "2"):
+        assert _LED.build(raw, {"ex5g_led_mode": target}) == {"ex5g_led_mode": target}
+    assert raw["ex5g_led_mode"] == wire
+
+
+@pytest.mark.parametrize(
+    "value", ["on", "timer", "off", "Always", "3", "Timer1", 1.0, True, None, ["Timer"]]
+)
+def test_receiver_led_unproven_read_aliases_remain_rejected(value: Any) -> None:
+    """Case variants and coercions cannot widen the exact firmware evidence."""
+    raw = {**_raw(), "ex5g_led_mode": value}
+    with pytest.raises(ConfigurationError):
+        _LED.read(raw)
+    assert _LED.verifier is not None
+    assert not _LED.verifier(_raw(), {"ex5g_led_mode": "1"}, raw)
+
+
+@pytest.mark.parametrize("alias", ["On", "Timer", "Off"])
+def test_receiver_led_symbolic_names_are_read_only_aliases(alias: str) -> None:
+    """Callers still submit only the existing numeric enum values."""
+    with pytest.raises(ConfigurationError):
+        _LED.build(_raw(), {"ex5g_led_mode": alias})
+
+
+@pytest.mark.parametrize(("after_wire", "target"), [("Timer", "1"), ("Off", "2")])
+async def test_receiver_led_symbolic_preflight_and_readback_save_once(
+    after_wire: str, target: str
+) -> None:
+    """A symbolic readback can prove a numeric write without changing identity rules."""
+    before = {**_raw(), "ex5g_led_mode": "On"}
+    after = {**before, "ex5g_led_mode": after_wire}
+    read, write = AsyncMock(side_effect=[before, before, after]), AsyncMock()
+    session = ConfigurationSession()
+    initial = await session.read(_LED, _OWNER, read)
+    assert initial["values"] == {"ex5g_led_mode": "0"}
+    assert await session.save(
+        _LED,
+        _OWNER,
+        initial["revision"],
+        {"ex5g_led_mode": target},
+        confirmed=True,
+        confirmation_text=_LED.confirmation,
+        read=read,
+        write=write,
+    ) == {"status": "verified"}
+    write.assert_awaited_once()
+    assert read.await_count == 3
+    assert _LED.verifier is not None
+    assert not _LED.verifier(
+        before,
+        {"ex5g_led_mode": target},
+        {**after, "ex5g_serial_number": "replacement"},
+    )
+
+
 async def test_connected_tether_device_is_not_proof_of_active_route_or_noop() -> None:
     """An explicit switch still runs once when the USB link reports connected."""
     raw = _raw()

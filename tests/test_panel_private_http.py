@@ -13,9 +13,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import StreamReader
+from aiohttp.test_utils import make_mocked_request
 from homeassistant.components.http.const import KEY_HASS_REFRESH_TOKEN_ID, KEY_HASS_USER
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import Unauthorized
+from homeassistant.helpers.http import KEY_AUTHENTICATED, request_handler_factory
 
 from custom_components.speedport_smart.admin_actions import get_admin_action_contract
 from custom_components.speedport_smart.api import SpeedportClient
@@ -25,6 +28,10 @@ from custom_components.speedport_smart.call_history import (
     read_call_history,
 )
 from custom_components.speedport_smart.configuration import ConfigurationError
+from custom_components.speedport_smart.configuration_session import ConfigurationSession
+from custom_components.speedport_smart.configuration_targets import (
+    resolve_settings_contract,
+)
 from custom_components.speedport_smart.panel_private_http import (
     _REQUEST_LIMIT,
     _RESPONSE_LIMIT,
@@ -429,6 +436,192 @@ async def test_exceptions_and_unrecognized_error_codes_never_echo_private_text(
     assert json.loads(response.body)["error"]["code"] == code
     assert "synthetic" not in response.text
     assert "synthetic" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "bonding_managed_by_easy_support",
+        "settings_prerequisites_unavailable",
+        "settings_unavailable",
+        "usb_disabled",
+        "tethering_unavailable_with_receiver",
+    ],
+)
+async def test_fixed_prerequisite_errors_survive_real_ha_http_serialization(
+    code: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The actual HA wrapper and bounded request stream retain only safe codes."""
+    context = _context()
+    context.hass.is_stopping = False
+    setting_id = (
+        "usb_tethering_enabled"
+        if code in {"usb_disabled", "tethering_unavailable_with_receiver"}
+        else "receiver_bonding"
+    )
+
+    async def read(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        if code == "bonding_managed_by_easy_support":
+            return resolve_settings_contract("receiver_bonding").read(
+                {
+                    "ex5g_serial_number": "synthetic-private-serial",
+                    "ex5g_model_name": "synthetic-private-model",
+                    "easy_support_deactive": "0",
+                    "use_bonding": "1",
+                }
+            )
+        if setting_id == "usb_tethering_enabled":
+            return resolve_settings_contract(setting_id).read(
+                {
+                    "use_usb": "0" if code == "usb_disabled" else "1",
+                    "auto_external_modem": "0",
+                    "use_lte": "1",
+                    "hybrid_tunnel": "1",
+                    "use_tethering": "0",
+                    "private_extra": "synthetic-private-receiver",
+                }
+            )
+        raise ConfigurationError(code)
+
+    context.hub.async_read_configuration.side_effect = read
+    body = json.dumps(_message(setting_id=setting_id)).encode()
+    stream = StreamReader(MagicMock(), limit=_REQUEST_LIMIT)
+    stream.feed_data(body)
+    stream.feed_eof()
+    request = make_mocked_request(
+        "POST",
+        f"/api/speedport_smart/private/{ENTRY}",
+        headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        match_info={"entry_id": ENTRY},
+        payload=stream,
+    )
+    request[KEY_HASS_USER] = context.user
+    request[KEY_HASS_REFRESH_TOKEN_ID] = REQUESTER[1]
+    request[KEY_AUTHENTICATED] = True
+    handle = request_handler_factory(context.hass, context.view, context.view.post)
+    response = await handle(request)
+    envelope = json.loads(response.body)
+    assert response.status == 400
+    assert set(envelope) == {"error"}
+    assert envelope["error"]["code"] == code
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert "synthetic" not in response.text + caplog.text
+    context.hub.async_read_configuration.assert_awaited_once_with(
+        setting_id, requester=REQUESTER, target_id=None
+    )
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "values", "code"),
+    [
+        (
+            "system_mesh_restart",
+            {"mesh_exist": "0"},
+            "system_mesh_unavailable",
+        ),
+        (
+            "system_mesh_firmware_online",
+            {
+                "addmeshdevice": [
+                    {
+                        "id": "1",
+                        "mesh_connected": "1",
+                        "mesh_mac": "02:00:00:00:00:01",
+                        "mesh_serial": "synthetic-private-serial",
+                        "mesh_name": "synthetic-private-node",
+                        "mesh_device_type": "2",
+                        "mesh_upd_local": "1",
+                    }
+                ]
+            },
+            "system_mesh_local_update_only",
+        ),
+        (
+            "system_router_firmware_online",
+            {"inet_isp": "1", "autofw_deactive": "0"},
+            "system_firmware_managed_automatically",
+        ),
+        (
+            "system_router_firmware_online",
+            {
+                "inet_isp": "0",
+                "autofw_deactive": "1",
+                "system_firmware_offer": {"status": "ok", "fwupd_avail": "0"},
+            },
+            "system_firmware_offer_unavailable",
+        ),
+        (
+            "vpn_ipsec_key_rotate",
+            {"vpn_typ": "0", "vpn_key": "synthetic-private-key", "addvpn": []},
+            "vpn_key_rotation_unavailable",
+        ),
+        (
+            "vpn_ipsec_key_rotate",
+            {"vpn_typ": "1", "vpn_key": "synthetic-private-key", "addvpn": []},
+            "vpn_key_rotation_unavailable",
+        ),
+        (
+            "network_smarthome_deactivate",
+            {"use_smarthome": "0", "smarthome_state_check": "0"},
+            "system_smarthome_unavailable",
+        ),
+        (
+            "network_smarthome_deactivate",
+            {"use_smarthome": "1", "smarthome_state_check": "1"},
+            "system_smarthome_unavailable",
+        ),
+        (
+            "network_smarthome_activate",
+            {"use_smarthome": "1", "smarthome_state_check": "0"},
+            "system_smarthome_unavailable",
+        ),
+        *[
+            (f"call_history_clear_{category}", {}, "call_history_unavailable")
+            for category in ("missed", "taken", "dialed")
+        ],
+        (
+            "call_history_clear_missed",
+            {"addmissedcalls": [{"missedcalls_who": "synthetic-private-caller"}]},
+            "call_history_unavailable",
+        ),
+    ],
+)
+async def test_fixed_contract_prerequisites_forward_without_issuing_revision(
+    setting_id: str,
+    values: dict[str, Any],
+    code: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Actual strict contracts reject privately, before an editor grant or write."""
+    context = _context()
+    session = ConfigurationSession()
+    contract = resolve_settings_contract(setting_id)
+    raw = {
+        "router_state": "OK",
+        "onlinestatus": "online",
+        "firmware_version": "1.0",
+        "system_firmware_offer": {"status": "ok"},
+        "private_extra": "synthetic-private-settings",
+        **values,
+    }
+
+    async def read(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return await session.read(contract, REQUESTER, AsyncMock(return_value=raw))
+
+    context.hub.async_read_configuration.side_effect = read
+    response = await context.view.post(
+        Request(context.user, _message(setting_id=setting_id)), ENTRY
+    )
+    envelope = json.loads(response.body)
+    assert response.status == 400
+    assert set(envelope) == {"error"}
+    assert envelope["error"]["code"] == code
+    assert "synthetic" not in response.text + caplog.text
+    assert session._grants == {}
+    context.hub.async_read_configuration.assert_awaited_once_with(
+        setting_id, requester=REQUESTER, target_id=None
+    )
+    context.hub.async_save_configuration.assert_not_awaited()
 
 
 async def test_cancelled_dispatch_runs_cleanup_and_is_not_retried() -> None:

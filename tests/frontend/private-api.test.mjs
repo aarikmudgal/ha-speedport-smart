@@ -49,7 +49,7 @@ test("WS IDs, serialization redirects and oversized UTF-8 requests fail before d
 });
 
 test("known error codes preserved, all server messages and unknown codes discarded",async()=>{
-  for(const code of ["stale_settings","action_rejected","administrator_required","PRIVATE-PASSWORD"]){
+  for(const code of ["stale_settings","action_rejected","administrator_required","bonding_managed_by_easy_support","settings_prerequisites_unavailable","settings_unavailable","usb_disabled","tethering_unavailable_with_receiver","system_mesh_unavailable","system_mesh_local_update_only","system_firmware_managed_automatically","system_firmware_offer_unavailable","vpn_key_rotation_unavailable","system_smarthome_unavailable","call_history_unavailable","PRIVATE-PASSWORD"]){
     const {hass,calls}=fixture(()=>json({error:{code,message:"PRIVATE-SSID PRIVATE-PASSWORD"}},400));
     await assert.rejects(requestPrivateApi(hass,command()),error=>{assert.equal(error.code,code==="PRIVATE-PASSWORD"?"private_transport_failed":code);assert.doesNotMatch(String(error),/PRIVATE|SSID/);return true;});assert.equal(calls.length,1);
   }

@@ -1,24 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=26";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=26";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=26";
+import { requestPrivateApi } from "./private-api.js?schema=27";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=27";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=27";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=26";
-import { keepDialogFocus } from "./accessibility.js?schema=26";
+} from "./admin-navigation.js?schema=27";
+import { keepDialogFocus } from "./accessibility.js?schema=27";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=26";
+} from "./call-history-view.js?schema=27";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=26";
+} from "./file-transfer-editor.js?schema=27";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=26";
+} from "./maintenance-editor.js?schema=27";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=26";
+} from "./configuration-editor.js?schema=27";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,22 +33,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=26";
+} from "./controls.js?schema=27";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=26";
+} from "./entity-state.js?schema=27";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=26";
+} from "./render-state.js?schema=27";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=26";
+} from "./translations.js?schema=27";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -234,7 +234,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 26;
+const PANEL_SCHEMA_VERSION = 27;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3385,6 +3385,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._settingsEditors = new Map();
     this._adminRecoverySelections = new Map();
     this._adminSessionInvalidationPending = undefined;
+    this._adminPageRecoveryPending = undefined;
     this._settingsHost = undefined;
     this._settingsBinding = undefined;
     this._settingsEditor = this._newConfigurationEditor();
@@ -3705,10 +3706,13 @@ export class SpeedportSmartPanel extends HTMLElement {
         this._selectedEntry
       ) {
         this._loadAdminReadAndPage(this._selectedEntry);
-      } else if (!actionSessionChanged && selectedEntryLoaded && !this._configurationViews().length &&
-          adminPageSettings(this._currentAdminPage().page, selectedRouter.settings || [], SETTINGS_FEATURE_LINKS)
-            .some((setting) => setting.supported && setting.available && !previousPageSettings.has(setting.id))) {
-        this._queueAdminPageRecovery();
+      } else if (!actionSessionChanged && selectedEntryLoaded &&
+          adminPageSettingSections(this._currentAdminPage().page, selectedRouter.settings || [], SETTINGS_FEATURE_LINKS).inline
+            .some((setting) => setting.supported && setting.available && !previousPageSettings.has(setting.id) &&
+              !this._settingsEditors.has(setting.id))) {
+        // Add only newly available page sections; keep existing revisions and
+        // drafts, including failed editors awaiting an explicit Refresh.
+        this._queueAdminPageRecovery({allowExisting: true});
       }
     } catch (_error) {
       this._clearAdminRead();
@@ -4018,6 +4022,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     const userId = this._hass?.user?.id;
     if (this.isConnected === false || this._adminRecoveryEpoch === epoch || !this._adminManagementAvailable(this._hass) ||
         this._activeView !== "administration" || this._hass?.user?.is_admin !== true) return;
+    const busy = () => this._configurationSaving() || this._actionBusy ||
+      this._maintenanceEditor.snapshot()?.busy || this._fileTransferEditor.snapshot()?.busy;
+    const defer = () => { this._adminPageRecoveryPending = {epoch, entryId, userId, allowExisting}; };
+    // A new sibling becoming available must not advance the page epoch while a
+    // write owns it. Retain only scope identifiers; drain after its outcome.
+    if (busy()) { defer(); return; }
     this._adminRecoveryEpoch = epoch;
     // Coalesce session notifications, then recheck identity/page/access before
     // reading. Normal telemetry renders never trigger router configuration I/O.
@@ -4025,8 +4035,9 @@ export class SpeedportSmartPanel extends HTMLElement {
       if (this.isConnected === false || epoch !== this._adminPageEpoch || entryId !== this._currentRouter()?.entry_id ||
           userId !== this._hass?.user?.id || this._hass?.user?.is_admin !== true ||
           this._activeView !== "administration" || this._currentRouter()?.entry_state !== "loaded" ||
-          !this._adminManagementAvailable(this._hass) || !allowExisting && this._configurationViews().length ||
-          this._maintenanceEditor.snapshot() || this._fileTransferEditor.snapshot() || this._actionBusy) return;
+          !this._adminManagementAvailable(this._hass) || !allowExisting && this._configurationViews().length) return;
+      if (busy()) { this._adminRecoveryEpoch = undefined; defer(); return; }
+      if (this._maintenanceEditor.snapshot() || this._fileTransferEditor.snapshot()) return;
       return this._loadAdminPage();
     }).catch(() => {
       if (entryId === this._currentRouter()?.entry_id && userId === this._hass?.user?.id &&
@@ -4038,11 +4049,20 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _flushAdminSessionInvalidation() {
-    const pending = this._adminSessionInvalidationPending;
-    if (!pending || this._configurationSaving() || this._maintenanceEditor?.snapshot()?.busy ||
+    if (this._configurationSaving() || this._maintenanceEditor?.snapshot()?.busy ||
         this._fileTransferEditor?.snapshot()?.busy || this._actionBusy) return;
-    this._adminSessionInvalidationPending = undefined;
-    this._invalidateAdminPageSession({preserve: pending});
+    const pending = this._adminSessionInvalidationPending;
+    if (pending) {
+      this._adminSessionInvalidationPending = undefined;
+      this._invalidateAdminPageSession({preserve: pending});
+      return;
+    }
+    const recovery = this._adminPageRecoveryPending;
+    this._adminPageRecoveryPending = undefined;
+    if (recovery && recovery.epoch === this._adminPageEpoch &&
+        recovery.entryId === this._currentRouter()?.entry_id && recovery.userId === this._hass?.user?.id) {
+      this._queueAdminPageRecovery({allowExisting: recovery.allowExisting});
+    }
   }
 
   _invalidateAdminPageSession({preserve = new Set()} = {}) {
@@ -7390,6 +7410,7 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _clearSettingsEditor({preserve = new Set()} = {}) {
     this._adminSessionInvalidationPending = undefined;
+    this._adminPageRecoveryPending = undefined;
     for (const [id, record] of this._settingsEditors) {
       if (preserve.has(record.editor)) continue;
       record.binding?.();

@@ -350,3 +350,88 @@ def test_settings_schemas_reject_untyped_authority_and_unknown_fields() -> None:
     ]:
         with pytest.raises(vol.Invalid):
             schema({**message, **extra})
+
+
+@pytest.mark.parametrize("setting_id", [NAS_SHARE_SETTING_ID, "storage_media_folder"])
+async def test_missing_storage_inventory_reports_unavailable_not_empty(
+    setting_id: str,
+) -> None:
+    """Captured flags-only NAS shapes cannot invent an editable or empty target."""
+    client = SpeedportClient(MagicMock(), "router.invalid")
+    # v15/v16 contain module flags but omit the share ID/folder and media list.
+    raw = {
+        "use_usb": "1",
+        "nas_active": "0",
+        "nas_secure": "1",
+        "printer_connected": "0",
+    }
+    with (
+        patch.object(client, "get_json", AsyncMock(return_value=raw)) as get,
+        patch.object(client, "_post_json_unlocked", AsyncMock()) as post,
+        pytest.raises(ConfigurationError, match="settings_inventory_unavailable"),
+    ):
+        await client.query_configuration_targets(setting_id)
+    get.assert_awaited_once()
+    post.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "raw", [{}, {"sid": ["1", "2"]}, {"addnasfolder": [{"sid": "1"}, {"sid": "1"}]}]
+)
+async def test_malformed_nas_target_identity_has_safe_inventory_reason(
+    raw: dict[str, Any],
+) -> None:
+    """Only target-query classification changes; ambiguous identities still reject."""
+    client = SpeedportClient(MagicMock(), "router.invalid")
+    with (
+        patch.object(client, "get_json", AsyncMock(return_value=raw)),
+        pytest.raises(ConfigurationError, match="settings_inventory_unavailable"),
+    ):
+        await client.query_configuration_targets(NAS_SHARE_SETTING_ID)
+
+
+@pytest.mark.parametrize("raw", [{"sid": "-1"}, {"addnasfolder": []}])
+async def test_explicit_empty_nas_inventory_remains_empty(raw: dict[str, Any]) -> None:
+    """Previously supported explicit absence proof remains distinct from omission."""
+    client = SpeedportClient(MagicMock(), "router.invalid")
+    with patch.object(client, "get_json", AsyncMock(return_value=raw)):
+        assert await client.query_configuration_targets(NAS_SHARE_SETTING_ID) == {
+            "setting_id": NAS_SHARE_SETTING_ID,
+            "targets": [],
+        }
+
+
+@pytest.mark.parametrize(
+    ("setting_id", "endpoint", "referer"),
+    [
+        (
+            "telephony_dect_handset",
+            "data/DECTStation.json",
+            "html/content/phone/phone_dect_mobiles.html",
+        ),
+        (
+            "telephony_ip_phone",
+            "data/IPPBX.json",
+            "html/content/phone/phone_ippbx.html",
+        ),
+    ],
+)
+async def test_telephone_module_flags_do_not_prove_existing_target_inventory(
+    setting_id: str, endpoint: str, referer: str
+) -> None:
+    """A usable base/module scalar does not prove handset or IP-client absence."""
+    client = SpeedportClient(MagicMock(), "router.invalid")
+    with (
+        patch.object(
+            client,
+            "get_json",
+            AsyncMock(return_value={"use_dect": "1", "use_ippbx": "1"}),
+        ) as get,
+        patch.object(client, "_post_json_unlocked", AsyncMock()) as post,
+        pytest.raises(ConfigurationError, match="settings_inventory_unavailable"),
+    ):
+        await client.query_configuration_targets(setting_id)
+    get.assert_awaited_once_with(
+        endpoint, authenticated=True, referer=referer, preserve_compounds=True
+    )
+    post.assert_not_awaited()

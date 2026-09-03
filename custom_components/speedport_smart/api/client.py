@@ -1991,11 +1991,15 @@ class SpeedportClient:
                 referer="html/content/phone/phone_book_assign.html",
                 preserve_compounds=True,
             )
-        rows = (
-            target_settings_rows(setting_id, normalized)
-            if source
-            else _strict_nas_share_rows(normalized)
-        )
+        if source:
+            rows = target_settings_rows(setting_id, normalized)
+        else:
+            try:
+                rows = _strict_nas_share_rows(normalized)
+            except SpeedportUnsupportedError:
+                # Missing share identity is an unavailable inventory, not proof
+                # of an empty collection or a failed management connection.
+                raise ConfigurationError("settings_inventory_unavailable") from None
         if len(rows) > target_settings_limit(setting_id):
             raise ConfigurationError("too_many_settings_targets")
         targets = []

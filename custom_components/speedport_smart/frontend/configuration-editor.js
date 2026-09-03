@@ -33,6 +33,16 @@ const MESSAGES = Object.freeze({
   load_busy: "Another router request is still running. Wait for it to finish, then use Refresh. Nothing was changed.",
   load_rate_limited: "The router is receiving requests too quickly. Wait briefly, then use Refresh. Nothing was changed.",
   load_setting_unavailable: "The router did not provide the required state or prerequisites for this setting. Editing remains disabled. Nothing was changed.",
+  load_bonding_managed: "EasySupport manages bonding on this router. This control is not editable while EasySupport manages the connection. Nothing was changed.",
+  load_usb_disabled: "USB is disabled on this router. This setting is unavailable while USB is disabled. Nothing was changed.",
+  load_tethering_receiver: "USB tethering is unavailable while the receiver is active. Editing remains disabled. Nothing was changed.",
+  load_mesh_unavailable: "No eligible Mesh target was returned. This action remains disabled. Nothing was changed.",
+  load_mesh_local_update_only: "Online firmware updates are unavailable for the eligible Mesh nodes. This action remains disabled. Nothing was changed.",
+  load_firmware_managed: "Router or provider settings manage firmware automatically. This action remains disabled. Nothing was changed.",
+  load_firmware_offer_unavailable: "The router did not return a valid installable firmware offer. This action remains disabled. Nothing was changed.",
+  load_vpn_key_rotation_unavailable: "Replacing the shared key requires IPsec mode and an existing IPsec peer. This action remains disabled. Nothing was changed.",
+  load_smarthome_unavailable: "Smart Home is already in the requested state or a state change is still in progress. This action remains disabled. Nothing was changed.",
+  load_call_history_unavailable: "The router did not provide a complete call list. Missing data is not an empty list. Clearing remains disabled. Nothing was changed.",
   outcome_unknown: "The resulting router state could not be verified. Check the router and reload before trying again. The request will not be repeated automatically.",
   pending_confirmation: "The account-link request was sent. Choose whether to merge or replace local contacts, then confirm that separate operation. Nothing will continue automatically.",
   link_finishing: "Sending the separately confirmed phonebook decision once…",
@@ -46,6 +56,13 @@ const LOAD_ERROR_STATUS = Object.freeze({
   rate_limited: "load_rate_limited", action_rate_limited: "load_rate_limited",
   setting_unavailable: "load_setting_unavailable", settings_target_unavailable: "load_setting_unavailable",
   settings_inventory_unavailable: "load_setting_unavailable",
+  settings_prerequisites_unavailable: "load_setting_unavailable", settings_unavailable: "load_setting_unavailable",
+  bonding_managed_by_easy_support: "load_bonding_managed",
+  usb_disabled: "load_usb_disabled", tethering_unavailable_with_receiver: "load_tethering_receiver",
+  system_mesh_unavailable: "load_mesh_unavailable", system_mesh_local_update_only: "load_mesh_local_update_only",
+  system_firmware_managed_automatically: "load_firmware_managed", system_firmware_offer_unavailable: "load_firmware_offer_unavailable",
+  vpn_key_rotation_unavailable: "load_vpn_key_rotation_unavailable", system_smarthome_unavailable: "load_smarthome_unavailable",
+  call_history_unavailable: "load_call_history_unavailable",
 });
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -255,7 +272,8 @@ export function createConfigurationEditorController({request, download, onChange
         return true;
       } catch (_error) {
         if (epoch !== generation) return false;
-        state.targets = Object.freeze([]); state.status = "load_failed";
+        state.targets = Object.freeze([]);
+        state.status = Object.hasOwn(LOAD_ERROR_STATUS, _error?.code) ? LOAD_ERROR_STATUS[_error.code] : "load_failed";
         return false;
       } finally {
         if (epoch === generation) { busy = false; notify(); }

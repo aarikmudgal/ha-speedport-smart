@@ -25,6 +25,11 @@ const SAFE_CODES = new Set([
   "rejected", "command_rejected", "stale_revision", "stale_settings", "invalid_settings",
   "invalid_settings_target", "setting_unavailable", "settings_failed", "settings_busy",
   "settings_inventory_unavailable", "settings_capacity_reached", "settings_target_unavailable",
+  "settings_prerequisites_unavailable", "settings_unavailable", "bonding_managed_by_easy_support",
+  "usb_disabled", "tethering_unavailable_with_receiver",
+  "system_mesh_unavailable", "system_mesh_local_update_only",
+  "system_firmware_managed_automatically", "system_firmware_offer_unavailable",
+  "vpn_key_rotation_unavailable", "system_smarthome_unavailable", "call_history_unavailable",
   "private_transport_required", "private_transport_failed",
 ]);
 

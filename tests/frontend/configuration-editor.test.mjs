@@ -50,16 +50,48 @@ test("successful enum read selects only its actual typed option without an unava
   assert.match(html, /<option value="0" selected>Normal<\/option>/);
 });
 
+test("failed target inventory preserves a safe missing-prerequisite reason without enabling an editor", async () => {
+  let calls = 0;
+  const controller = createConfigurationEditorController({request: async () => {
+    calls++; throw Object.assign(new Error("PRIVATE-TARGET-DETAIL"), {code: "settings_prerequisites_unavailable"});
+  }});
+  controller.open({entryId: "entry", setting: {...SETTING, requires_target: true}});
+  assert.equal(await controller.loadTargets(), false);
+  assert.equal(controller.snapshot().status, "load_setting_unavailable");
+  assert.deepEqual(controller.snapshot().targets, []);
+  assert.equal(controller.snapshot().loaded, false);
+  assert.equal(await controller.save(), false);
+  assert.equal(calls, 1);
+  const html = renderConfigurationEditor(controller);
+  assert.ok(html.includes("required state or prerequisites"));
+  assert.ok(!html.includes("PRIVATE-TARGET-DETAIL"));
+  assert.match(html, /data-setting-action="save" disabled/);
+});
+
 for (const [code, status, explanation] of [
   ["management_unavailable", "load_management_unavailable", "management access is unavailable"],
   ["settings_busy", "load_busy", "Another router request is still running"],
   ["action_busy", "load_busy", "Another router request is still running"],
   ["rate_limited", "load_rate_limited", "requests too quickly"],
   ["setting_unavailable", "load_setting_unavailable", "required state or prerequisites"],
+  ["settings_prerequisites_unavailable", "load_setting_unavailable", "required state or prerequisites"],
+  ["settings_unavailable", "load_setting_unavailable", "required state or prerequisites"],
+  ["bonding_managed_by_easy_support", "load_bonding_managed", "EasySupport manages bonding"],
+  ["usb_disabled", "load_usb_disabled", "USB is disabled on this router"],
+  ["tethering_unavailable_with_receiver", "load_tethering_receiver", "USB tethering is unavailable while the receiver is active"],
+  ["system_mesh_unavailable", "load_mesh_unavailable", "No eligible Mesh target was returned"],
+  ["system_mesh_local_update_only", "load_mesh_local_update_only", "Online firmware updates are unavailable for the eligible Mesh nodes"],
+  ["system_firmware_managed_automatically", "load_firmware_managed", "Router or provider settings manage firmware automatically"],
+  ["system_firmware_offer_unavailable", "load_firmware_offer_unavailable", "The router did not return a valid installable firmware offer"],
+  ["vpn_key_rotation_unavailable", "load_vpn_key_rotation_unavailable", "requires IPsec mode and an existing IPsec peer"],
+  ["system_smarthome_unavailable", "load_smarthome_unavailable", "already in the requested state or a state change is still in progress"],
+  ["call_history_unavailable", "load_call_history_unavailable", "Missing data is not an empty list. Clearing remains disabled"],
   ["unreviewed_private_error", "load_failed", "could not be loaded"],
 ]) {
   test(`read failure ${code} retains only an actionable safe reason and no revision`, async () => {
+    let calls = 0;
     const controller = createConfigurationEditorController({request: async () => {
+      calls++;
       throw Object.assign(new Error("PRIVATE-SECRET-MESSAGE"), {code});
     }});
     controller.open({entryId: "entry", setting: SETTING});
@@ -67,9 +99,11 @@ for (const [code, status, explanation] of [
     assert.equal(controller.snapshot().status, status);
     assert.equal(controller.snapshot().loaded, false);
     assert.equal(await controller.save(), false);
+    assert.equal(calls, 1);
     const html = renderConfigurationEditor(controller);
     assert.ok(html.includes(explanation));
     assert.ok(!html.includes("PRIVATE-SECRET-MESSAGE"));
+    if (code === "system_firmware_offer_unavailable") assert.ok(!html.includes("up to date"));
     assert.match(html, /data-setting-action="save" disabled/);
   });
 }

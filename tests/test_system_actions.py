@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from test_configuration_mesh import mesh_node, mesh_raw
 
+from custom_components.speedport_smart.api import SpeedportClient
 from custom_components.speedport_smart.api.exceptions import (
     SpeedportCommandRejectedError,
     SpeedportMutationOutcomeUnknownError,
@@ -499,3 +500,91 @@ async def test_smarthome_activation_bounded_readback_never_retries_code() -> Non
         )
     assert read.await_count == 6
     write.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("action", "responses", "code"),
+    [
+        *(
+            (
+                action,
+                [{**router_base(), "mesh_exist": "0"}],
+                "system_mesh_unavailable",
+            )
+            for action in ("system_mesh_restart", "system_mesh_reset", MESH)
+        ),
+        *(
+            (action, [router_base()], "incomplete_mesh_inventory")
+            for action in ("system_mesh_restart", "system_mesh_reset", MESH)
+        ),
+        (
+            MESH,
+            [{**router_base(), **mesh_raw({**mesh_node(), "mesh_upd_local": "1"})}],
+            "system_mesh_local_update_only",
+        ),
+        *(
+            (
+                ROUTER,
+                [{**router_base(), "inet_isp": provider}],
+                "system_firmware_managed_automatically",
+            )
+            for provider in ("1", "89")
+        ),
+        *(
+            (
+                ROUTER,
+                [router_base(), {**router_offer(), **offer_change}],
+                "system_firmware_offer_unavailable",
+            )
+            for offer_change in (
+                {"fwupd_avail": "0"},
+                {"fwupd_version": "1.0"},
+                {"status": "failed"},
+            )
+        ),
+        *(
+            (
+                RECEIVER,
+                [{**receiver(), **offer_change}],
+                "system_firmware_offer_unavailable",
+            )
+            for offer_change in (
+                {"ex5g_fwupd_avail": "0"},
+                {"ex5g_fwupd_version": "1.0"},
+            )
+        ),
+    ],
+)
+async def test_unavailable_maintenance_read_has_exact_reason_no_grant_or_write(
+    action: str, responses: list[dict], code: str
+) -> None:
+    """Missing offers/targets stay disabled; malformed inventory is not empty."""
+    client = SpeedportClient(MagicMock(), "router.invalid")
+    session = ConfigurationSession()
+    contract = CONTRACTS[action]
+
+    async def read() -> dict:
+        return await client.read_configuration(action)
+
+    with (
+        patch.object(client, "get_json", AsyncMock(side_effect=responses)) as get,
+        patch.object(client, "_post_json_unlocked", AsyncMock()) as post,
+        pytest.raises(ConfigurationError) as error,
+    ):
+        await session.read(contract, OWNER, read)
+
+    assert error.value.code == code
+    assert session._grants == {}  # noqa: SLF001 - failed reads must mint no grant
+    assert get.await_count == len(responses)
+    first = get.await_args_list[0]
+    assert first.args == (contract.read_endpoint or contract.endpoint,)
+    assert first.kwargs["authenticated"] is True
+    assert first.kwargs["referer"] == (contract.read_referer or contract.referer)
+    if len(responses) == 2:
+        get.assert_awaited_with(
+            "data/FwCheckForUpdate.json",
+            authenticated=True,
+            referer="html/content/config/check_for_updates.html",
+            preserve_compounds=True,
+        )
+    post.assert_not_awaited()

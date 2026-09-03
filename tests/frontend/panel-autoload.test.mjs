@@ -152,6 +152,44 @@ test("descriptor support becoming available loads an empty page without a manage
   assert.equal(reads().length, 1);
 });
 
+for (const rejected of [false, true]) {
+  test(`newly available sibling ${rejected ? "fails once without automatic retries" : "loads once"} while existing draft survives`, async () => {
+    const {panel, setMetadata, setFetch, reads, calls} = fixture();
+    const siblingId = "qos_voice_priority";
+    const pageMetadata = (available) => {
+      const next = metadata();
+      next.routers[0].settings.push({...SETTING, id: siblingId, available});
+      return next;
+    };
+    panel._metadata = pageMetadata(false);
+    setFetch(async (message) => {
+      if (rejected && message.setting_id === siblingId) return response({setting_id: "wrong", values: {}});
+      return response({setting_id: message.setting_id, revision: `revision-${message.setting_id}`,
+        expires_in: 120, values: {hdvoice: true}});
+    });
+    await openPage(panel);
+    const first = panel._settingsEditors.get(SETTING.id).editor;
+    first.setValue("hdvoice", false);
+    first.setConfirmation("SAVE SETTINGS");
+    const before = first.snapshot();
+    setMetadata(pageMetadata(true));
+    await panel._loadMetadata(); await settled(panel);
+    assert.deepEqual(reads().map((call) => call.setting_id), [SETTING.id, siblingId]);
+    assert.equal(panel._settingsEditors.get(SETTING.id).editor, first);
+    assert.deepEqual(first.snapshot(), before, "existing revision, dirty draft and confirmation remain untouched");
+    assert.equal(panel._settingsEditors.get(siblingId).editor.snapshot().status, rejected ? "load_failed" : "ready");
+    for (let index = 0; index < 3; index++) {
+      await panel._loadMetadata();
+      panel.hass = {...panel._hass, states: {"sensor.synthetic_wan": {state: String(index)}}};
+      await settled(panel);
+    }
+    assert.deepEqual(reads().map((call) => call.setting_id), [SETTING.id, siblingId]);
+    assert.deepEqual(first.snapshot(), before);
+    assert.ok(calls.every((call) => !call.type.endsWith("/save")));
+    panel._clearSettingsEditor();
+  });
+}
+
 test("failed recovery read is not retried on each metadata or telemetry update", async () => {
   const {panel, setMetadata, setFetch, reads} = fixture({available: false});
   await openPage(panel);
@@ -167,6 +205,48 @@ test("failed recovery read is not retried on each metadata or telemetry update",
   }
   assert.equal(reads().length, 1);
 });
+
+for (const cancel of [null, "permission", "unload"]) {
+  test(`new sibling waits for an existing save${cancel ? ` and is cancelled on ${cancel}` : " without losing the completed result"}`, async () => {
+    const {panel, setMetadata, setFetch, reads, calls} = fixture();
+    const siblingId = "qos_voice_priority";
+    const pageMetadata = (available) => {
+      const next = metadata();
+      next.routers[0].settings.push({...SETTING, id: siblingId, available});
+      return next;
+    };
+    panel._metadata = pageMetadata(false);
+    await openPage(panel);
+    const first = panel._settingsEditors.get(SETTING.id).editor;
+    first.setValue("hdvoice", false);
+    first.setConfirmation("SAVE SETTINGS");
+    const pending = deferred();
+    setFetch(async (message) => message.type.endsWith("/save") ? pending.promise :
+      response({setting_id: message.setting_id, revision: "sibling-revision", expires_in: 120, values: {hdvoice: true}}));
+    const saving = first.save();
+    await turns();
+    const epoch = panel._adminPageEpoch;
+    setMetadata(pageMetadata(true));
+    await panel._loadMetadata(); await turns();
+    assert.equal(panel._adminPageEpoch, epoch, "availability recovery must not invalidate an in-flight save");
+    assert.equal(first.snapshot().isSaving, true);
+    assert.deepEqual(reads().map((call) => call.setting_id), [SETTING.id]);
+    if (cancel === "permission") panel.hass = {...panel._hass, user: {id: "synthetic-admin", is_admin: false}};
+    else if (cancel === "unload") {panel.isConnected = false; panel.disconnectedCallback();}
+    pending.resolve(response({status: "verified"}));
+    await saving; await settled(panel);
+    if (!cancel) {
+      assert.equal(panel._settingsEditors.get(SETTING.id).editor, first);
+      assert.equal(first.snapshot().status, "verified");
+      assert.equal(panel._settingsEditors.get(siblingId)?.editor.snapshot().status, "ready");
+      for (let index = 0; index < 3; index++) {await panel._loadMetadata(); await settled(panel);}
+    } else assert.equal(panel._settingsEditors.has(siblingId), false);
+    assert.deepEqual(reads().map((call) => call.setting_id), cancel ? [SETTING.id] : [SETTING.id, siblingId]);
+    assert.equal(calls.filter((call) => call.type.endsWith("/save")).length, 1);
+    assert.equal(panel._adminPageRecoveryPending, undefined);
+    panel._clearSettingsEditor();
+  });
+}
 
 for (const change of ["page", "router", "view", "permission"]) {
   test(`${change} change cancels a queued recovery read before it can send`, async () => {
