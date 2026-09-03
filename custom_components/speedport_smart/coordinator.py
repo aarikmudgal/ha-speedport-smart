@@ -150,6 +150,17 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
             ):
                 self._schedule_refresh()
 
+    async def _handle_refresh_interval(self, _now: datetime | None = None) -> None:
+        """Join active work before HA can queue this timer on its debounce lock."""
+        if self._update_future is not None:
+            # The owning refresh publishes its result and handles its errors.
+            # A stale timer must not replay the read after HA releases its lock.
+            await asyncio.gather(
+                asyncio.shield(self._update_future), return_exceptions=True
+            )
+            return
+        await super()._handle_refresh_interval(_now)
+
     @callback
     def async_set_updated_data(self, data: GroupSnapshot) -> None:
         """Publish snapshots without binding entity/automation tasks to a request."""

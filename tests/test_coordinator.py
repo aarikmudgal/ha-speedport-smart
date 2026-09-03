@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from custom_components.speedport_smart.api import (
     SpeedportAuthenticationError,
@@ -274,6 +274,44 @@ async def test_focused_publications_cannot_accumulate_background_refreshes(
     group: PollGroup,
 ) -> None:
     """Deferred polls share one read, despite publications or stale timer calls."""
+    await _assert_focused_refresh_coalescing(hass, mock_speedport_client, group)
+
+
+@pytest.mark.parametrize("group", [PollGroup.NORMAL, PollGroup.SLOW])
+async def test_current_ha_prefetch_lock_cannot_queue_stale_timer_reads(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    group: PollGroup,
+) -> None:
+    """Prove current HA's outer debounce lock behavior on older test runtimes."""
+    parent_lock = asyncio.Lock()
+    parent_refresh = DataUpdateCoordinator.async_refresh
+    parent_interval = DataUpdateCoordinator._handle_refresh_interval  # noqa: SLF001
+
+    async def serialized_refresh(coordinator: DataUpdateCoordinator) -> None:
+        async with parent_lock:
+            await parent_refresh(coordinator)
+
+    async def serialized_interval(
+        coordinator: DataUpdateCoordinator, now: datetime | None = None
+    ) -> None:
+        async with parent_lock:
+            await parent_interval(coordinator, now)
+
+    with (
+        patch.object(DataUpdateCoordinator, "async_refresh", serialized_refresh),
+        patch.object(
+            DataUpdateCoordinator, "_handle_refresh_interval", serialized_interval
+        ),
+    ):
+        await _assert_focused_refresh_coalescing(hass, mock_speedport_client, group)
+
+
+async def _assert_focused_refresh_coalescing(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    group: PollGroup,
+) -> None:
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     await hub.async_setup()
     interval = timedelta(seconds=30 if group is PollGroup.NORMAL else 300)
