@@ -116,15 +116,18 @@ async def test_wan_sensor_values_and_reset_semantics(
     assert utilization.native_value == 41.6
 
 
-async def test_wan_rate_entities_describe_average_without_recording_span_churn(
+async def test_wan_rate_entities_describe_sample_method_without_recording_span_churn(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
 ) -> None:
-    """Native rate details distinguish configured averaging from actual span."""
+    """Native rates expose their real span without recording metadata churn."""
     hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
     await hub.async_setup()
     _attach_coordinators(hass, hub)
-    telemetry = {"rate_window_seconds": 5.0, "rate_sample_span_seconds": 2.25}
+    telemetry = {
+        "rate_method": "consecutive_samples",
+        "rate_sample_span_seconds": 2.25,
+    }
     with patch.object(
         type(hub),
         "wan_counter_telemetry",
@@ -407,8 +410,10 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
         "success_streak": 3,
         "success_samples_required": 5,
         "cooldown_seconds": 60,
-        "rate_window_seconds": 5.0,
+        "rate_method": "consecutive_samples",
         "rate_sample_span_seconds": 2.25,
+        "polling_focus": "dashboard",
+        "background_refresh_deferred": True,
         "last_sampled_at": "2026-09-01T10:00:00+00:00",
     }
     descriptions = {
@@ -461,8 +466,10 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
             "success_streak": 3,
             "success_samples_required": 5,
             "cooldown_seconds": 60,
-            "rate_window_seconds": 5.0,
+            "rate_method": "consecutive_samples",
             "rate_sample_span_seconds": 2.25,
+            "polling_focus": "dashboard",
+            "background_refresh_deferred": True,
             "source_available": True,
             "observed_interval_seconds": None,
         }
@@ -483,6 +490,8 @@ async def test_native_wan_scheduler_diagnostics_expose_all_visible_fields(
             "success_streak",
             "observed_interval_seconds",
             "rate_sample_span_seconds",
+            "polling_focus",
+            "background_refresh_deferred",
         } <= (
             state_entity._unrecorded_attributes  # noqa: SLF001
         )

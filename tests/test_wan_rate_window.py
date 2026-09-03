@@ -1,4 +1,4 @@
-"""Offline bounded WAN averages for router-side batched byte counters."""
+"""Offline WAN rates from consecutive counter observations, without smoothing."""
 
 # The rate boundary is exercised without router requests or coordinators.
 # ruff: noqa: SLF001
@@ -19,26 +19,23 @@ if TYPE_CHECKING:
     from custom_components.speedport_smart.models import WanCounters
 
 
-def _hub(
-    hass: HomeAssistant, client: MagicMock, now: list[float], **kwargs: float
-) -> SpeedportHub:
+def _hub(hass: HomeAssistant, client: MagicMock, now: list[float]) -> SpeedportHub:
     return SpeedportHub(
         hass,
         client,
         fallback_identifier="synthetic-rate-window",
         monotonic_time=lambda: now[0],
-        **kwargs,
     )
 
 
 @pytest.mark.parametrize("jitter", [0.0, 0.015])
-def test_five_second_batches_do_not_become_zero_and_fivefold_spikes(
+def test_each_rate_uses_only_the_latest_two_observations(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
     jitter: float,
 ) -> None:
-    """One-second observations average one complete five-second counter batch."""
+    """A counter jump is reported immediately, not distributed across five seconds."""
     now = [0.0]
     hub = _hub(hass, mock_speedport_client, now)
     for second in range(21):
@@ -47,21 +44,26 @@ def test_five_second_batches_do_not_become_zero_and_fivefold_spikes(
         data = hub._normalise_wan_counters(
             replace(wan_counters, bytes_received=total, bytes_sent=total // 2)
         )
-        if second >= 5:
-            assert data["download_rate_bps"] == pytest.approx(8_000_000, rel=0.004)
-            assert data["upload_rate_bps"] == pytest.approx(4_000_000, rel=0.004)
+        if second > 0:
+            previous_second = second - 1
+            previous_at = previous_second + (jitter if previous_second % 2 else 0)
+            elapsed = now[0] - previous_at
+            delta = total - previous_second // 5 * 5_000_000
+            assert data["download_rate_bps"] == pytest.approx(delta * 8 / elapsed)
+            assert data["upload_rate_bps"] == pytest.approx(delta * 4 / elapsed)
             telemetry = hub.wan_counter_telemetry
-            assert telemetry["rate_window_seconds"] == 5
-            assert telemetry["rate_sample_span_seconds"] == pytest.approx(5, abs=0.02)
+            assert telemetry["rate_method"] == "consecutive_samples"
+            assert "rate_window_seconds" not in telemetry
+            assert telemetry["rate_sample_span_seconds"] == pytest.approx(elapsed)
     mock_speedport_client.get_wan_counters.assert_not_called()
 
 
-def test_real_idle_decays_to_zero_without_holding_last_nonzero(
+def test_unchanged_counters_return_zero_without_a_smoothed_tail(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
 ) -> None:
-    """A burst leaves the finite window; no last nonzero value is retained."""
+    """The first unchanged pair is zero; no previous traffic is held or averaged."""
     now = [0.0]
     hub = _hub(hass, mock_speedport_client, now)
     rates = []
@@ -74,7 +76,7 @@ def test_real_idle_decays_to_zero_without_holding_last_nonzero(
             )["download_rate_bps"]
         )
     assert rates[0] is None
-    assert rates[5:] == [8_000_000, 6_400_000, 4_800_000, 3_200_000, 1_600_000, 0, 0]
+    assert rates[5:] == [8_000_000, 0, 0, 0, 0, 0, 0]
 
 
 def test_warmup_and_sparse_reads_report_real_pair_span(
@@ -82,7 +84,7 @@ def test_warmup_and_sparse_reads_report_real_pair_span(
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
 ) -> None:
-    """A nominal window never invents a missing five-second counter sample."""
+    """A delayed pair uses its real span instead of the configured poll interval."""
     now = [0.0]
     hub = _hub(hass, mock_speedport_client, now)
     observations = [(0, 0, None), (2, 2_000_000, 2), (20, 20_000_000, 18)]
@@ -97,13 +99,13 @@ def test_warmup_and_sparse_reads_report_real_pair_span(
 
 
 @pytest.mark.parametrize("reset", ["rollback", "interface", "failure"])
-def test_reset_discards_average_and_actual_span(
+def test_reset_discards_pair_and_actual_span(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
     reset: str,
 ) -> None:
-    """The averaging window shares existing counter reset and failure ownership."""
+    """Rates keep existing counter reset and failure ownership."""
     now = [0.0]
     hub = _hub(hass, mock_speedport_client, now)
     for second in range(6):
@@ -126,23 +128,23 @@ def test_reset_discards_average_and_actual_span(
     assert hub.wan_counter_telemetry["rate_sample_span_seconds"] is None
 
 
-def test_duplicate_clock_has_no_rate_and_window_remains_bounded(
+def test_duplicate_clock_has_no_rate_and_only_two_samples_are_retained(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
 ) -> None:
     """Nonpositive elapsed time is never divided; retained samples stay finite."""
     now = [0.0]
-    hub = _hub(hass, mock_speedport_client, now, rate_window_seconds=3)
+    hub = _hub(hass, mock_speedport_client, now)
     for _ in range(2):
         data = hub._normalise_wan_counters(wan_counters)
         assert data["download_rate_bps"] is None
     for second in range(1, 100):
         now[0] = float(second)
         hub._normalise_wan_counters(wan_counters)
-    assert hub.wan_counter_telemetry["rate_window_seconds"] == 3
-    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] == 3
-    assert len(hub._counter_samples) <= 8
+    assert hub.wan_counter_telemetry["rate_method"] == "consecutive_samples"
+    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] == 1
+    assert len(hub._counter_samples) == 2
     data = hub._normalise_wan_counters(wan_counters)
     assert data["download_rate_bps"] is None
     assert hub.wan_counter_telemetry["rate_sample_span_seconds"] is None

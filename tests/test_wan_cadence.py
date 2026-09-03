@@ -109,12 +109,12 @@ async def test_status_delay_rechecks_wan_due_after_await(
     assert hub._wan_counter_next_poll_at == pytest.approx(102.2)
 
 
-async def test_live_average_uses_available_span_and_resets_on_failure(
+async def test_live_rate_uses_latest_pair_and_resets_on_failure(
     hass: HomeAssistant,
     mock_speedport_client: MagicMock,
     wan_counters: WanCounters,
 ) -> None:
-    """Average warm-up uses real elapsed time and errors clear the whole window."""
+    """Latest-pair rates use real elapsed time and errors clear the baseline."""
     now = [100.0]
     hub = await _hub(hass, mock_speedport_client, now)
     for seconds, received in [(100, 0), (101, 0), (102, 1_000_000)]:
@@ -125,9 +125,9 @@ async def test_live_average_uses_available_span_and_resets_on_failure(
             bytes_sent=received,
         )
         await hub.async_update_group(PollGroup.FAST)
-    assert hub.get("wan.download_rate_bps") == 4_000_000
+    assert hub.get("wan.download_rate_bps") == 8_000_000
     assert hub.wan_counter_telemetry["observed_interval_seconds"] == 1
-    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] == 2
+    assert hub.wan_counter_telemetry["rate_sample_span_seconds"] == 1
     mock_speedport_client.get_wan_counters.side_effect = SpeedportConnectionError(
         "synthetic"
     )

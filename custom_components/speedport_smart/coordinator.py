@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -66,6 +67,7 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
         self.group = group
         self._fast_refresh_running = False
         self._fast_refresh_reschedule_requested = False
+        self._update_future: asyncio.Future[GroupSnapshot] | None = None
         super().__init__(
             hass,
             logger=hub.logger,
@@ -81,6 +83,9 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
     def _schedule_refresh(self) -> None:
         """Keep autonomous poll timers independent of an initiating admin request."""
         with autonomous_ha_context():
+            if self._update_future is not None:
+                self._async_unsub_refresh()
+                return
             if self.group is PollGroup.FAST:
                 if (
                     self.update_interval is None
@@ -152,7 +157,29 @@ class SpeedportDataUpdateCoordinator(DataUpdateCoordinator[GroupSnapshot]):
             super().async_set_updated_data(data)
 
     async def _async_update_data(self) -> GroupSnapshot:
-        """Fetch one polling group."""
+        """Share one in-flight group read, including time deferred by focus."""
+        if self._update_future is not None:
+            return await asyncio.shield(self._update_future)
+        update_future = self._update_future = self.hass.loop.create_future()
+        try:
+            result = await self._async_fetch_data()
+        except BaseException as err:
+            if isinstance(err, asyncio.CancelledError):
+                update_future.cancel()
+            else:
+                update_future.set_exception(err)
+                # The owning caller receives this error directly, even without
+                # a second waiter to retrieve the shared future's exception.
+                update_future.exception()
+            raise
+        else:
+            update_future.set_result(result)
+            return result
+        finally:
+            self._update_future = None
+
+    async def _async_fetch_data(self) -> GroupSnapshot:
+        """Fetch one polling group and record its actual outcome once."""
         try:
             return await self.hub.async_update_group(self.group)
         except SpeedportInvalidCredentialsError as err:

@@ -67,6 +67,14 @@ been established, the affected entities become unavailable until a fresh value
 succeeds instead of continuing to display stale state. Cumulative WAN counters
 are the narrow exception described below.
 
+Panel focus is a connection-scoped, expiring scheduling lease. Dashboard gives
+WAN priority; Administration gives explicit settings operations priority.
+Automatic Normal and Slow polling waits while a panel is focused, without
+changing its data timestamps. Hidden, disconnected or expired panels release the
+lease. The operation gate never preempts an active transaction or allows two
+router operations to overlap. See [WAN polling](docs/WAN_POLLING.md) for timing
+and background-refresh tradeoffs.
+
 ## WAN counters and rates
 
 The client enumerates ToTR64 **Device.IP.Interface** objects and selects the
@@ -76,7 +84,8 @@ traffic; LTE tunnel counters are therefore not added again.
 
 Router-provided **BytesReceived** and **BytesSent** values are cumulative
 64-bit counters. The hub derives live download and upload rates from counter
-differences over monotonic time and a short rolling window. It rejects negative
+differences between the latest two valid observations over their actual monotonic
+interval, without a rolling smoothing window. It rejects negative
 deltas, counter resets, stale epochs, and reboot spikes. The result is
 aggregate WAN throughput, not per-client traffic or packet capture.
 

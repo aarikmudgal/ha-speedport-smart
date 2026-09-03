@@ -48,7 +48,7 @@ from .configuration_targets import (
     target_settings_ids,
     target_settings_metadata,
 )
-from .const import DOMAIN, RATE_WINDOW_SECONDS
+from .const import DOMAIN
 from .coordinator import GroupSnapshot, PollGroup, SpeedportDataUpdateCoordinator
 from .diagnostics import safe_error_class_name
 from .file_transfer import FILE_TRANSFER_CONTRACTS
@@ -69,6 +69,11 @@ from .management import (
 )
 from .normalizers import normalize_feature_payload, normalize_status_payload
 from .phonebook_link_session import OnlinePhonebookSession
+from .polling_priority import (
+    OperationKind,
+    PollingPriorityGate,
+    PollingPriorityGateClosed,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -110,7 +115,6 @@ NORMAL_FAMILIES: Final[frozenset[str]] = frozenset(
 )
 FAST_FAMILIES: Final[frozenset[str]] = frozenset()
 _MIN_RATE_SAMPLES: Final = 2
-_RATE_RETENTION_WINDOWS: Final = 2.0
 _WAN_COUNTER_SAFE_START_SECONDS: Final = 5.0
 _WAN_COUNTER_COOLDOWN_SECONDS: Final = 60.0
 _WAN_COUNTER_ADAPT_SUCCESS_SAMPLES: Final = 5
@@ -388,7 +392,6 @@ class SpeedportHub:
         fallback_identifier: str,
         entry_id: str | None = None,
         controls_enabled: bool = False,
-        rate_window_seconds: float = RATE_WINDOW_SECONDS,
         public_status_interval_seconds: float = 5.0,
         wan_counter_interval_seconds: float = 0.0,
         monotonic_time: Callable[[], float] | None = None,
@@ -397,7 +400,6 @@ class SpeedportHub:
         self.hass = hass
         self.client = client
         self.controls_enabled = controls_enabled
-        self.rate_window_seconds = max(rate_window_seconds, 1.0)
         self._public_status_interval = max(float(public_status_interval_seconds), 1.0)
         self._public_status_next_poll_at = 0.0
         configured_wan_interval = float(wan_counter_interval_seconds)
@@ -441,7 +443,9 @@ class SpeedportHub:
             PollGroup
         )
         self._generation = 0
-        self._operation_lock = asyncio.Lock()
+        self._operation_lock = PollingPriorityGate(
+            hass.loop, clock=self._monotonic_time
+        )
         self._poll_timing_ms: dict[PollGroup, dict[str, float]] = {}
         self._configuration_session = ConfigurationSession(clock=self._monotonic_time)
         self.file_transfer_session = FileTransferSession(clock=self._monotonic_time)
@@ -456,7 +460,7 @@ class SpeedportHub:
         self._admin_action_target_grants: dict[str, _AdminActionTargetGrant] = {}
         self._admin_action_grant_expiry_cancel: Callable[[], None] | None = None
         self._management_generation = 0
-        self._counter_samples: deque[_CounterSample] = deque(maxlen=64)
+        self._counter_samples: deque[_CounterSample] = deque(maxlen=_MIN_RATE_SAMPLES)
         self._counter_sample_interface: tuple[int, str | None, str | None] | None = None
         self._wan_counter_grid_anchor: float | None = None
         self._wan_counter_probe_pending = False
@@ -574,8 +578,12 @@ class SpeedportHub:
                 "target_interval_seconds": self._wan_counter_target_interval,
                 "effective_interval_seconds": self._wan_counter_effective_interval,
                 "observed_interval_seconds": self._observed_wan_interval(),
-                "rate_window_seconds": self.rate_window_seconds,
+                "rate_method": "consecutive_samples",
                 "rate_sample_span_seconds": self._rate_sample_span(),
+                "polling_focus": self.polling_priority.focus,
+                "background_refresh_deferred": (
+                    self.polling_priority.background_deferred
+                ),
                 "runtime_floor_seconds": self._wan_counter_runtime_floor,
                 "last_stable_interval_seconds": (
                     self._wan_counter_fastest_proven_interval
@@ -591,6 +599,11 @@ class SpeedportHub:
                 "last_sampled_at": self.get("wan.sampled_at"),
             }
         )
+
+    @property
+    def polling_priority(self) -> PollingPriorityGate:
+        """Expose the connection-scoped panel focus gate without router I/O."""
+        return self._operation_lock
 
     @property
     def last_transitions(self) -> tuple[StateTransition, ...]:
@@ -647,6 +660,7 @@ class SpeedportHub:
         if self._closed:
             return
         self._closed = True
+        self.polling_priority.close()
         self._cancel_admin_action_grant_expiry()
         self._admin_action_target_grants.clear()
         self._configuration_session.clear()
@@ -2185,21 +2199,27 @@ class SpeedportHub:
     async def async_update_group(self, group: PollGroup) -> GroupSnapshot:
         """Update one group while keeping multi-request router work serialized."""
         queued_at = time.perf_counter()
-        async with self._operation_lock:
-            acquired_at = time.perf_counter()
-            timing = self._poll_timing_ms[group] = {
-                "lock_wait_ms": round((acquired_at - queued_at) * 1_000, 3)
-            }
-            try:
-                return await self._async_update_group_locked(
-                    group, record_poll_timing=True
-                )
-            finally:
-                completed_at = time.perf_counter()
-                timing["router_work_ms"] = round(
-                    (completed_at - acquired_at) * 1_000, 3
-                )
-                timing["total_update_ms"] = round((completed_at - queued_at) * 1_000, 3)
+        kind: OperationKind = "wan" if group is PollGroup.FAST else "telemetry"
+        try:
+            async with self._operation_lock.hold(kind):
+                acquired_at = time.perf_counter()
+                timing = self._poll_timing_ms[group] = {
+                    "lock_wait_ms": round((acquired_at - queued_at) * 1_000, 3)
+                }
+                try:
+                    return await self._async_update_group_locked(
+                        group, record_poll_timing=True
+                    )
+                finally:
+                    completed_at = time.perf_counter()
+                    timing["router_work_ms"] = round(
+                        (completed_at - acquired_at) * 1_000, 3
+                    )
+                    timing["total_update_ms"] = round(
+                        (completed_at - queued_at) * 1_000, 3
+                    )
+        except PollingPriorityGateClosed as err:
+            raise SpeedportConnectionError("Speedport hub is closed") from err
 
     async def _async_update_group_locked(
         self, group: PollGroup, *, record_poll_timing: bool = False
@@ -3215,12 +3235,6 @@ class SpeedportHub:
                 self._counter_samples.clear()
 
         self._counter_samples.append(sample)
-        while (
-            len(self._counter_samples) > _MIN_RATE_SAMPLES
-            and now - self._counter_samples[0].sampled_at
-            > self.rate_window_seconds * _RATE_RETENTION_WINDOWS
-        ):
-            self._counter_samples.popleft()
 
         baseline = self._rate_baseline(now)
         download_rate: float | None = None
@@ -3269,20 +3283,16 @@ class SpeedportHub:
         return wan
 
     def _rate_baseline(self, now: float) -> _CounterSample | None:
-        """Choose a real counter sample nearest the bounded averaging window."""
+        """Use the preceding observation without a rolling smoothing window."""
         if len(self._counter_samples) < _MIN_RATE_SAMPLES:
             return None
-        if self._counter_samples[-2].sampled_at >= now:
+        previous = self._counter_samples[-2]
+        if previous.sampled_at >= now:
             return None
-        cutoff = now - self.rate_window_seconds
-        return min(
-            (sample for sample in self._counter_samples if sample.sampled_at < now),
-            key=lambda sample: abs(sample.sampled_at - cutoff),
-            default=None,
-        )
+        return previous
 
     def _rate_sample_span(self) -> float | None:
-        """Report the actual average span, not time since the last poll."""
+        """Report the actual interval used by the latest valid rate calculation."""
         if not self._counter_samples:
             return None
         sampled_at = self._counter_samples[-1].sampled_at

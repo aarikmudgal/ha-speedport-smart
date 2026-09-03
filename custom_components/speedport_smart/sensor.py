@@ -2297,7 +2297,7 @@ class SpeedportSensor(SpeedportEntity, SensorEntity):
         if self.entity_description.key in {"wan_download_rate", "wan_upload_rate"}:
             telemetry = self.hub.wan_counter_telemetry
             return {
-                "rate_window_seconds": telemetry.get("rate_window_seconds"),
+                "rate_method": telemetry.get("rate_method"),
                 "rate_sample_span_seconds": telemetry.get("rate_sample_span_seconds"),
             }
         if self.entity_description.key == "wan_interface":
@@ -2370,6 +2370,8 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
             "success_streak",
             "observed_interval_seconds",
             "rate_sample_span_seconds",
+            "polling_focus",
+            "background_refresh_deferred",
         }
     )
     entity_description: SensorEntityDescription
@@ -2442,7 +2444,9 @@ class SpeedportWanTelemetrySensor(SpeedportEntity, SensorEntity):
                 "success_streak",
                 "success_samples_required",
                 "cooldown_seconds",
-                "rate_window_seconds",
+                "rate_method",
+                "polling_focus",
+                "background_refresh_deferred",
             )
             if telemetry.get(key) is not None
         }

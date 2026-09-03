@@ -23,6 +23,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .management import ManagementRisk, get_entity_write_contract
+from .panel_focus import async_register_focus_commands
 from .panel_queries import (
     async_register_admin_query_commands,
     private_websocket_rejection,
@@ -42,7 +43,7 @@ PANEL_URL_PATH: Final = "speedport-smart"
 PANEL_COMPONENT_NAME: Final = "speedport-smart-panel"
 PANEL_TITLE: Final = "Telekom Speedport Smart"
 PANEL_ICON: Final = "mdi:router-network"
-PANEL_SCHEMA_VERSION: Final = 31
+PANEL_SCHEMA_VERSION: Final = 32
 
 _STATIC_URL: Final = "/speedport_smart_frontend"
 _FRONTEND_DIR: Final = Path(__file__).parent / "frontend"
@@ -337,6 +338,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
             hass, private_websocket_rejection(_PANEL_ADMIN_READ_WS_TYPE)
         )
         async_register_admin_query_commands(hass)
+        async_register_focus_commands(hass)
         panel_state["websocket_registered"] = True
 
     if panel_state.get("panel_owned"):
@@ -904,8 +906,12 @@ def _capability_panel_data(
                 "effective_interval_seconds"
             ),
             "observed_interval_seconds": wan_telemetry.get("observed_interval_seconds"),
-            "rate_window_seconds": wan_telemetry.get("rate_window_seconds"),
+            "rate_method": wan_telemetry.get("rate_method"),
             "rate_sample_span_seconds": wan_telemetry.get("rate_sample_span_seconds"),
+            "polling_focus": wan_telemetry.get("polling_focus"),
+            "background_refresh_deferred": wan_telemetry.get(
+                "background_refresh_deferred", False
+            ),
             "mode": wan_telemetry.get("mode"),
             "state": wan_telemetry.get("state"),
             "target_interval_seconds": wan_telemetry.get("target_interval_seconds"),

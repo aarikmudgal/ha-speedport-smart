@@ -265,3 +265,149 @@ async def test_published_state_listeners_do_not_inherit_private_write_authority(
         marker.reset(marker_token)
         remove()
         await coordinator.async_shutdown()
+
+
+@pytest.mark.parametrize("group", [PollGroup.NORMAL, PollGroup.SLOW])
+async def test_focused_publications_cannot_accumulate_background_refreshes(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    group: PollGroup,
+) -> None:
+    """Deferred polls share one read, despite publications or stale timer calls."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    await hub.async_setup()
+    interval = timedelta(seconds=30 if group is PollGroup.NORMAL else 300)
+    coordinator = SpeedportDataUpdateCoordinator(hass, hub, group, interval)
+    owner = object()
+    hub.polling_priority.set_focus(owner, "administration")
+    hub.async_update_group = AsyncMock(  # type: ignore[method-assign]
+        wraps=hub.async_update_group
+    )
+    listener = MagicMock()
+    remove = coordinator.async_add_listener(listener)
+    tasks = [asyncio.create_task(coordinator.async_refresh())]
+    try:
+        await asyncio.sleep(0)
+        for generation in range(3):
+            published = GroupSnapshot(group, {}, generation, datetime.now(UTC))
+            coordinator.async_set_updated_data(published)
+            assert coordinator.data is published
+            assert coordinator._unsub_refresh is None  # noqa: SLF001
+            tasks.append(
+                asyncio.create_task(coordinator._handle_refresh_interval())  # noqa: SLF001
+            )
+        await asyncio.sleep(0)
+        assert listener.call_count == 3
+        assert not any(task.done() for task in tasks)
+        assert hub.async_update_group.await_count == 1
+        assert len(hub.polling_priority._waiters) == 1  # noqa: SLF001
+        mock_speedport_client.get_json.assert_not_awaited()
+        hub.polling_priority.clear_focus(owner)
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert hub.async_update_group.await_count == 1
+        mock_speedport_client.get_json.assert_awaited_once()
+        assert coordinator.update_interval == interval
+        assert coordinator._unsub_refresh is not None  # noqa: SLF001
+    finally:
+        hub.polling_priority.clear_focus(owner)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        remove()
+        await coordinator.async_shutdown()
+        await hub.async_close()
+
+
+@pytest.mark.parametrize("group", list(PollGroup))
+async def test_cancelling_shared_waiter_keeps_original_refresh_running(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+    group: PollGroup,
+) -> None:
+    """A second caller can stop waiting without cancelling the real operation."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    coordinator = SpeedportDataUpdateCoordinator(hass, hub, group, timedelta(seconds=1))
+    entered, release = asyncio.Event(), asyncio.Event()
+    snapshot = GroupSnapshot(group, {}, 1, datetime.now(UTC))
+
+    async def read(_group: PollGroup) -> GroupSnapshot:
+        entered.set()
+        await release.wait()
+        return snapshot
+
+    hub.async_update_group = AsyncMock(side_effect=read)  # type: ignore[method-assign]
+    original = asyncio.create_task(coordinator._async_update_data())  # noqa: SLF001
+    await entered.wait()
+    waiter = asyncio.create_task(coordinator._async_update_data())  # noqa: SLF001
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not original.done()
+    assert hub.async_update_group.await_count == 1
+    release.set()
+    assert await asyncio.wait_for(original, timeout=1) is snapshot
+    assert await coordinator._async_update_data() is snapshot  # noqa: SLF001
+    assert hub.async_update_group.await_count == 2
+    await coordinator.async_shutdown()
+
+
+async def test_original_refresh_cancellation_reaches_shared_waiters_and_recovers(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """The owning refresh retains its cancellation semantics and clears sharing."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    coordinator = SpeedportDataUpdateCoordinator(
+        hass, hub, PollGroup.NORMAL, timedelta(seconds=30)
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    snapshot = GroupSnapshot(PollGroup.NORMAL, {}, 1, datetime.now(UTC))
+
+    async def read(_group: PollGroup) -> GroupSnapshot:
+        entered.set()
+        await release.wait()
+        return snapshot
+
+    hub.async_update_group = AsyncMock(side_effect=read)  # type: ignore[method-assign]
+    original = asyncio.create_task(coordinator._async_update_data())  # noqa: SLF001
+    await entered.wait()
+    waiter = asyncio.create_task(coordinator._async_update_data())  # noqa: SLF001
+    await asyncio.sleep(0)
+    original.cancel()
+    for task in (original, waiter):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert hub.async_update_group.await_count == 1
+    release.set()
+    assert await coordinator._async_update_data() is snapshot  # noqa: SLF001
+    assert hub.async_update_group.await_count == 2
+    await coordinator.async_shutdown()
+
+
+async def test_shared_refresh_failure_is_recorded_once_and_reaches_every_waiter(
+    hass: HomeAssistant,
+    mock_speedport_client: MagicMock,
+) -> None:
+    """Sharing does not double-count a failed router operation or swallow errors."""
+    hub = SpeedportHub(hass, mock_speedport_client, fallback_identifier="entry")
+    coordinator = SpeedportDataUpdateCoordinator(
+        hass, hub, PollGroup.NORMAL, timedelta(seconds=30)
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def read(_group: PollGroup) -> GroupSnapshot:
+        entered.set()
+        await release.wait()
+        raise SpeedportConnectionError("synthetic")
+
+    hub.async_update_group = AsyncMock(side_effect=read)  # type: ignore[method-assign]
+    original = asyncio.create_task(coordinator._async_update_data())  # noqa: SLF001
+    await entered.wait()
+    waiter = asyncio.create_task(coordinator._async_update_data())  # noqa: SLF001
+    await asyncio.sleep(0)
+    release.set()
+    for task in (original, waiter):
+        with pytest.raises(UpdateFailed, match="Unable to reach router"):
+            await task
+    assert hub.async_update_group.await_count == 1
+    assert hub._update_failures == 1  # noqa: SLF001
+    await coordinator.async_shutdown()

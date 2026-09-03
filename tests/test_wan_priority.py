@@ -10,7 +10,12 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-from custom_components.speedport_smart.api import SpeedportSessionBusyError
+import pytest
+
+from custom_components.speedport_smart.api import (
+    SpeedportConnectionError,
+    SpeedportSessionBusyError,
+)
 from custom_components.speedport_smart.coordinator import PollGroup
 from custom_components.speedport_smart.hub import SpeedportHub
 
@@ -157,3 +162,78 @@ async def test_poll_diagnostics_include_time_waiting_for_another_operation(
     assert timing["lock_wait_ms"] == 2000.0
     assert timing["router_work_ms"] == 0.0
     assert timing["total_update_ms"] == 2000.0
+
+
+async def test_dashboard_focus_defers_automatic_reads_without_blocking_wan(
+    hass: HomeAssistant, mock_speedport_client: MagicMock
+) -> None:
+    """Focused WAN reads never wait behind a newly queued protected refresh."""
+    now = [100.0]
+    hub, _coordinator = await _hub(hass, mock_speedport_client, now)
+    owner = object()
+    hub.polling_priority.set_focus(owner, "dashboard")
+    normal = asyncio.create_task(hub.async_update_group(PollGroup.NORMAL))
+    try:
+        await asyncio.sleep(0)
+        mock_speedport_client.get_json.assert_not_awaited()
+        async with asyncio.timeout(3):
+            snapshot = await hub.async_update_group(PollGroup.FAST)
+        assert snapshot.data["wan"]["bytes_received"] is not None
+        assert not normal.done()
+        assert hub.poll_group_health(PollGroup.NORMAL)["last_successful_update"] is None
+        assert hub.wan_counter_telemetry["polling_focus"] == "dashboard"
+        assert hub.wan_counter_telemetry["background_refresh_deferred"] is True
+        mock_speedport_client.get_dsl_metrics.assert_not_awaited()
+    finally:
+        hub.polling_priority.clear_focus(owner)
+        async with asyncio.timeout(3):
+            await normal
+    mock_speedport_client.get_json.assert_awaited_once()
+    assert hub.poll_group_health(PollGroup.NORMAL)["last_successful_update"] is not None
+    assert hub.wan_counter_telemetry["background_refresh_deferred"] is False
+
+
+async def test_admin_focus_prioritizes_an_atomic_read_before_waiting_wan(
+    hass: HomeAssistant, mock_speedport_client: MagicMock
+) -> None:
+    """The existing command/read lock defaults to administration priority."""
+    hub, _coordinator = await _hub(hass, mock_speedport_client, [100.0])
+    owner = object()
+    hub.polling_priority.set_focus(owner, "administration")
+    order: list[str] = []
+    counters = mock_speedport_client.get_wan_counters.return_value
+
+    async def read_wan(**_kwargs: object) -> object:
+        order.append("wan")
+        return counters
+
+    async def read_admin() -> None:
+        async with hub._operation_lock:
+            order.append("administration")
+
+    mock_speedport_client.get_wan_counters.side_effect = read_wan
+    await hub._operation_lock.acquire()
+    fast = asyncio.create_task(hub.async_update_group(PollGroup.FAST))
+    admin = asyncio.create_task(read_admin())
+    await asyncio.sleep(0)
+    hub._operation_lock.release()
+    try:
+        async with asyncio.timeout(3):
+            await asyncio.gather(fast, admin)
+        assert order == ["administration", "wan"]
+    finally:
+        hub.polling_priority.clear_focus(owner)
+
+
+async def test_unloading_rejects_deferred_poll_without_router_io(
+    hass: HomeAssistant, mock_speedport_client: MagicMock
+) -> None:
+    """A closed focused hub does not leave a background refresh waiting forever."""
+    hub, _coordinator = await _hub(hass, mock_speedport_client, [100.0])
+    hub.polling_priority.set_focus(object(), "dashboard")
+    slow = asyncio.create_task(hub.async_update_group(PollGroup.SLOW))
+    await asyncio.sleep(0)
+    await hub.async_close()
+    with pytest.raises(SpeedportConnectionError, match="closed"):
+        await slow
+    mock_speedport_client.get_json.assert_not_awaited()

@@ -30,7 +30,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 31, routers: [first, second]};
+  panel._metadata = {schema_version: 32, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -87,57 +87,88 @@ test("WAN cadence distinguishes configured cadence from the last achieved sample
   assert.equal(calls.length, 0);
 });
 
-test("WAN averaging target is distinct from polling and reports materially different actual spans", () => {
+test("consecutive-sample rates never display a moving average, even with cached window metadata", () => {
   const {panel, first, calls} = fixture();
-  for (const [window, span, extra] of [[5, 5.02, false], [5, 2, true], [5, 10, true], [10, 10, false]]) {
+  for (const span of [1, 1.25, 5, 10]) {
     const html = panel._renderDashboard(first, first.entities, {wan_counters: {
       ...recoverySource(), state: "stable", retrying: false, effective_interval_seconds: 1,
-      observed_interval_seconds: 1.1, rate_window_seconds: window, rate_sample_span_seconds: span,
+      rate_method: "consecutive_samples", rate_window_seconds: 5, rate_sample_span_seconds: span,
     }});
     assert.ok(html.includes("WAN cadence 1 s · Stable"));
-    assert.ok(html.includes(`${window} s average window`));
-    assert.ok(html.includes("Last sample interval 1.1 s"));
-    assert.equal(html.includes("Current average span"), extra);
-    if (extra) assert.ok(html.includes(`Current average span ${span} s`));
+    assert.ok(html.includes("Per-sample rate"));
+    assert.ok(html.includes(`Rate sample span ${span} s`));
+    assert.ok(!html.includes("average"));
   }
-  for (const window of [undefined, null, "5", 0, -1, Infinity, NaN, true, {}, []]) {
+  for (const method of [undefined, null, "moving_average", "5", 0, true, {}, []]) {
     const html = panel._renderDashboard(first, first.entities, {wan_counters: {
-      ...recoverySource(), rate_window_seconds: window, rate_sample_span_seconds: 10,
+      ...recoverySource(), rate_method: method, rate_window_seconds: 5, rate_sample_span_seconds: 10,
     }});
-    assert.ok(!html.includes("average window"));
-    assert.ok(!html.includes("Current average span"));
+    assert.ok(!html.includes("Per-sample rate"));
+    assert.ok(!html.includes("Rate sample span"));
   }
   for (const unavailable of [{state: "cooldown", retrying: true}, {available: false}, {supported: false}]) {
     const html = panel._renderDashboard(first, first.entities, {wan_counters: {
       ...recoverySource(), state: "stable", retrying: false, ...unavailable,
-      rate_window_seconds: 5, rate_sample_span_seconds: 10,
+      rate_method: "consecutive_samples", rate_sample_span_seconds: 10,
     }});
-    assert.ok(html.includes("5 s average window"));
-    assert.ok(!html.includes("Current average span"));
+    assert.ok(html.includes("Per-sample rate"));
+    assert.ok(!html.includes("Rate sample span"));
   }
+  const observed = panel._renderDashboard(first, first.entities, {wan_counters: {
+    ...recoverySource(), state: "stable", retrying: false, rate_method: "consecutive_samples",
+    observed_interval_seconds: 1.1, rate_sample_span_seconds: 1.1,
+  }});
+  assert.ok(observed.includes("Last sample interval 1.1 s"));
+  assert.ok(!observed.includes("Rate sample span"), "do not duplicate the same elapsed interval");
   assert.equal(calls.length, 0);
 });
 
-test("live averaging telemetry keeps configured window but clears stale actual spans", () => {
+test("live method and focus telemetry replace cached values without coercion", () => {
   const entity = [{entity_id: "sensor.poll_state", translation_key: "wan_polling_state"}];
-  const source = {...recoverySource(), state: "stable", retrying: false, rate_window_seconds: 10, rate_sample_span_seconds: 10};
+  const source = {...recoverySource(), state: "stable", retrying: false, rate_window_seconds: 10, rate_sample_span_seconds: 10,
+    polling_focus: "background", background_refresh_deferred: false};
   const healthy = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
-    state: "stable", attributes: {rate_window_seconds: 5, rate_sample_span_seconds: 2},
+    state: "stable", attributes: {rate_method: "consecutive_samples", rate_sample_span_seconds: 2,
+      polling_focus: "dashboard", background_refresh_deferred: true},
   }});
-  assert.equal(healthy.rate_window_seconds, 5);
+  assert.equal(healthy.rate_method, "consecutive_samples");
+  assert.equal(healthy.rate_window_seconds, undefined);
   assert.equal(healthy.rate_sample_span_seconds, 2);
+  assert.equal(healthy.polling_focus, "dashboard");
+  assert.equal(healthy.background_refresh_deferred, true);
   for (const value of [null, undefined, "5", 0, -1, NaN, Infinity, false, {}]) {
     const live = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
-      state: "stable", attributes: {rate_window_seconds: value, rate_sample_span_seconds: value},
+      state: "stable", attributes: {rate_method: value, rate_sample_span_seconds: value, polling_focus: value},
     }});
-    assert.equal(live.rate_window_seconds, undefined);
+    assert.equal(live.rate_method, undefined);
     assert.equal(live.rate_sample_span_seconds, undefined);
+    assert.equal(live.polling_focus, undefined);
   }
   const cooldown = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
-    state: "cooldown", attributes: {rate_window_seconds: 5, rate_sample_span_seconds: 10},
+    state: "cooldown", attributes: {rate_method: "consecutive_samples", rate_sample_span_seconds: 10,
+      polling_focus: "administration", background_refresh_deferred: false},
   }});
-  assert.equal(cooldown.rate_window_seconds, 5);
+  assert.equal(cooldown.rate_method, "consecutive_samples");
   assert.equal(cooldown.rate_sample_span_seconds, undefined);
+  assert.equal(cooldown.polling_focus, "administration");
+  assert.equal(cooldown.background_refresh_deferred, false);
+  const malformed = liveWanSourceFromEntityStates(source, entity, {"sensor.poll_state": {
+    state: "stable", attributes: {background_refresh_deferred: "false"},
+  }});
+  assert.equal(malformed.background_refresh_deferred, undefined);
+});
+
+test("page footer exposes authoritative focus priority and deferred background work", () => {
+  const {panel, first} = fixture();
+  for (const [polling_focus, text] of [["dashboard", "Dashboard priority: WAN polling"], ["administration", "Administration priority: settings"], ["background", "Background polling"]]) {
+    first.access_sources = [{id: "wan_counters", polling_focus, background_refresh_deferred: polling_focus === "dashboard"}];
+    SpeedportSmartPanel.prototype._render.call(panel);
+    const footer = panel.shadowRoot.innerHTML.match(/<footer>[\s\S]*?<\/footer>/)?.[0];
+    assert.ok(footer.includes(text));
+    assert.equal(footer.includes("Background refresh deferred"), polling_focus === "dashboard");
+  }
+  assert.equal(panel._pollingFocusDetails({polling_focus: "unknown", background_refresh_deferred: true}), "");
+  assert.ok(!panel._pollingFocusDetails({polling_focus: "dashboard", background_refresh_deferred: "true"}).includes("deferred"));
 });
 
 for (const [source, text] of [
@@ -348,6 +379,30 @@ test("normal Home Assistant WAN updates append current samples without history r
   await settle();
   assert.equal(calls.length, 1);
   assert.equal(panel._trafficHistory.snapshot().series.download.current, 24);
+});
+
+test("live 0 to 80 to 0 rates update immediately and old Recorder history never overwrites them", async (t) => {
+  let now = Date.parse("2026-09-03T15:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const gate = deferred();
+  const {panel, first, calls} = fixture({request: () => gate.promise});
+  first.access_sources = [{id: "wan_counters", state: "stable", available: true, supported: true,
+    rate_method: "consecutive_samples", effective_interval_seconds: 1,
+    last_sampled_at: new Date(now - 10000).toISOString()}];
+  panel._syncTrafficHistory();
+  for (const value of [0, 80, 0]) {
+    now += 1000;
+    panel.hass = {...panel._hass, states: {...panel._hass.states, "sensor.a_download": {
+      state: String(value), last_updated: new Date(now).toISOString(), attributes: {unit_of_measurement: "Mbit/s"},
+    }}};
+    assert.equal(panel._trafficHistory.snapshot().series.download.current, value);
+  }
+  gate.resolve({"sensor.a_download": [{s: "999", lu: (now - 10000) / 1000, a: {unit_of_measurement: "Mbit/s"}}]});
+  await settle();
+  assert.equal(panel._trafficHistory.snapshot().series.download.current, 0);
+  assert.deepEqual(panel._trafficHistory.snapshot().series.download.points.slice(-3).map(({value}) => value), [0, 80, 0]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, "history/history_during_period");
 });
 
 test("switching away drops graph scope and does not read history in Administration", async () => {

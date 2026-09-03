@@ -1,24 +1,25 @@
-import { requestPrivateApi } from "./private-api.js?schema=31";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=31";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=31";
+import { requestPrivateApi } from "./private-api.js?schema=32";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=32";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=32";
+import { createPollingFocusController } from "./polling-focus.js?schema=32";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=31";
-import { keepDialogFocus } from "./accessibility.js?schema=31";
+} from "./admin-navigation.js?schema=32";
+import { keepDialogFocus } from "./accessibility.js?schema=32";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=31";
+} from "./call-history-view.js?schema=32";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=31";
+} from "./file-transfer-editor.js?schema=32";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=31";
+} from "./maintenance-editor.js?schema=32";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=31";
+} from "./configuration-editor.js?schema=32";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,22 +34,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=31";
+} from "./controls.js?schema=32";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=31";
+} from "./entity-state.js?schema=32";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=31";
+} from "./render-state.js?schema=32";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=31";
+} from "./translations.js?schema=32";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -234,7 +235,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 31;
+const PANEL_SCHEMA_VERSION = 32;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3285,7 +3286,20 @@ export function liveWanSourceFromEntityStates(source, entities, states) {
     if (typeof observed === "number" && Number.isFinite(observed) && observed > 0) live.observed_interval_seconds = observed;
     else delete live.observed_interval_seconds;
   }
-  for (const key of ["rate_window_seconds", "rate_sample_span_seconds"]) {
+  if (Object.hasOwn(schedulerAttributes, "rate_method")) {
+    if (schedulerAttributes.rate_method === "consecutive_samples") live.rate_method = schedulerAttributes.rate_method;
+    else delete live.rate_method;
+  }
+  if (live.rate_method === "consecutive_samples") delete live.rate_window_seconds;
+  if (Object.hasOwn(schedulerAttributes, "polling_focus")) {
+    if (["dashboard", "administration", "background"].includes(schedulerAttributes.polling_focus)) live.polling_focus = schedulerAttributes.polling_focus;
+    else delete live.polling_focus;
+  }
+  if (Object.hasOwn(schedulerAttributes, "background_refresh_deferred")) {
+    if (typeof schedulerAttributes.background_refresh_deferred === "boolean") live.background_refresh_deferred = schedulerAttributes.background_refresh_deferred;
+    else delete live.background_refresh_deferred;
+  }
+  for (const key of ["rate_sample_span_seconds"]) {
     if (!Object.hasOwn(schedulerAttributes, key)) continue;
     const seconds = schedulerAttributes[key];
     if (typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0) live[key] = seconds;
@@ -3413,6 +3427,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         if (this.isConnected && this._activeView === "dashboard") this._scheduleRender();
       },
     });
+    this._pollingFocus = createPollingFocusController({isEligible: () => this._pollingFocusEligible()});
     this._adminTab = "overview";
     this._adminPage = undefined;
     this._adminPageEpoch = 0;
@@ -3546,6 +3561,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._syncTrafficHistory();
       this._scheduleRender();
     }
+    this._syncPollingFocus();
   }
 
   set panel(value) {
@@ -3562,6 +3578,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    this._bindPollingFocus();
     if (this._hass && !this._metadata) this._loadMetadata();
     if (this._hass && (!this._platformIcons || !this._componentIcons)) {
       this._loadPlatformIcons();
@@ -3581,10 +3598,14 @@ export class SpeedportSmartPanel extends HTMLElement {
       );
     }
     this._syncTrafficHistory();
+    this._syncPollingFocus();
     this._render();
   }
 
   disconnectedCallback() {
+    this._pollingFocusCleanup?.();
+    this._pollingFocusCleanup = undefined;
+    this._pollingFocus.dispose();
     if (this._refreshTimer) window.clearInterval(this._refreshTimer);
     this._refreshTimer = undefined;
     if (this._renderFrame) window.cancelAnimationFrame(this._renderFrame);
@@ -3765,6 +3786,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     } finally {
       this._loading = false;
       this._syncTrafficHistory();
+      this._syncPollingFocus();
       if (!this._pendingAction) this._render();
     }
   }
@@ -3813,6 +3835,34 @@ export class SpeedportSmartPanel extends HTMLElement {
       stale: source?.available === false || source?.retrying === true || source?.state === "cooldown" || source?.supported === false,
       staleAfterMs: Math.max(30000, (Number(source?.effective_interval_seconds) || 10) * 4000), sampledAt,
     });
+  }
+
+  _pollingFocusEligible() {
+    const document = this.ownerDocument ?? globalThis.document;
+    return this.isConnected === true && document?.visibilityState === "visible" && document.hasFocus?.() === true;
+  }
+
+  _bindPollingFocus() {
+    this._pollingFocusCleanup?.();
+    const document = this.ownerDocument ?? globalThis.document;
+    const window = document?.defaultView ?? globalThis.window;
+    const sync = () => this._syncPollingFocus();
+    window?.addEventListener?.("focus", sync);
+    window?.addEventListener?.("blur", sync);
+    document?.addEventListener?.("visibilitychange", sync);
+    this._pollingFocusCleanup = () => {
+      window?.removeEventListener?.("focus", sync);
+      window?.removeEventListener?.("blur", sync);
+      document?.removeEventListener?.("visibilitychange", sync);
+    };
+  }
+
+  _syncPollingFocus() {
+    const router = this._currentRouter();
+    this._pollingFocus.update(router?.entry_state === "loaded" && this.isConnected ? {
+      connection: this._hass?.connection, userId: this._hass?.user?.id,
+      entryId: router.entry_id, view: this._activeView, eligible: this._pollingFocusEligible(),
+    } : null);
   }
 
   _clearTrafficBinding() {
@@ -3991,6 +4041,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._clearAdminRead();
     this._selectedEntry = entryId;
     this._syncTrafficHistory();
+    this._syncPollingFocus();
     this._pendingAction = undefined;
     this._notice = "";
     this._noticeKind = "status";
@@ -4015,6 +4066,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     const previousView = this._activeView;
     this._activeView = view;
     this._syncTrafficHistory();
+    this._syncPollingFocus();
     this._notice = "";
     if (view !== "administration") {
       this._adminPageEpoch += 1;
@@ -7701,6 +7753,13 @@ export class SpeedportSmartPanel extends HTMLElement {
     return `Retry in ~${duration}`;
   }
 
+  _pollingFocusDetails(source) {
+    const keys = {dashboard: "status.polling_focus_dashboard", administration: "status.polling_focus_administration", background: "status.polling_focus_background"};
+    if (!Object.hasOwn(keys, source?.polling_focus)) return "";
+    const priority = this._t(keys[source.polling_focus]);
+    return source.background_refresh_deferred === true ? `${priority} · ${this._t("status.background_refresh_deferred")}` : priority;
+  }
+
   _renderDashboard(router, reporting, accessSourceStates) {
     const overview = renderDashboardOverview({
       router: {...router, entities: reporting}, states: this._hass?.states,
@@ -7714,19 +7773,14 @@ export class SpeedportSmartPanel extends HTMLElement {
     const observedText = wan?.available === true && wan.supported !== false && wan.retrying !== true &&
       ["learning", "stable"].includes(wan.state) && typeof observed === "number" && Number.isFinite(observed) && observed > 0
       ? this._t("status.wan_observed_interval", {interval: new Intl.NumberFormat(this._language(), {maximumFractionDigits: 2}).format(observed)}) : "";
-    const window = wan?.rate_window_seconds;
     const span = wan?.rate_sample_span_seconds;
     const formatSeconds = (seconds) => new Intl.NumberFormat(this._language(), {maximumFractionDigits: 2}).format(seconds);
-    const averageText = typeof window === "number" && Number.isFinite(window) && window > 0
-      ? this._t("status.wan_average_window", {interval: formatSeconds(window)}) : "";
-    // The configured window is a target: warm-up and sparse replies can span
-    // less or more time. Keep materially different actual spans explicit.
-    const spanText = averageText && wan.available === true && wan.supported !== false && wan.retrying !== true &&
+    const methodText = wan?.rate_method === "consecutive_samples" ? this._t("status.wan_per_sample") : "";
+    const spanText = methodText && !observedText && wan.available === true && wan.supported !== false && wan.retrying !== true &&
       ["learning", "stable"].includes(wan.state) && typeof span === "number" && Number.isFinite(span) && span > 0 &&
-      Math.abs(span - window) >= window * 0.2
-      ? this._t("status.wan_average_span", {interval: formatSeconds(span)}) : "";
+      this._t("status.wan_sample_span", {interval: formatSeconds(span)});
     const cadence = wan && Number.isFinite(interval) && interval > 0
-      ? `<p class="dashboard-cadence">${escapeHtml(this._t("status.wan_cadence", {interval}))} · ${escapeHtml(humanize(wan.state || wan.mode || ""))}${averageText ? ` · ${escapeHtml(averageText)}` : ""}${spanText ? ` · ${escapeHtml(spanText)}` : ""}${observedText ? ` · ${escapeHtml(observedText)}` : ""}${recovery ? ` · ${escapeHtml(recovery)}` : ""}</p>` : "";
+      ? `<p class="dashboard-cadence">${escapeHtml(this._t("status.wan_cadence", {interval}))} · ${escapeHtml(humanize(wan.state || wan.mode || ""))}${methodText ? ` · ${escapeHtml(methodText)}` : ""}${spanText ? ` · ${escapeHtml(spanText)}` : ""}${observedText ? ` · ${escapeHtml(observedText)}` : ""}${recovery ? ` · ${escapeHtml(recovery)}` : ""}</p>` : "";
     const deviceLink = router.root_device_id ? `<a href="/config/devices/device/${encodeURIComponent(router.root_device_id)}">All entities in Home Assistant</a>` : "";
     return `${overview}${cadence}<div class="dashboard-tools">${deviceLink}
       <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">
@@ -8038,6 +8092,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       !this._canShowAdministration(router)
     ) {
       this._activeView = "dashboard";
+      this._syncPollingFocus();
     }
     const accessSourceStates = Object.fromEntries(
       (router.access_sources || []).map((source) => [source.id, source]),
@@ -8128,6 +8183,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         <footer>
           <span>Telekom Speedport Smart</span>
           <span>${escapeHtml(this._t("footer.local"))}</span>
+          ${this._pollingFocusDetails(accessSourceStates.wan_counters) ? `<span class="polling-focus-detail">${escapeHtml(this._pollingFocusDetails(accessSourceStates.wan_counters))}</span>` : ""}
         </footer>
       </main>
       ${this._renderConfirmation()}
@@ -9794,12 +9850,14 @@ export class SpeedportSmartPanel extends HTMLElement {
         }
         footer {
           display: flex;
+          flex-wrap: wrap;
           justify-content: space-between;
           gap: 12px;
           padding: 28px 4px 8px;
           color: var(--sp-muted);
           font-size: 11px;
         }
+        .polling-focus-detail { flex-basis: 100%; }
         .loading-shell, .empty-shell {
           min-height: calc(100vh - 64px);
           display: grid;

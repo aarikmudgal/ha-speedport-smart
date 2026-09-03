@@ -660,7 +660,6 @@ async def test_rate_delta_and_counter_reset(
         hass,
         mock_speedport_client,
         fallback_identifier="entry-id",
-        rate_window_seconds=10,
         monotonic_time=lambda: next(times),
     )
 
