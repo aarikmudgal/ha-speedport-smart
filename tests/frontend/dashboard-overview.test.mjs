@@ -128,6 +128,86 @@ test("LAN presence does not turn unknown states into disconnected or home", () =
   assert.ok(html.includes('aria-label="Offline: Disconnected"'));
 });
 
+test("wired devices show their actual tracker link speed with accessible connectivity", () => {
+  const f = fixture(); const meta = f.client("a", "Desktop", "lan");
+  f.states[meta.entity_id].attributes.link_speed_bps = 2_500_000_000;
+  const html = f.render();
+  assert.ok(html.includes('aria-label="Desktop: Connected; Link speed 2.5 Gbit/s"'));
+  assert.ok(html.includes(">2.5 Gbit/s</small>"));
+  assert.ok(html.includes('title="Connected"'));
+  assert.ok(html.includes("Negotiated link speed, not current traffic"));
+});
+
+function childSpeed(f, key, value, deviceId = "a", unit = "Mbit/s", flags = {}) {
+  return f.add(`${deviceId}_${key}`, value, {attributes: {unit_of_measurement: unit},
+    meta: {translation_key: key, child_device: {device_id: deviceId, kind: "client", name: "Desktop"}, ...flags}});
+}
+
+test("same-device directional link speeds remain distinct and use their own units", () => {
+  const f = fixture(); f.client("a", "Desktop", "lan");
+  childSpeed(f, "download_link_speed", "1000"); childSpeed(f, "upload_link_speed", "500");
+  const html = f.render();
+  assert.ok(html.includes(">↓ 1 Gbit/s · ↑ 500 Mbit/s</small>"));
+  assert.ok(html.includes("Link speed download 1 Gbit/s, upload 500 Mbit/s"));
+});
+
+test("equal directional speeds collapse to one speed without doubling full duplex", () => {
+  const f = fixture(); f.client("a", "Desktop", "lan");
+  childSpeed(f, "download_link_speed", "1000"); childSpeed(f, "upload_link_speed", "1", "a", "Gbit/s");
+  const html = f.render();
+  assert.ok(html.includes(">1 Gbit/s</small>"));
+  assert.ok(!html.includes("2 Gbit/s"));
+});
+
+test("generic child speed is used only for exact device identity and reported unit", () => {
+  const f = fixture(); f.client("a", "Desktop", "lan");
+  childSpeed(f, "link_speed", "100"); childSpeed(f, "download_link_speed", "10000", "other");
+  const html = f.render();
+  assert.ok(html.includes(">100 Mbit/s</small>")); assert.ok(!html.includes("10 Gbit/s"));
+});
+
+test("unknown link speeds never borrow per-port capacity or device throughput", () => {
+  const f = fixture(); f.client("a", "Desktop", "lan");
+  f.add("lan_port_1_speed", "1000", {attributes: {unit_of_measurement: "Mbit/s"}});
+  childSpeed(f, "download_rate", "20"); childSpeed(f, "upload_rate", "10");
+  const html = f.render();
+  assert.ok(html.includes(">Link speed not reported</small>"));
+  assert.ok(!html.includes("1 Gbit/s")); assert.ok(!html.includes("20 Mbit/s"));
+});
+
+test("offline and unavailable trackers never display cached link speed", () => {
+  for (const state of ["not_home", "unknown", "unavailable"]) {
+    const f = fixture(); const meta = f.client("a", "Desktop", "lan", state);
+    f.states[meta.entity_id].attributes.link_speed_bps = 1_000_000_000;
+    childSpeed(f, "download_link_speed", "1000"); childSpeed(f, "upload_link_speed", "1000");
+    const html = f.render();
+    assert.ok(!html.includes("1 Gbit/s"));
+    assert.ok(html.includes(state === "not_home" ? ">Disconnected</small>" : ">Unavailable</small>"));
+  }
+});
+
+test("malformed, zero, negative, unsupported-unit or disabled speed values fail honestly", () => {
+  for (const value of ["0", "-1", "Infinity", "NaN", "", " ", null, true, [], {}, "<svg>"]) {
+    const f = fixture(); const meta = f.client("a", "Desktop", "lan");
+    f.states[meta.entity_id].attributes.link_speed_bps = value;
+    childSpeed(f, "download_link_speed", value);
+    assert.ok(f.render().includes(">Link speed not reported</small>"), String(value));
+  }
+  for (const options of [{unit: undefined}, {unit: "unknown"}, {flags: {disabled: true}}, {flags: {control_supported: true}}]) {
+    const f = fixture(); f.client("a", "Desktop", "lan");
+    const meta = childSpeed(f, "link_speed", "1000", "a", options.unit ?? "Mbit/s", options.flags);
+    if (Object.hasOwn(options, "unit")) f.states[meta.entity_id].attributes.unit_of_measurement = options.unit;
+    assert.ok(f.render().includes(">Link speed not reported</small>"));
+  }
+});
+
+test("single observed direction stays explicitly directional", () => {
+  const f = fixture(); f.client("a", "Desktop", "lan"); childSpeed(f, "upload_link_speed", "100");
+  const html = f.render();
+  assert.ok(html.includes(">↑ 100 Mbit/s</small>"));
+  assert.ok(html.includes("Link speed upload 100 Mbit/s"));
+});
+
 test("LAN child grouping deduplicates metadata and ignores other child kinds", () => {
   const f = fixture(); const meta = f.client("a", "Desktop", "lan");
   f.router.entities.push(meta, {...meta, entity_id: "device_tracker.duplicate"});

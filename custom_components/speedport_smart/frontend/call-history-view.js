@@ -1,5 +1,6 @@
-/** Explicit private call-list view. No automatic reads or persistent state. */
+/** Private call-list view. Reads require controller calls; no persistent state. */
 const CATEGORIES = Object.freeze({dialed: "Dialed calls", missed: "Missed calls", taken: "Answered calls"});
+const PAGE_CATEGORIES = Object.freeze({dialed: "Dialed outgoing calls", missed: "Missed calls", taken: "Received calls"});
 const MAX_ROWS = 1000;
 const MAX_CSV = 4200000;
 const MESSAGES = Object.freeze({
@@ -106,9 +107,10 @@ export function createCallHistoryViewController({request, onChange = () => {}, d
   };
 }
 
-export function renderCallHistoryView(controller) {
+export function renderCallHistoryView(controller, {pageMode = false} = {}) {
   const view = controller.snapshot();
   if (!view) return "";
+  const categoryTitle = (pageMode ? PAGE_CATEGORIES : CATEGORIES)[view.category];
   const options = Object.entries(CATEGORIES).map(([value, label]) =>
     `<option value="${value}"${value === view.category ? " selected" : ""}>${label}</option>`).join("");
   const duration = view.category !== "missed";
@@ -116,18 +118,18 @@ export function renderCallHistoryView(controller) {
     `<td>${escape(row.remote_party)}</td><td>${escape(row.local_party)}</td>` +
     (duration ? `<td>${row.duration_seconds}</td>` : "") + "</tr>").join("");
   const table = view.status === "loaded" ? `<div class="sp-call-history-table" data-call-history-private><p>${view.total} calls</p>` +
-    `<table><caption>${CATEGORIES[view.category]}</caption><thead><tr><th scope="col">Date</th><th scope="col">Time</th>` +
+    `<table><caption>${categoryTitle}</caption><thead><tr><th scope="col">Date</th><th scope="col">Time</th>` +
     `<th scope="col">Caller / destination</th><th scope="col">Local line</th>${duration ? '<th scope="col">Duration (seconds)</th>' : ""}` +
     `</tr></thead><tbody>${rows}</tbody></table></div>` : "";
   return `<style>
     .sp-call-history{box-sizing:border-box;padding:20px;border:1px solid var(--divider-color);border-radius:var(--ha-card-border-radius,12px);background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);overflow-wrap:anywhere}
     .sp-call-history h3{margin-top:0}.sp-call-history-actions{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}.sp-call-history select,.sp-call-history button{padding:10px;border:1px solid var(--divider-color);border-radius:8px;background:var(--secondary-background-color);color:var(--primary-text-color)}.sp-call-history :disabled{opacity:.55}.sp-call-history :focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}
     .sp-call-history-table{overflow-x:auto}.sp-call-history table{width:100%;border-collapse:collapse}.sp-call-history th,.sp-call-history td{text-align:left;padding:8px;border-bottom:1px solid var(--divider-color)}.sp-call-history caption{text-align:left;font-weight:600;padding:8px}
-    </style><section class="sp-call-history" aria-labelledby="sp-call-history-title" aria-busy="${view.busy}"><h3 id="sp-call-history-title">Private call history</h3>
-    <p>Records and exports are private. Nothing loads automatically or enters recorder history. A downloaded CSV remains on your device.</p>
-    <label for="sp-call-history-category">Call category</label><select id="sp-call-history-category" data-call-history-category>${options}</select>
-    <p role="status" aria-live="polite">${MESSAGES[view.status] ?? MESSAGES.unavailable}</p>
-    <div class="sp-call-history-actions"><button type="button" data-call-history-action="load"${view.busy ? " disabled" : ""}>Load private list</button><button type="button" data-call-history-action="export"${view.busy ? " disabled" : ""}>Download fresh CSV</button><button type="button" data-call-history-action="close">Close and clear</button></div>${table}</section>`;
+    </style><section class="sp-call-history" aria-labelledby="sp-call-history-title" aria-busy="${view.busy}"><h3 id="sp-call-history-title">${pageMode ? categoryTitle : "Private call history"}</h3>
+    <p>${pageMode ? "Opening this page reads its private call list automatically. Records stay only in this private view and never enter Recorder history. Downloads happen only when you choose Download fresh CSV; the file stays on your device." : "Records and exports are private. Nothing loads automatically or enters recorder history. A downloaded CSV remains on your device."}</p>
+    ${pageMode ? "" : `<label for="sp-call-history-category">Call category</label><select id="sp-call-history-category" data-call-history-category>${options}</select>`}
+    <p role="status" aria-live="polite">${pageMode && view.status === "ready" ? "This page reads its private call list on entry. Use Refresh to read it again." : MESSAGES[view.status] ?? MESSAGES.unavailable}</p>
+    <div class="sp-call-history-actions"><button type="button" data-call-history-action="load"${view.busy ? " disabled" : ""}>${pageMode ? "Refresh" : "Load private list"}</button><button type="button" data-call-history-action="export"${view.busy ? " disabled" : ""}>Download fresh CSV</button><button type="button" data-call-history-action="close">Close and clear</button></div>${table}</section>`;
 }
 
 export function bindCallHistoryView(root, controller) {

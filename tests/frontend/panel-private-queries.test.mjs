@@ -221,7 +221,7 @@ test("queries render only under their owning read-only feature cards", () => {
     { protected_json: { available: true } },
   );
   assert.ok(!pbxHtml.includes('data-admin-query="phonebook_search"'));
-  panel._adminPage = "telephony_phonebook";
+  panel._adminPage = "telephony_phonebook_entries";
   const phonebookHtml = panel._renderAdministration(router(), [], [], {protected_json: {available: true}});
   assert.ok(!phonebookHtml.includes('data-admin-query="ip_pbx_refresh"'));
   const pbx = featureWindow(pbxHtml, "telephony_ip_pbx");

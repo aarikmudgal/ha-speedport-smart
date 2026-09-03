@@ -1787,7 +1787,7 @@ test("all native pages retain capability coverage without inventing controls", (
   assert.ok(!html.includes('data-admin-tab="home_assistant"'));
   assert.ok(!html.includes('class="administration-area"'));
   assert.ok(!html.includes('class="administration-subsection"'));
-  assert.equal(new Set([...html.matchAll(/data-native-page="([^"]+)"/g)].map((match) => match[1])).size, 48);
+  assert.equal(new Set([...html.matchAll(/data-native-page="([^"]+)"/g)].map((match) => match[1])).size, 69);
   for (const label of [
     "Provider, account, MTU, VLAN, and fixed-IP configuration",
     "Analog socket incoming and outgoing number assignment",
@@ -2139,10 +2139,10 @@ test("Dashboard shows headline telemetry while Administration keeps reviewed rep
 
   fixture.panel._activeView = "administration";
   for (const [tab, page, expected] of [
-    ["system", "system_recovery", "button.speedport_reboot_router"],
+    ["system", "system_recovery_restart", "button.speedport_reboot_router"],
     ["network", "network_devices", "Cached laptop"],
     ["network", "network_wifi_basic", "sensor.speedport_wifi_schedule_mode"],
-    ["system", "system_information", "sensor.speedport_system_cpu"],
+    ["system", "system_information_data", "sensor.speedport_system_cpu"],
   ]) {
     fixture.panel._adminTab = tab; fixture.panel._adminPage = page;
     SpeedportSmartPanel.prototype._render.call(fixture.panel);
@@ -2859,7 +2859,7 @@ test("administrator renderer nests all collections in fixed related areas", () =
   );
 
   assert.equal(new Set([...html.matchAll(/data-detail-id="admin-read:([^"]+)"/g)].map((match) => match[1])).size, ADMIN_READ_SECTION_ORDER.length);
-  for (const id of ["internet_receiver", "telephony_registration", "network_devices"]) assert.ok(html.includes(`data-native-page="${id}"`));
+  for (const id of ["internet_receiver_connection", "telephony_registration", "network_devices"]) assert.ok(html.includes(`data-native-page="${id}"`));
   for (const title of [
     "Network devices",
     "Mesh nodes",

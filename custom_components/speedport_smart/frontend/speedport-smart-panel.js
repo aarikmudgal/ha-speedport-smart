@@ -1,24 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=24";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=24";
-import { createTrafficHistoryController, renderTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=24";
+import { requestPrivateApi } from "./private-api.js?schema=25";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=25";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=25";
 import {
-  NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures,
-} from "./admin-navigation.js?schema=24";
-import { keepDialogFocus } from "./accessibility.js?schema=24";
+  NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
+} from "./admin-navigation.js?schema=25";
+import { keepDialogFocus } from "./accessibility.js?schema=25";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=24";
+} from "./call-history-view.js?schema=25";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=24";
+} from "./file-transfer-editor.js?schema=25";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=24";
+} from "./maintenance-editor.js?schema=25";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=24";
+} from "./configuration-editor.js?schema=25";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,22 +33,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=24";
+} from "./controls.js?schema=25";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=24";
+} from "./entity-state.js?schema=25";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=24";
+} from "./render-state.js?schema=25";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=24";
+} from "./translations.js?schema=25";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -233,7 +233,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 24;
+const PANEL_SCHEMA_VERSION = 25;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3344,24 +3344,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminPageEpoch = 0;
     this._adminMenuOpen = false;
     this._privateRequestQueue = Promise.resolve();
+    this._privateReadReadyAt = {read: 0, targets: 0, callHistory: 0};
+    this._privateReadNow = () => Date.now();
+    this._privateReadWait = (delay) => new Promise((resolve) => setTimeout(resolve, delay));
+    this._settingsEditors = new Map();
+    this._adminRecoverySelections = new Map();
+    this._adminSessionInvalidationPending = undefined;
     this._settingsHost = undefined;
     this._settingsBinding = undefined;
-    this._settingsEditor = createConfigurationEditorController({
-      request: (message) => {
-        if (this._hass?.user?.is_admin !== true || message.entry_id !== this._currentRouter()?.entry_id) {
-          return Promise.reject(new Error("administrator_required"));
-        }
-        return this._requestPrivate(message);
-      },
-      onChange: () => this._renderSettingsEditor(),
-      download: async (blob, filename) => {
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url; link.download = filename;
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-      },
-    });
+    this._settingsEditor = this._newConfigurationEditor();
     this._maintenanceHost = undefined;
     this._maintenanceBinding = undefined;
     this._maintenanceEditor = createMaintenanceEditorController({
@@ -3371,7 +3362,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         }
         return this._requestPrivate(message);
       },
-      onChange: () => this._renderMaintenanceEditor(),
+      onChange: () => { this._flushAdminSessionInvalidation(); this._renderMaintenanceEditor(); },
     });
     this._fileTransferHost = undefined;
     this._fileTransferBinding = undefined;
@@ -3391,7 +3382,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         link.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       },
-      onChange: () => this._renderFileTransferEditor(),
+      onChange: () => { this._flushAdminSessionInvalidation(); this._renderFileTransferEditor(); },
     });
     this._adminRead = undefined;
     this._callHistoryHost = undefined;
@@ -3519,6 +3510,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._renderFrame = undefined;
     this._clearAdminRead();
     this._trafficHistory.dispose();
+    this._clearTrafficBinding();
     this.shadowRoot.innerHTML = "";
   }
 
@@ -3678,7 +3670,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         this._selectedEntry
       ) {
         this._loadAdminReadAndPage(this._selectedEntry);
-      } else if (!actionSessionChanged && selectedEntryLoaded && !this._settingsEditor.snapshot() &&
+      } else if (!actionSessionChanged && selectedEntryLoaded && !this._configurationViews().length &&
           adminPageSettings(this._currentAdminPage().page, selectedRouter.settings || [], SETTINGS_FEATURE_LINKS)
             .some((setting) => setting.supported && setting.available && !previousPageSettings.has(setting.id))) {
         this._queueAdminPageRecovery();
@@ -3707,6 +3699,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (!this.isConnected || this._activeView !== "dashboard" || !router || router.entry_state !== "loaded" || !userId ||
         typeof this._hass?.connection?.sendMessagePromise !== "function") {
       this._trafficHistory.dispose();
+      this._clearTrafficBinding();
       return;
     }
     const entities = Object.fromEntries(["download", "upload"].map((direction) => [direction,
@@ -3714,6 +3707,11 @@ export class SpeedportSmartPanel extends HTMLElement {
         !meta.child_device && !meta.control && !meta.control_supported && /^sensor\.[a-z0-9_]+$/.test(meta.entity_id) &&
         meta.translation_key === `wan_${direction}_rate`)?.entity_id ?? null,
     ]));
+    const scope = JSON.stringify([router.entry_id, userId, entities.download, entities.upload]);
+    if (this._trafficScope !== scope) {
+      this._clearTrafficBinding();
+      this._trafficScope = scope;
+    }
     const source = liveWanSourceFromEntityStates(
       router.access_sources?.find((item) => item.id === "wan_counters"), router.entities, this._hass.states,
     );
@@ -3723,6 +3721,14 @@ export class SpeedportSmartPanel extends HTMLElement {
       stale: source?.available === false || source?.retrying === true || source?.supported === false,
       staleAfterMs: Math.max(30000, (Number(source?.effective_interval_seconds) || 10) * 4000), sampledAt,
     });
+  }
+
+  _clearTrafficBinding() {
+    this._trafficBinding?.();
+    this._trafficBinding = undefined;
+    this._trafficScope = undefined;
+    if (this._trafficHost) this._trafficHost.innerHTML = "";
+    this._trafficHost = undefined;
   }
 
   _canShowAdministration(router = this._currentRouter()) {
@@ -3755,6 +3761,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   _clearAdminRead() {
     this._adminPageEpoch += 1;
     this._adminRecoverySelection = undefined;
+    this._adminRecoverySelections.clear();
     this._clearSettingsEditor();
     this._invalidateAdminReadSnapshot();
     this._clearAdminPrivateQueries();
@@ -3793,11 +3800,29 @@ export class SpeedportSmartPanel extends HTMLElement {
     }
     const epoch = this._adminPageEpoch;
     const userId = this._hass.user?.id;
-    const run = this._privateRequestQueue.then(() => {
+    const current = () => {
       if ((message.type !== ADMIN_READ_API_TYPE && epoch !== this._adminPageEpoch) || this._hass?.user?.id !== userId ||
           this._hass?.user?.is_admin !== true || this._activeView !== "administration" ||
+          this.isConnected === false ||
           message.entry_id !== this._currentRouter()?.entry_id) throw new Error("administrator_required");
-      return requestPrivateApi(this._hass, message);
+    };
+    const run = this._privateRequestQueue.then(async () => {
+      current();
+      const paced = message.type === "speedport_smart/panel/settings/read" ? "read" :
+        message.type === "speedport_smart/panel/settings/targets" ? "targets" :
+          message.type === "speedport_smart/panel/call_history" ? "callHistory" : null;
+      if (paced) {
+        const delay = this._privateReadReadyAt[paced] - this._privateReadNow();
+        if (delay > 0) await this._privateReadWait(delay);
+        current();
+        if (this._configurationSaving() || this._actionBusy || this._maintenanceEditor.snapshot()?.busy ||
+            this._fileTransferEditor.snapshot()?.busy) throw new Error("action_busy");
+      }
+      try {
+        return await requestPrivateApi(this._hass, message);
+      } finally {
+        if (paced) this._privateReadReadyAt[paced] = this._privateReadNow() + 1000;
+      }
     });
     // The queue retains completion only, never a private response/credential.
     this._privateRequestQueue = run.then(() => undefined, () => undefined);
@@ -3900,6 +3925,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (view !== "administration") {
       this._adminPageEpoch += 1;
       this._adminRecoverySelection = undefined;
+      this._adminRecoverySelections.clear();
       this._clearSettingsEditor();
       this._clearAdminPrivateQueries();
       this._clearAdminActionState();
@@ -3943,7 +3969,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     }
   }
 
-  _queueAdminPageRecovery() {
+  _queueAdminPageRecovery({allowExisting = false} = {}) {
     const epoch = this._adminPageEpoch;
     const entryId = this._currentRouter()?.entry_id;
     const userId = this._hass?.user?.id;
@@ -3956,7 +3982,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       if (this.isConnected === false || epoch !== this._adminPageEpoch || entryId !== this._currentRouter()?.entry_id ||
           userId !== this._hass?.user?.id || this._hass?.user?.is_admin !== true ||
           this._activeView !== "administration" || this._currentRouter()?.entry_state !== "loaded" ||
-          !this._adminManagementAvailable(this._hass) || this._settingsEditor.snapshot() ||
+          !this._adminManagementAvailable(this._hass) || !allowExisting && this._configurationViews().length ||
           this._maintenanceEditor.snapshot() || this._fileTransferEditor.snapshot() || this._actionBusy) return;
       return this._loadAdminPage();
     }).catch(() => {
@@ -3968,35 +3994,52 @@ export class SpeedportSmartPanel extends HTMLElement {
     });
   }
 
-  _invalidateAdminPageSession() {
+  _flushAdminSessionInvalidation() {
+    const pending = this._adminSessionInvalidationPending;
+    if (!pending || this._configurationSaving() || this._maintenanceEditor?.snapshot()?.busy ||
+        this._fileTransferEditor?.snapshot()?.busy || this._actionBusy) return;
+    this._adminSessionInvalidationPending = undefined;
+    this._invalidateAdminPageSession({preserve: pending});
+  }
+
+  _invalidateAdminPageSession({preserve = new Set()} = {}) {
     // Never erase the outcome of a dispatched write. Idle private snapshots and
     // credentials belong to the old session; reload the visible page on recovery.
-    if (this._settingsEditor?.snapshot()?.isSaving || this._maintenanceEditor?.snapshot()?.busy ||
-        this._fileTransferEditor?.snapshot()?.busy || this._actionBusy) return;
-    const selection = this._settingsEditor.snapshot();
-    if (selection) {
-      const pending = this._adminRecoverySelection;
+    if (this._configurationSaving() || this._maintenanceEditor?.snapshot()?.busy ||
+        this._fileTransferEditor?.snapshot()?.busy || this._actionBusy) {
+      const pending = this._adminSessionInvalidationPending ||= new Set();
+      for (const editor of new Set([this._settingsEditor, ...[...this._settingsEditors.values()].map((record) => record.editor)])) {
+        if (editor?.snapshot()?.isSaving) pending.add(editor);
+      }
+      if (this._maintenanceEditor?.snapshot()?.busy) pending.add(this._maintenanceEditor);
+      if (this._fileTransferEditor?.snapshot()?.busy) pending.add(this._fileTransferEditor);
+      return;
+    }
+    for (const selection of this._configurationViews()) {
+      if ([...preserve].some((editor) => editor.snapshot()?.setting?.id === selection.setting.id)) continue;
+      const pending = this._adminRecoverySelections.get(selection.setting.id) || this._adminRecoverySelection;
       const pageId = this._currentAdminPage().page.id;
-      this._adminRecoverySelection = {pageId: this._currentAdminPage().page.id,
+      const recovery = {pageId,
         settingId: selection.setting.id, targetId: selection.targetId ??
           (pending?.pageId === pageId && pending.settingId === selection.setting.id ? pending.targetId : null)};
+      this._adminRecoverySelections.set(selection.setting.id, recovery);
+      if (selection.setting.id === this._settingsEditor.snapshot()?.setting.id) this._adminRecoverySelection = recovery;
       if (selection.isDirty) this._notice = "The router management session changed. Unsaved changes were discarded; current settings will load when access returns.";
     }
     this._adminPageEpoch += 1;
-    this._clearSettingsEditor();
+    this._clearSettingsEditor({preserve});
     this._clearAdminPrivateQueries();
-    this._queueAdminPageRecovery();
+    this._queueAdminPageRecovery({allowExisting: preserve.size > 0});
   }
 
   _canLeaveAdminPage() {
-    if (this._actionBusy || this._settingsEditor?.snapshot()?.isSaving ||
+    if (this._actionBusy || this._configurationSaving() ||
         this._maintenanceEditor?.snapshot()?.busy || this._fileTransferEditor?.snapshot()?.busy) {
       this._notice = "Wait for the current router request to finish before leaving this page.";
       this._render();
       return false;
     }
-    const state = this._settingsEditor?.snapshot();
-    if (state?.isDirty || state?.link || state?.downloadAvailable ||
+    if (this._configurationViews().some((state) => state.isDirty || state.link || state.downloadAvailable) ||
         this._fileTransferEditor?.snapshot()?.filename) {
       return globalThis.confirm?.("Leave this page? Unsaved changes and temporary private data will be discarded.") !== false;
     }
@@ -4010,11 +4053,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._adminMenuOpen = false;
     if (current.tab.id === tab.id && current.page.id === page.id) {
       this._render();
-      if (!this._settingsEditor.snapshot()) await this._loadAdminPage();
+      if (!this._configurationViews().length) await this._loadAdminPage();
       return;
     }
     this._adminPageEpoch += 1;
     this._adminRecoverySelection = undefined;
+    this._adminRecoverySelections.clear();
     this._clearSettingsEditor();
     this._clearAdminPrivateQueries();
     this._clearAdminActionState();
@@ -4026,32 +4070,87 @@ export class SpeedportSmartPanel extends HTMLElement {
     await this._loadAdminPage();
   }
 
-  async _openAdminSetting(settingId, {targetId, recovering = false} = {}) {
+  async _openAdminSetting(settingId, {targetId, recovering = false, inline = false, retry = false} = {}) {
     const router = this._currentRouter();
     const setting = router?.settings?.find((item) => item.id === settingId);
     if (this._activeView !== "administration" || this._hass?.user?.is_admin !== true ||
-        !setting?.supported || !setting.available || !this._canLeaveAdminPage()) return;
-    this._clearSettingsEditor();
-    if (!recovering) this._adminRecoverySelection = undefined;
-    await this._settingsEditor.open({entryId: router.entry_id, setting, autoLoad: true, targetId});
+        this.isConnected === false || !setting?.supported || !setting.available ||
+        this._configurationSaving() || this._actionBusy || this._maintenanceEditor.snapshot()?.busy ||
+        this._fileTransferEditor.snapshot()?.busy) return;
+    const existing = this._settingsEditors.get(settingId);
+    if (existing?.error && retry) {
+      existing.binding?.(); existing.editor.dispose();
+      this._settingsEditors.delete(settingId);
+    }
+    if (existing && !(existing.error && retry)) {
+      if (!inline) this._settingsEditor = existing.editor;
+      if (targetId != null && targetId !== existing.editor.snapshot()?.targetId) await existing.editor.selectTarget(targetId);
+      existing.host?.scrollIntoView?.({block: "nearest"});
+      return;
+    }
+    const editor = this._newConfigurationEditor();
+    this._settingsEditors.set(settingId, {editor, inline, host: undefined, binding: undefined});
+    if (!inline || !this._settingsEditor.snapshot() ||
+        recovering && this._adminRecoverySelection?.settingId === settingId) this._settingsEditor = editor;
+    if (!recovering) {
+      this._adminRecoverySelections.delete(settingId);
+      if (this._adminRecoverySelection?.settingId === settingId) this._adminRecoverySelection = undefined;
+    }
+    this._render();
+    try {
+      await editor.open({entryId: router.entry_id, setting, autoLoad: true, targetId});
+    } catch (error) {
+      const record = this._settingsEditors.get(settingId);
+      if (record?.editor === editor) record.error = true;
+      throw error;
+    }
     this._render();
   }
 
-  async _loadAdminPage() {
+  _loadAdminPage() {
+    if (this._adminPageLoad?.epoch === this._adminPageEpoch) return this._adminPageLoad.promise;
+    const task = {epoch: this._adminPageEpoch + 1, promise: null};
+    this._adminPageLoad = task;
+    task.promise = this._loadAdminPageSections().finally(() => {
+      if (this._adminPageLoad === task) this._adminPageLoad = undefined;
+    });
+    return task.promise;
+  }
+
+  async _loadAdminPageSections() {
     const router = this._currentRouter();
-    if (this._activeView !== "administration" || this._hass?.user?.is_admin !== true || !router) return;
+    if (this.isConnected === false || this._activeView !== "administration" || this._hass?.user?.is_admin !== true || !router) return;
     const epoch = ++this._adminPageEpoch;
     const {page} = this._currentAdminPage();
     const current = () => epoch === this._adminPageEpoch && this._activeView === "administration" &&
-      this._currentRouter()?.entry_id === router.entry_id;
+      this._currentRouter()?.entry_id === router.entry_id && this.isConnected !== false &&
+      this._hass?.user?.is_admin === true && this._currentRouter()?.entry_state === "loaded";
     const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
-    const resume = this._adminRecoverySelection?.pageId === page.id ? this._adminRecoverySelection : undefined;
-    const first = settings.find((setting) => setting.supported && setting.available && (!resume || setting.id === resume.settingId));
-    if (first && !this._settingsEditor.snapshot()) {
-      await this._openAdminSetting(first.id, {targetId: resume?.targetId, recovering: Boolean(resume)});
-      const loaded = this._settingsEditor.snapshot();
-      if (current() && this._adminRecoverySelection === resume && loaded?.loaded &&
-          (resume?.targetId == null || loaded.targetId === resume.targetId)) this._adminRecoverySelection = undefined;
+    const {inline} = adminPageSettingSections(page, router.settings || [], SETTINGS_FEATURE_LINKS);
+    const jobs = [...inline];
+    for (const setting of settings) {
+      if (this._adminRecoverySelections.get(setting.id)?.pageId === page.id && !jobs.some((item) => item.id === setting.id)) jobs.push(setting);
+    }
+    for (const setting of jobs) {
+      if (!current()) return;
+      if (!setting.supported || !setting.available || this._settingsEditors.has(setting.id)) continue;
+      const resume = this._adminRecoverySelections.get(setting.id);
+      try {
+        await this._openAdminSetting(setting.id, {targetId: resume?.targetId,
+          recovering: Boolean(resume), inline: inline.some((item) => item.id === setting.id)});
+      } catch {
+        if (current()) {
+          this._notice = "Settings could not be loaded. Use Refresh to try reading them again.";
+          this._render();
+        }
+      }
+      if (!current()) return;
+      const loaded = this._settingsEditors.get(setting.id)?.editor.snapshot();
+      if (this._adminRecoverySelections.get(setting.id) === resume && loaded?.loaded &&
+          (resume?.targetId == null || loaded.targetId === resume.targetId)) {
+        this._adminRecoverySelections.delete(setting.id);
+        if (this._adminRecoverySelection === resume) this._adminRecoverySelection = undefined;
+      }
     }
     if (!current()) return;
     // Read inventories only after page entry; never from telemetry rendering.
@@ -4064,10 +4163,12 @@ export class SpeedportSmartPanel extends HTMLElement {
           await this._loadDestructiveAdminActionTargets(actionId);
         }
       }
-      if (feature.id === "telephony_call_lists" && current()) {
-        this._callHistoryView.open({entryId: router.entry_id});
-        await this._callHistoryView.load();
-      }
+    }
+    const category = this._adminCallHistoryCategory();
+    const history = this._callHistoryView.snapshot();
+    if (category && current() && (history?.entryId !== router.entry_id || history.category !== category)) {
+      this._callHistoryView.open({entryId: router.entry_id, category});
+      await this._callHistoryView.load();
     }
   }
 
@@ -4231,12 +4332,21 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._loadAdminPage();
       return;
     }
+    if (target.dataset.retrySetting) {
+      return this._openAdminSetting(target.dataset.retrySetting, {retry: true, inline: true}).catch(() => {
+        this._notice = "Settings could not be loaded. Use Refresh to try reading them again.";
+        this._render();
+      });
+    }
 
     if (target.dataset.openTransfer) {
       const router = this._currentRouter();
       const action = router?.file_transfers?.find((item) => item.id === target.dataset.openTransfer);
       if (this._activeView === "administration" && this._hass?.user?.is_admin === true &&
           action?.supported && action.available && this._canLeaveAdminPage()) {
+        this._adminPageEpoch += 1;
+        this._adminRecoverySelection = undefined;
+        this._adminRecoverySelections.clear();
         this._clearSettingsEditor();
         this._fileTransferEditor.open({entryId: router.entry_id, action});
         this._fileTransferHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
@@ -4250,6 +4360,9 @@ export class SpeedportSmartPanel extends HTMLElement {
         item.id === target.dataset.openMaintenance && item.execution_policy === "maintenance");
       if (this._activeView === "administration" && this._hass?.user?.is_admin === true &&
           action?.supported && action.available && this._canLeaveAdminPage()) {
+        this._adminPageEpoch += 1;
+        this._adminRecoverySelection = undefined;
+        this._adminRecoverySelections.clear();
         this._clearSettingsEditor();
         this._maintenanceEditor.open({entryId: router.entry_id, action});
         this._maintenanceHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
@@ -4269,7 +4382,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       const router = this._currentRouter();
       if (this._hass?.user?.is_admin === true && this._activeView === "administration" &&
           router?.entry_state === "loaded") {
-        this._callHistoryView.open({entryId: router.entry_id});
+        this._callHistoryView.open({entryId: router.entry_id, category: this._adminCallHistoryCategory() || "taken"});
         this._callHistoryHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
       }
       return;
@@ -7143,27 +7256,75 @@ export class SpeedportSmartPanel extends HTMLElement {
     return `${rootGrid}${childGrid}`;
   }
 
-  _clearSettingsEditor() {
+  _newConfigurationEditor() {
+    const editor = createConfigurationEditorController({
+      request: (message) => {
+        if (message.type.endsWith("/save") && (this._configurationViews(editor).some((view) => view.isSaving) ||
+            this._actionBusy || this._maintenanceEditor?.snapshot()?.busy || this._fileTransferEditor?.snapshot()?.busy)) {
+          return Promise.reject(Object.assign(new Error("action_busy"), {code: "action_busy"}));
+        }
+        return this._requestPrivate(message);
+      },
+      onChange: () => { this._flushAdminSessionInvalidation(); this._renderSettingsEditor(editor); },
+      download: async (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url; link.download = filename; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      },
+    });
+    return editor;
+  }
+
+  _configurationViews(except) {
+    return [...new Set([this._settingsEditor, ...[...this._settingsEditors.values()].map((record) => record.editor)])]
+      .filter((editor) => editor && editor !== except).map((editor) => editor.snapshot()).filter(Boolean);
+  }
+
+  _configurationSaving() {
+    return this._configurationViews().some((view) => view.isSaving);
+  }
+
+  _clearSettingsEditor({preserve = new Set()} = {}) {
+    this._adminSessionInvalidationPending = undefined;
+    for (const [id, record] of this._settingsEditors) {
+      if (preserve.has(record.editor)) continue;
+      record.binding?.();
+      record.editor.dispose();
+      if (record.host) record.host.innerHTML = "";
+      this._settingsEditors.delete(id);
+    }
     this._callHistoryBinding?.();
     this._callHistoryBinding = undefined;
     this._callHistoryView?.dispose();
     if (this._callHistoryHost) this._callHistoryHost.innerHTML = "";
     this._callHistoryHost = undefined;
-    this._settingsBinding?.();
-    this._settingsBinding = undefined;
-    this._settingsEditor?.dispose();
-    if (this._settingsHost) this._settingsHost.innerHTML = "";
-    this._settingsHost = undefined;
-    this._maintenanceBinding?.();
-    this._maintenanceBinding = undefined;
-    this._maintenanceEditor?.dispose();
-    if (this._maintenanceHost) this._maintenanceHost.innerHTML = "";
-    this._maintenanceHost = undefined;
-    this._fileTransferBinding?.();
-    this._fileTransferBinding = undefined;
-    this._fileTransferEditor?.dispose();
-    if (this._fileTransferHost) this._fileTransferHost.innerHTML = "";
-    this._fileTransferHost = undefined;
+    if (!preserve.has(this._settingsEditor)) {
+      this._settingsBinding?.();
+      this._settingsBinding = undefined;
+      this._settingsEditor?.dispose();
+      if (this._settingsHost) this._settingsHost.innerHTML = "";
+      this._settingsHost = undefined;
+    }
+    if (!preserve.has(this._maintenanceEditor)) {
+      this._maintenanceBinding?.();
+      this._maintenanceBinding = undefined;
+      this._maintenanceEditor?.dispose();
+      if (this._maintenanceHost) this._maintenanceHost.innerHTML = "";
+      this._maintenanceHost = undefined;
+    }
+    if (!preserve.has(this._fileTransferEditor)) {
+      this._fileTransferBinding?.();
+      this._fileTransferBinding = undefined;
+      this._fileTransferEditor?.dispose();
+      if (this._fileTransferHost) this._fileTransferHost.innerHTML = "";
+      this._fileTransferHost = undefined;
+    }
+  }
+
+  _adminCallHistoryCategory() {
+    return {telephony_calls_missed: "missed", telephony_calls_taken: "taken",
+      telephony_calls_dialed: "dialed"}[this._currentAdminPage().page.id];
   }
 
   _renderCallHistoryEditor() {
@@ -7171,7 +7332,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     const host = this.shadowRoot.querySelector("[data-call-history-editor-host]");
     if (!host) return;
     this._callHistoryHost = host;
-    host.innerHTML = renderCallHistoryView(this._callHistoryView);
+    host.innerHTML = renderCallHistoryView(this._callHistoryView, {pageMode: Boolean(this._adminCallHistoryCategory())});
     if (!this._callHistoryBinding) this._callHistoryBinding = bindCallHistoryView(host, this._callHistoryView);
   }
 
@@ -7220,13 +7381,23 @@ export class SpeedportSmartPanel extends HTMLElement {
       setting.supported && ids.includes(setting.id));
   }
 
-  _renderSettingsEditor() {
+  _renderSettingsEditor(editor = this._settingsEditor) {
     if (!this.shadowRoot || this._activeView !== "administration") return;
-    const host = this.shadowRoot.querySelector("[data-settings-editor-host]");
+    const settingId = editor.snapshot()?.setting.id;
+    if (!settingId) return;
+    const record = this._settingsEditors.get(settingId);
+    const host = (record && this.shadowRoot.querySelector(`[data-settings-section="${settingId}"]`)) ||
+      (editor === this._settingsEditor && this.shadowRoot.querySelector("[data-settings-editor-host]"));
     if (!host) return;
-    this._settingsHost = host;
-    host.innerHTML = renderConfigurationEditor(this._settingsEditor, {pageMode: true});
-    if (!this._settingsBinding) this._settingsBinding = bindConfigurationEditor(host, this._settingsEditor, {pageMode: true});
+    host.innerHTML = renderConfigurationEditor(editor, {pageMode: true});
+    if (record) {
+      record.host = host;
+      if (editor === this._settingsEditor) this._settingsHost = host;
+      if (!record.binding) record.binding = bindConfigurationEditor(host, editor, {pageMode: true});
+    } else {
+      this._settingsHost = host;
+      if (!this._settingsBinding) this._settingsBinding = bindConfigurationEditor(host, editor, {pageMode: true});
+    }
   }
 
   _renderSettingsCatalog(router) {
@@ -7272,7 +7443,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       return `<div data-admin-control-feature="${escapeHtml(feature.id)}"><span class="admin-control-status">${escapeHtml(this._t(`admin.feature.status.${presentation.key}`))}</span>${this._renderAdministrationEntities(owned, accessSourceStates)}</div>`;
     }).join("");
     const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
-    const editorId = this._settingsEditor.snapshot()?.setting.id;
+    const {inline, contextual} = adminPageSettingSections(page, router.settings || [], SETTINGS_FEATURE_LINKS);
     const canReadAdmin = this._hass?.user?.is_admin === true;
     const pageEntities = reporting.filter((entity) =>
       page.entityGroups.includes(capabilityGroupFor(entity)) && entity.access_source !== "integration");
@@ -7285,12 +7456,14 @@ export class SpeedportSmartPanel extends HTMLElement {
         class="${item.parentId ? "nested " : ""}${item.id === page.id ? "active" : ""}"
         ${item.id === page.id ? 'aria-current="page"' : ""}>${escapeHtml(item.title)}</button>`).join("");
     const forms = canReadAdmin && settings.length ? `<section class="admin-page-forms" aria-label="Page settings">
-      ${settings.length > 1 ? `<nav class="admin-form-nav" aria-label="Settings and actions">${settings.map((setting) => `<button type="button"
-        data-open-setting="${escapeHtml(setting.id)}" ${editorId === setting.id ? 'aria-current="true" class="active"' : ""}
-        ${!setting.supported || !setting.available ? 'disabled title="Current settings are unavailable. Check management access and router capability."' : ""}
-        >${escapeHtml(setting.title)}</button>`).join("")}</nav>` : ""}
-      ${!settings.some((setting) => setting.supported && setting.available) ? '<p class="admin-native-unavailable">These settings are currently unavailable. Check management access; this firmware or connected hardware may not expose them.</p>' : ""}
-      ${!editorId && settings.some((setting) => setting.supported && setting.available) ? '<button type="button" class="secondary" data-load-admin-page>Load current page settings</button>' : ""}
+      ${inline.map((setting) => `<section class="admin-inline-settings" data-inline-setting="${escapeHtml(setting.id)}">
+        <div data-settings-section="${escapeHtml(setting.id)}"><h3>${escapeHtml(setting.title)}</h3><p role="status">${this._settingsEditors.get(setting.id)?.error ? "Settings could not be loaded." : setting.supported && setting.available ?
+          "Loading current settings…" : "Current settings are unavailable. Check management access and router capability."}</p>${this._settingsEditors.get(setting.id)?.error ?
+          `<button type="button" class="secondary" data-retry-setting="${escapeHtml(setting.id)}">Refresh</button>` : ""}</div></section>`).join("")}
+      ${contextual.length ? `<section class="admin-contextual-actions" aria-label="Actions"><h3>Actions</h3>${contextual.map((setting) =>
+        `<button type="button" class="secondary" data-open-setting="${escapeHtml(setting.id)}"${!setting.supported || !setting.available ? " disabled" : ""}>${escapeHtml(setting.title)}</button>`).join("")}</section>` : ""}
+      ${contextual.filter((setting) => this._settingsEditors.has(setting.id)).map((setting) =>
+        `<div data-settings-section="${escapeHtml(setting.id)}"></div>`).join("")}
     </section>` : "";
     const overview = tab.id === "overview" ? `${this._renderRouterIdentity(router)}${this._renderAdminReadOverview()}` : "";
     const integrationTools = tab.id === "overview" ? `<details class="admin-native-section" data-detail-id="admin-integration-tools">
@@ -7339,7 +7512,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   _renderDashboard(router, reporting, accessSourceStates) {
     const overview = renderDashboardOverview({
       router: {...router, entities: reporting}, states: this._hass?.states,
-      trafficMarkup: renderTrafficHistory(this._trafficHistory.snapshot(), {language: this._language()}),
+      trafficMarkup: `<div data-traffic-history-host>${renderTrafficHistory(this._trafficHistory.snapshot(), {language: this._language()})}</div>`,
       formatState: (state) => this._formatState(state),
     });
     const wan = accessSourceStates.wan_counters;
@@ -7602,10 +7775,11 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _render() {
+    this._flushAdminSessionInvalidation();
     if (!this.shadowRoot) return;
     const activeEditorElement = this.shadowRoot.activeElement;
     const privateFocus = activeEditorElement &&
-      [this._settingsHost, this._maintenanceHost, this._fileTransferHost, this._callHistoryHost]
+      [this._settingsHost, ...[...this._settingsEditors.values()].map((record) => record.host), this._maintenanceHost, this._fileTransferHost, this._callHistoryHost]
         .some((host) => host?.contains?.(activeEditorElement)) ? activeEditorElement : undefined;
     const privateSelection = privateFocus && typeof privateFocus.selectionStart === "number"
       ? [privateFocus.selectionStart, privateFocus.selectionEnd] : undefined;
@@ -7739,8 +7913,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     `;
     // Keep the same private editor DOM on telemetry refreshes. Never rehydrate
     // passwords or clear an in-progress draft because WAN statistics changed.
+    for (const [settingId, record] of this._settingsEditors) {
+      const placeholder = this.shadowRoot.querySelector(`[data-settings-section="${settingId}"]`);
+      if (placeholder && record.host && placeholder !== record.host) placeholder.replaceWith(record.host);
+      else if (placeholder && !record.host) this._renderSettingsEditor(record.editor);
+    }
     const settingsPlaceholder = this.shadowRoot.querySelector("[data-settings-editor-host]");
-    if (settingsPlaceholder && this._settingsHost && settingsPlaceholder !== this._settingsHost) {
+    if (settingsPlaceholder && this._settingsHost && settingsPlaceholder !== this._settingsHost &&
+        ![...this._settingsEditors].some(([id, record]) => record.host === this._settingsHost &&
+          this.shadowRoot.querySelector(`[data-settings-section="${id}"]`))) {
       settingsPlaceholder.replaceWith(this._settingsHost);
     }
     const maintenancePlaceholder = this.shadowRoot.querySelector("[data-maintenance-editor-host]");
@@ -7754,6 +7935,15 @@ export class SpeedportSmartPanel extends HTMLElement {
     const callHistoryPlaceholder = this.shadowRoot.querySelector("[data-call-history-editor-host]");
     if (callHistoryPlaceholder && this._callHistoryHost && callHistoryPlaceholder !== this._callHistoryHost) {
       callHistoryPlaceholder.replaceWith(this._callHistoryHost);
+    }
+    const trafficPlaceholder = this.shadowRoot.querySelector("[data-traffic-history-host]");
+    if (trafficPlaceholder) {
+      if (this._trafficHost && trafficPlaceholder !== this._trafficHost) {
+        this._trafficHost.innerHTML = trafficPlaceholder.innerHTML;
+        trafficPlaceholder.replaceWith(this._trafficHost);
+      } else this._trafficHost = trafficPlaceholder;
+      if (!this._trafficBinding) this._trafficBinding = bindTrafficHistory(this._trafficHost, this._trafficHistory);
+      this._trafficBinding.refresh();
     }
     restoreDetailsState(this.shadowRoot, renderState);
     if (this._pendingAction) {

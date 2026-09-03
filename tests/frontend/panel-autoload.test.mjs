@@ -14,7 +14,7 @@ const {SpeedportSmartPanel} = await import(
 const schemaVersion = Number(readFileSync(new URL(
   "../../custom_components/speedport_smart/frontend/speedport-smart-panel.js", import.meta.url,
 ), "utf8").match(/const PANEL_SCHEMA_VERSION = (\d+);/)[1]);
-const SETTING = {id: "telephony_hd_voice", title: "HD Voice", supported: true, available: true,
+const SETTING = {id: "qos_devices", title: "Device priority", supported: true, available: true,
   confirmation: "SAVE SETTINGS", fields: [{name: "hdvoice", label: "HD voice", kind: "boolean"}]};
 const ENTRY = "synthetic-entry";
 
@@ -46,6 +46,7 @@ function metadata({generation = 1, available = true, supported = true} = {}) {
 
 function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
+  panel._privateReadWait = async () => {};
   // Exercise real controller, navigation, metadata and private transport. Rendering
   // is inert here so no browser, entity refresh, or live router is involved.
   panel._render = () => {};
@@ -87,7 +88,7 @@ async function settled(panel) {
 }
 
 async function openPage(panel) {
-  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  await panel._selectAdminPage("network", "network_prioritization");
   await settled(panel);
 }
 
@@ -99,7 +100,7 @@ test("management generation recovery reopens exactly the selected page once", as
   await panel._loadMetadata(); await settled(panel);
   assert.equal(panel._settingsEditor.snapshot()?.loaded, true);
   assert.equal(reads().length, 2);
-  assert.equal(panel._currentAdminPage().page.id, "telephony_number_settings");
+  assert.equal(panel._currentAdminPage().page.id, "network_prioritization");
   await panel._loadMetadata(); await settled(panel);
   panel._render(); panel._render();
   assert.equal(reads().length, 2, "unchanged metadata and telemetry must not repeat the read");
@@ -110,7 +111,7 @@ test("generation transition during initial read discards old data then obtains o
   const {panel, setMetadata, setFetch, reads} = fixture();
   const pending = deferred();
   setFetch(async () => reads().length === 1 ? pending.promise : values());
-  const opening = panel._selectAdminPage("telephony", "telephony_number_settings");
+  const opening = panel._selectAdminPage("network", "network_prioritization");
   await turns();
   assert.equal(reads().length, 1);
   setMetadata(metadata({generation: 2}));
@@ -175,7 +176,7 @@ for (const change of ["page", "router", "view", "permission"]) {
       if (message.type.endsWith("/admin_read")) return response({entry_id: message.entry_id, schema_version: 2, sections: []});
       return reads().length === 1 ? pending.promise : values();
     });
-    const opening = panel._selectAdminPage("telephony", "telephony_number_settings");
+    const opening = panel._selectAdminPage("network", "network_prioritization");
     await turns();
     assert.equal(reads().length, 1);
     setMetadata(metadata({generation: 2}));
@@ -244,7 +245,7 @@ test("in-flight confirmed save is neither cleared nor followed by a recovery aut
   assert.equal(panel._settingsEditor.snapshot().status, "manual_required");
 });
 
-const SECONDARY_SETTING = {...SETTING, id: "telephony_dial_delay", title: "Dial delay",
+const SECONDARY_SETTING = {...SETTING, id: "qos_voice_priority", title: "Voice priority",
   fields: [...SETTING.fields, {name: "credential", label: "Credential", kind: "secret"}]};
 
 function secondaryMetadata(options = {}, {targeted = false} = {}) {
@@ -256,10 +257,10 @@ function secondaryMetadata(options = {}, {targeted = false} = {}) {
 
 test("recovery preserves the secondary form but discards its old revision, draft and secret", async () => {
   const {panel, setMetadata, setFetch, reads, calls} = fixture();
-  panel._metadata = secondaryMetadata();
   setFetch(async (message) => response({setting_id: message.setting_id,
     revision: `revision-${reads().length}`, expires_in: 120, values: {hdvoice: true}}));
   await openPage(panel);
+  panel._metadata = secondaryMetadata();
   await panel._openAdminSetting(SECONDARY_SETTING.id);
   const oldRevision = panel._settingsEditor.snapshot().revision;
   panel._settingsEditor.setValue("hdvoice", false);
@@ -269,7 +270,7 @@ test("recovery preserves the secondary form but discards its old revision, draft
   setMetadata(secondaryMetadata({generation: 2, available: false}));
   await panel._loadMetadata(); await settled(panel);
   assert.equal(panel._settingsEditor.snapshot(), null);
-  assert.deepEqual(panel._adminRecoverySelection, {pageId: "telephony_number_settings",
+  assert.deepEqual(panel._adminRecoverySelection, {pageId: "network_prioritization",
     settingId: SECONDARY_SETTING.id, targetId: null});
   assert.match(panel._notice, /Unsaved changes were discarded/);
   setMetadata(secondaryMetadata({generation: 3}));
@@ -281,7 +282,7 @@ test("recovery preserves the secondary form but discards its old revision, draft
   assert.deepEqual(view.dirty, []);
   assert.equal(view.confirmationReady, false);
   assert.equal(panel._adminRecoverySelection, undefined);
-  assert.deepEqual(reads().map((call) => call.setting_id), [SETTING.id, SECONDARY_SETTING.id, SECONDARY_SETTING.id]);
+  assert.deepEqual(reads().map((call) => call.setting_id), [SETTING.id, SECONDARY_SETTING.id, SETTING.id, SECONDARY_SETTING.id]);
   assert.ok(calls.every((call) => !call.type.endsWith("/save")));
   assert.doesNotMatch(JSON.stringify(view), /synthetic-private-draft/);
 });
@@ -289,13 +290,13 @@ test("recovery preserves the secondary form but discards its old revision, draft
 for (const vanished of [false, true]) {
   test(`targeted recovery ${vanished ? "does not substitute a vanished target" : "preserves the exact selected target after rediscovery"}`, async () => {
     const {panel, setMetadata, setFetch, reads, calls} = fixture();
-    panel._metadata = secondaryMetadata({}, {targeted: true});
     let targets = [{id: "7", label: "First"}, {id: "8", label: "Second"}];
     setFetch(async (message) => message.type.endsWith("/targets")
       ? response({setting_id: message.setting_id, targets})
       : response({setting_id: message.setting_id, target_id: message.target_id,
         revision: "target-revision", expires_in: 120, values: {hdvoice: true}}));
     await openPage(panel);
+    panel._metadata = secondaryMetadata({}, {targeted: true});
     await panel._openAdminSetting(SECONDARY_SETTING.id, {targetId: "8"});
     assert.equal(panel._settingsEditor.snapshot().targetId, "8");
     const count = reads().length;
@@ -306,17 +307,17 @@ for (const vanished of [false, true]) {
     assert.equal(view.setting.id, SECONDARY_SETTING.id);
     assert.equal(view.targetId, vanished ? null : "8");
     assert.equal(view.loaded, !vanished);
-    assert.equal(reads().length, count + Number(!vanished));
+    assert.equal(reads().length, count + 1 + Number(!vanished));
     if (vanished) assert.equal(view.status, "target_required");
     else assert.equal(reads().at(-1).target_id, "8");
     assert.equal(calls.filter((call) => call.type.endsWith("/targets")).length, 2);
     await panel._loadMetadata(); await settled(panel);
-    assert.equal(reads().length, count + Number(!vanished));
+    assert.equal(reads().length, count + 1 + Number(!vanished));
     if (vanished) {
       setMetadata(secondaryMetadata({generation: 3}, {targeted: true}));
       await panel._loadMetadata(); await settled(panel);
       assert.equal(panel._settingsEditor.snapshot().targetId, null);
-      assert.equal(reads().length, count, "another session change must not select a replacement target");
+      assert.equal(reads().filter((call) => call.target_id).length, 1, "another session change must not select a replacement target");
     }
     assert.ok(calls.every((call) => !call.type.endsWith("/save")));
   });
@@ -357,7 +358,6 @@ for (const loader of ["session recovery", "initial page loader"]) {
 
 test("a second session change during target rediscovery cannot replace the selected target", async () => {
   const {panel, setMetadata, setFetch, reads, calls} = fixture();
-  panel._metadata = secondaryMetadata({}, {targeted: true});
   const targets = [{id: "7", label: "First"}, {id: "8", label: "Second"}];
   const inventory = () => response({setting_id: SECONDARY_SETTING.id, targets});
   const pending = deferred();
@@ -369,9 +369,11 @@ test("a second session change during target rediscovery cannot replace the selec
       revision: "target-revision", expires_in: 120, values: {hdvoice: true}});
   });
   await openPage(panel);
+  panel._metadata = secondaryMetadata({}, {targeted: true});
   await panel._openAdminSetting(SECONDARY_SETTING.id, {targetId: "8"});
   setMetadata(secondaryMetadata({generation: 2}, {targeted: true}));
-  await panel._loadMetadata(); await turns();
+  await panel._loadMetadata();
+  for (let index = 0; index < 6 && panel._settingsEditor.snapshot()?.status !== "targets_loading"; index++) await turns();
   assert.equal(panel._settingsEditor.snapshot().status, "targets_loading");
   setMetadata(secondaryMetadata({generation: 3}, {targeted: true}));
   await panel._loadMetadata(); await turns();

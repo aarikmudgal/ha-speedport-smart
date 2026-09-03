@@ -80,27 +80,42 @@ class ConfigurationSession:
         if generation != self._generation:
             raise ConfigurationError("stale_settings")
         values = contract.read(raw)
-        self._grants = {
+        fingerprint = self._fingerprint(contract.revision(raw))
+        choices = contract.choices(raw) if contract.field_choices else None
+        revision = secrets.token_hex(24)
+        new_grant = _Grant(
+            contract.id,
+            contract.target_scope,
+            requester,
+            fingerprint,
+            self._clock() + _TTL,
+        )
+        # Complete every fallible read projection before replacing any approval.
+        # Page navigation may leave older grants behind, but never evict another
+        # administrator or browser session to admit the current page.
+        self._prune()
+        grants = {
             key: grant
             for key, grant in self._grants.items()
             if (grant.setting_id, grant.requester) != (contract.id, requester)
         }
-        if len(self._grants) >= _MAX_GRANTS:
-            raise ConfigurationError("too_many_editors")
-        revision = secrets.token_hex(24)
-        self._grants[revision] = _Grant(
-            contract.id,
-            contract.target_scope,
-            requester,
-            self._fingerprint(contract.revision(raw)),
-            self._clock() + _TTL,
-        )
+        if len(grants) >= _MAX_GRANTS:
+            oldest = min(
+                (key for key, grant in grants.items() if grant.requester == requester),
+                key=lambda key: grants[key].expires_at,
+                default=None,
+            )
+            if oldest is None:
+                raise ConfigurationError("too_many_editors")
+            del grants[oldest]
+        grants[revision] = new_grant
+        self._grants = grants
         return {
             "setting_id": contract.id,
             "revision": revision,
             "values": values,
             "expires_in": int(_TTL),
-            **({"choices": contract.choices(raw)} if contract.field_choices else {}),
+            **({"choices": choices} if choices is not None else {}),
         }
 
     async def consume(

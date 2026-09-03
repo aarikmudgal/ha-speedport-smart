@@ -2,6 +2,52 @@
 const READ_DOMAINS = new Set(["sensor", "binary_sensor", "device_tracker"]);
 const ENTITY_ID = /^(sensor|binary_sensor|device_tracker)\.[a-z0-9_]+$/;
 const INVALID_STATES = new Set(["", "unknown", "unavailable", "none", "null"]);
+const LINK_SPEED_UNITS = Object.freeze({
+  "bit/s": 1, bps: 1, "kbit/s": 1e3, kbps: 1e3,
+  "Mbit/s": 1e6, Mbps: 1e6, "Gbit/s": 1e9, Gbps: 1e9, "Tbit/s": 1e12,
+  "B/s": 8, "kB/s": 8e3, "MB/s": 8e6, "GB/s": 8e9,
+});
+
+function linkBitsPerSecond(value, unit = "bit/s") {
+  if (!Object.hasOwn(LINK_SPEED_UNITS, unit) || !["string", "number"].includes(typeof value)) return null;
+  if (typeof value === "string" && (value.length > 64 || !/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()))) return null;
+  const speed = Number(value) * LINK_SPEED_UNITS[unit];
+  return Number.isFinite(speed) && speed > 0 && speed <= Number.MAX_SAFE_INTEGER ? speed : null;
+}
+
+function formatLinkSpeed(speed) {
+  const units = ["bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"];
+  const index = Math.min(units.length - 1, Math.max(0, Math.floor(Math.log10(speed) / 3)));
+  return `${new Intl.NumberFormat("en", {maximumFractionDigits: 2}).format(speed / 1000 ** index)} ${units[index]}`;
+}
+
+function clientLinkSpeed(meta, state, entities, states) {
+  const findSpeed = (key) => {
+    const child = entities.find((candidate) => candidate.domain === "sensor" && candidate.translation_key === key &&
+      candidate.child_device?.kind === "client" && candidate.child_device.device_id === meta.child_device.device_id);
+    const value = currentState(states, child);
+    // Sensor units are required. The tracker attribute is explicitly named in bits/s.
+    return typeof value?.attributes?.unit_of_measurement === "string"
+      ? linkBitsPerSecond(value.state, value.attributes.unit_of_measurement) : null;
+  };
+  const download = findSpeed("download_link_speed");
+  const upload = findSpeed("upload_link_speed");
+  if (download !== null && upload !== null && download === upload) {
+    const label = formatLinkSpeed(download);
+    return {label, description: `Link speed ${label}`};
+  }
+  if (download !== null || upload !== null) {
+    const directions = [["↓", "download", download], ["↑", "upload", upload]].filter(([, , value]) => value !== null);
+    return {
+      label: directions.map(([arrow, , value]) => `${arrow} ${formatLinkSpeed(value)}`).join(" · "),
+      description: `Link speed ${directions.map(([, direction, value]) => `${direction} ${formatLinkSpeed(value)}`).join(", ")}`,
+    };
+  }
+  const generic = findSpeed("link_speed") ?? linkBitsPerSecond(state.attributes?.link_speed_bps);
+  if (generic === null) return {label: "Link speed not reported", description: "Link speed not reported"};
+  const label = formatLinkSpeed(generic);
+  return {label, description: `Link speed ${label}`};
+}
 
 function escape(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) =>
@@ -113,9 +159,11 @@ export function renderDashboardOverview({router, states = {}, trafficMarkup = ""
       const name = meta.child_device.name || labelFor(meta, state, "Network device");
       const online = state.state === "home";
       const status = online ? "Connected" : state.state === "not_home" ? "Disconnected" : "Unavailable";
-      return `<li><button type="button" data-more-info="${escape(meta.entity_id)}" class="overview-device" aria-label="${escape(name)}: ${status}">
+      const speed = online ? clientLinkSpeed(meta, state, entities, states) : null;
+      return `<li><button type="button" data-more-info="${escape(meta.entity_id)}" class="overview-device" aria-label="${escape(name)}: ${status}${speed ? `; ${escape(speed.description)}` : ""}">
         <ha-icon icon="mdi:ethernet" aria-hidden="true"></ha-icon><span>${escape(name)}</span>
-        <small class="${online ? "is-online" : ""}">${status}</small></button></li>`;
+        <i class="overview-connection-dot${online ? " is-online" : ""}" title="${status}" aria-hidden="true"></i>
+        <small class="overview-device-link-speed"${online ? ' title="Negotiated link speed, not current traffic"' : ""}>${escape(speed?.label || status)}</small></button></li>`;
     }).join("")}</ul>` : '<p class="overview-empty">Only devices explicitly reported as Ethernet appear here.</p>'}</section>` : "";
   const cards = [wifiCard, dslCard, mobileCard, lanCard].filter(Boolean).join("");
   return `<div class="dashboard-overview">
@@ -155,7 +203,9 @@ export const DASHBOARD_OVERVIEW_STYLES = `
   .overview-device > span { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
   .overview-device > ha-icon { color: var(--secondary-text-color); flex: none; }
   .overview-device small { color: var(--secondary-text-color); font-size: 12px; }
-  .overview-device small.is-online { color: var(--success-color, var(--primary-color)); }
+  .overview-device-link-speed { text-align: end; overflow-wrap: anywhere; max-width: 60%; font-variant-numeric: tabular-nums; }
+  .overview-connection-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--secondary-text-color); }
+  .overview-connection-dot.is-online { background: var(--success-color, var(--primary-color)); }
   .dashboard-overview button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 4px; border-radius: 6px; }
   @media (hover: hover) { .dashboard-overview button:hover { color: var(--primary-color); } }
   @media (max-width: 600px) { .dashboard-overview, .overview-grid { gap: 14px; } .overview-card { border-radius: 18px; } .overview-wifi-band { padding: 14px; } }

@@ -21,6 +21,57 @@ test("opening and rendering never load or export", () => {
   assert.equal(calls, 0); assert.deepEqual(controller.entries(), []);
 });
 
+for (const [category, title] of [["missed", "Missed calls"], ["taken", "Received calls"], ["dialed", "Dialed outgoing calls"]]) {
+  test(`native ${category} page has its own title and Refresh without a second category selector`, async () => {
+    const calls = [];
+    const controller = createCallHistoryViewController({request: async (message) => { calls.push(message); return response(category); }});
+    controller.open({entryId: "entry-a", category});
+    const ready = renderCallHistoryView(controller, {pageMode: true});
+    assert.ok(ready.includes(`<h3 id="sp-call-history-title">${title}</h3>`));
+    assert.doesNotMatch(ready, /data-call-history-category|<select|Choose a category|Nothing loads automatically|Load private list/);
+    assert.match(ready, /Opening this page reads its private call list automatically/);
+    assert.match(ready, /never enter Recorder history/);
+    assert.match(ready, /Downloads happen only when you choose/);
+    assert.match(ready, /data-call-history-action="load"[^>]*>Refresh/);
+    assert.match(ready, /data-call-history-action="export"[^>]*>Download fresh CSV/);
+    assert.equal(calls.length, 0);
+    await controller.load();
+    const loaded = renderCallHistoryView(controller, {pageMode: true});
+    assert.ok(loaded.includes(`<caption>${title}</caption>`));
+    assert.equal(loaded.includes("Duration (seconds)"), category !== "missed");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].category, category);
+    assert.equal(calls[0].export, false);
+  });
+}
+
+test("manual call-list mode retains category selection and explicit-load wording", async () => {
+  const controller = createCallHistoryViewController({request: async () => response()});
+  controller.open({entryId: "entry-a", category: "taken"});
+  const ready = renderCallHistoryView(controller);
+  assert.match(ready, /<h3 id="sp-call-history-title">Private call history<\/h3>/);
+  assert.match(ready, /data-call-history-category/);
+  assert.match(ready, /Choose a category, then load it explicitly/);
+  assert.match(ready, /Nothing loads automatically/);
+  assert.match(ready, /data-call-history-action="load"[^>]*>Load private list/);
+  await controller.load();
+  assert.match(renderCallHistoryView(controller), /<caption>Answered calls<\/caption>/);
+});
+
+test("native call-list page escapes private rows and never copies records into its snapshot", async () => {
+  const controller = createCallHistoryViewController({request: async () => response("dialed", [{...row,
+    remote_party: '<img src=x onerror="alert(1)">', local_party: "<script>PRIVATE</script>"}])});
+  controller.open({entryId: "entry-a", category: "dialed"}); await controller.load();
+  const html = renderCallHistoryView(controller, {pageMode: true});
+  assert.doesNotMatch(html, /<img|<script>/);
+  assert.match(html, /&lt;img/);
+  assert.match(html, /&lt;script&gt;PRIVATE/);
+  assert.doesNotMatch(JSON.stringify(controller.snapshot()), /PRIVATE|remote_party|local_party/);
+  controller.close();
+  assert.equal(renderCallHistoryView(controller, {pageMode: true}), "");
+  assert.deepEqual(controller.entries(), []);
+});
+
 test("explicit GET projects private rows but excludes them from snapshot", async () => {
   const calls = [];
   const controller = createCallHistoryViewController({request: async (message) => { calls.push(message); return response(); }});

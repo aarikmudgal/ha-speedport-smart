@@ -665,6 +665,113 @@ test("Wi-Fi identity groups each band before shared security without hidden cred
   assert.doesNotMatch(html.match(/<input type="password"[^>]*>/)[0], /\svalue=/);
 });
 
+const INTERNET_ACCESS_FIELDS = ["isp_selection", "t_number", "t_mbnr0", "t_mbnr1", "t_mbnr2", "t_mbnr3",
+  "t_password", "t_callident", "zustart_user", "zustart_password", "other_name", "other_user", "other_password",
+  "other_MTU", "other_vlan", "other_vlanid", "other_ip", "fixed_ipv4_address"];
+const INTERNET_DNS_FIELDS = ["other_dns", "dns_ipv4_primary", "dns_ipv4_secondary", "other_dns6", "other_dns6_prim", "other_dns6_sek"];
+function pageField(name) {
+  const choices = {isp_selection: ["0", "89", "1", "99"], led_mode: ["0", "1"], wlan_band: ["0", "1", "2"], wlan_power: ["0", "1", "2"]}[name];
+  if (choices) return {name, label: name, kind: "enum", choices: choices.map((value) => ({value, label: `${name} ${value}`}))};
+  const kind = name.endsWith("password") || name === "new_secret" ? "secret" :
+    ["other_vlan", "other_ip", "other_dns", "other_dns6", "use_wlan", "use_usb"].includes(name) ? "boolean" :
+      ["other_MTU", "other_vlanid"].includes(name) ? "integer" : "text";
+  return {name, label: name, kind};
+}
+function pageGroups(html) {
+  return new Map(html.split('<fieldset class="sp-settings-group">').slice(1).map((chunk) =>
+    [chunk.match(/^<legend>([^<]+)<\/legend>/)[1], [...chunk.matchAll(/data-setting-field="([^"]+)"/g)].map((match) => match[1])]));
+}
+async function groupedPage(settingId, fields, supplied = {}) {
+  const values = Object.fromEntries(fields.map((field) => [field.name,
+    field.kind === "boolean" ? true : field.kind === "integer" ? 1 : field.kind === "enum" ? field.choices[0].value :
+      field.kind === "secret" ? "PRIVATE-RESPONSE-SECRET" : "Existing"]));
+  Object.assign(values, supplied);
+  const calls = [];
+  const controller = createConfigurationEditorController({request: async (message) => {
+    calls.push(structuredClone(message));
+    return message.type.endsWith("/read") ? {...RESPONSE, setting_id: settingId, values} : {status: "verified"};
+  }});
+  await controller.open({entryId: "entry-a", setting: {...SETTING, id: settingId, fields}, autoLoad: true});
+  assert.equal(controller.snapshot().loaded, true);
+  return {controller, html: renderConfigurationEditor(controller, {pageMode: true}), calls};
+}
+
+test("Internet page separates native Access data and DNS server with every declared field once", async () => {
+  const fields = [...INTERNET_DNS_FIELDS, ...INTERNET_ACCESS_FIELDS].map(pageField);
+  const {controller, html, calls} = await groupedPage("internet_connection", fields);
+  const groups = pageGroups(html);
+  assert.deepEqual([...groups.keys()], ["Access data", "DNS server"]);
+  assert.deepEqual(groups.get("Access data"), INTERNET_ACCESS_FIELDS);
+  assert.deepEqual(groups.get("DNS server"), INTERNET_DNS_FIELDS);
+  const rendered = [...groups.values()].flat();
+  assert.equal(rendered.length, fields.length);
+  assert.equal(new Set(rendered).size, fields.length);
+  assert.deepEqual([...rendered].sort(), fields.map((field) => field.name).sort());
+  assert.doesNotMatch(html, /PRIVATE-RESPONSE-SECRET/);
+  assert.equal((html.match(/<input type="password"/g) ?? []).length, 3);
+  for (const input of html.match(/<input type="password"[^>]*>/g)) assert.doesNotMatch(input, /\svalue=/);
+  assert.equal(controller.snapshot().values.t_password, undefined);
+  assert.equal(controller.snapshot().values.other_password, undefined);
+  assert.deepEqual(controller.snapshot().setting.fields.find((field) => field.name === "isp_selection").choices.map((choice) => choice.value), ["0", "89", "1", "99"]);
+  assert.equal(calls.length, 1);
+});
+
+test("native page groups omit absent sections and leave unknown fields visible exactly once", async () => {
+  for (const id of ["internet_connection", "system_led_schedule", "system_energy"]) {
+    const fields = [pageField("future_native_flag"), pageField("new_secret")];
+    const {html} = await groupedPage(id, fields);
+    assert.deepEqual([...pageGroups(html)], [["Settings", ["future_native_flag"]], ["Credentials", ["new_secret"]]]);
+    assert.doesNotMatch(html, /PRIVATE-RESPONSE-SECRET/);
+  }
+  const {html} = await groupedPage("internet_connection", [pageField("dns_ipv4_primary"), pageField("other_dns_future"), pageField("new_secret")]);
+  assert.deepEqual([...pageGroups(html)], [["DNS server", ["dns_ipv4_primary"]], ["Settings", ["other_dns_future"]], ["Credentials", ["new_secret"]]]);
+  assert.doesNotMatch(html, /<legend>Access data/);
+});
+
+test("LED page keeps mode and both native time fields together without changing24:00", async () => {
+  const fields = ["led_mode", "led_from", "led_to"].map(pageField);
+  const {controller, html} = await groupedPage("system_led_schedule", fields, {led_mode: "1", led_from: "22:00", led_to: "24:00"});
+  assert.deepEqual([...pageGroups(html)], [["Display mode for LEDs", ["led_mode", "led_from", "led_to"]]]);
+  assert.match(html, /data-setting-field="led_to"[^>]*value="24:00"/);
+  assert.equal(controller.snapshot().values.led_to, "24:00");
+  assert.doesNotMatch(html, /data-setting-schedule-group/);
+});
+
+test("energy page separates the native Wi-Fi network and USB port without duplicate controls", async () => {
+  const fields = ["use_usb", "use_wlan", "wlan_band", "wlan_power", "future_energy_option"].map(pageField);
+  const {html} = await groupedPage("system_energy", fields);
+  assert.deepEqual([...pageGroups(html)], [["Wi-Fi network", ["use_wlan", "wlan_band", "wlan_power"]],
+    ["USB port", ["use_usb"]], ["Settings", ["future_energy_option"]]]);
+  assert.equal((html.match(/data-setting-field=/g) ?? []).length, fields.length);
+});
+
+test("native grouping does not alter secret lifecycle, draft changes or save payload", async () => {
+  const {controller, calls} = await groupedPage("internet_connection", [...INTERNET_ACCESS_FIELDS, ...INTERNET_DNS_FIELDS].map(pageField));
+  controller.setValue("other_user", "Changed PPPoE user");
+  controller.setValue("other_password", "PRIVATE-ENTERED-SECRET");
+  const html = renderConfigurationEditor(controller, {pageMode: true});
+  assert.doesNotMatch(html, /PRIVATE-ENTERED-SECRET|PRIVATE-RESPONSE-SECRET/);
+  assert.equal(controller.snapshot().values.other_user, "Changed PPPoE user");
+  assert.deepEqual(controller.snapshot().dirty, ["other_user"]);
+  controller.setValue("other_password", "New explicit password");
+  controller.setValue("dns_ipv4_primary", "192.0.2.53");
+  controller.setConfirmation("SAVE SETTINGS");
+  assert.equal(await controller.save(), true);
+  assert.deepEqual(calls[1].changes, {other_user: "Changed PPPoE user", other_password: "New explicit password", dns_ipv4_primary: "192.0.2.53"});
+  assert.match(html, /data-setting-action="refresh"/);
+  assert.match(html, /data-setting-action="save"/);
+  assert.match(html, /data-setting-action="cancelChanges"/);
+});
+
+test("legacy rendering remains ungrouped and preserves native metadata order", async () => {
+  const fields = ["other_dns", "other_user", "other_password", "dns_ipv4_primary"].map(pageField);
+  const {controller} = await groupedPage("internet_connection", fields);
+  const html = renderConfigurationEditor(controller);
+  assert.deepEqual([...html.matchAll(/data-setting-field="([^"]+)"/g)].map((match) => match[1]), fields.map((field) => field.name));
+  assert.doesNotMatch(html, /<fieldset class="sp-settings-group"/);
+  assert.doesNotMatch(html, /PRIVATE-RESPONSE-SECRET/);
+});
+
 test("weekly time sections retain blank windows and 24:00 endpoints", async () => {
   const fields = [
     {name: "wlan_timerule", label: "Mode", kind: "enum", choices: [{value: "2", label: "Weekly"}]},

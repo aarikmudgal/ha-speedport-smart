@@ -17,6 +17,10 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   existing entity history and statistics.
 - Automatic selected-page settings recovery after management-session changes
   or restored access, with stale-read cancellation and no automatic writes.
+- Mouse, touch and keyboard inspection of WAN history samples, showing observed
+  speeds and timestamps without filling gaps with invented values.
+- Actual per-device LAN link rates in the overview, with directional rates
+  when reported and an explicit missing-speed state.
 
 - DHCP and SSDP discovery hints with private-unicast IPv4 filtering, an exact
   captured SSDP fingerprint, a public HTTP status preflight, user confirmation,
@@ -71,14 +75,15 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   storage.
 - A responsive Administration view organized into the six router tabs Overview,
   Status, Internet, Telephony, Network and System, with contextual left
-  navigation and a mobile page menu. Its 48 content pages and Wi-Fi navigation
-  group map 120 existing router
+  navigation and a mobile page menu. Its 69 content pages and 13 navigation
+  groups map 120 existing router
   feature entries and 110 existing settings editors. These navigation counts
   do not imply that every feature is writable or supported. The organization
-  follows the official Smart 4R manual while using Home Assistant's theme;
-  the separate Dashboard remains unchanged.
-- Page-local automatic reads for the selected settings form and existing
-  target, grouped Wi-Fi and schedule fields, and explicit Refresh, Save changes
+  follows a read-only audit of all 69 real-router screens, including the
+  sidebar-only Prioritization page, while using Home Assistant's theme.
+- Page-local automatic reads for each existing settings section and selected
+  target, with separate inline forms, paced requests, independent drafts,
+  grouped Wi-Fi and schedule fields, and explicit Refresh, Save changes
   and Cancel changes controls. Saves retain exact typed confirmation,
   requester-bound revisions and expiry checks; secrets are never prefilled.
   Dirty target changes require discard confirmation. Navigation and failed
@@ -117,6 +122,15 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Fixed
 
+- Native call-list pages load their own category automatically. Concurrent
+  settings saves blocked before dispatch now explicitly report that nothing
+  was sent; session recovery preserves the outcome of an active save.
+- Rapid navigation no longer exhausts settings revisions left by previously
+  visited pages: the bounded store replaces only the oldest revision owned by
+  the same administrator and login session. Failed read projections preserve
+  existing approvals; expired or discarded revisions never authorize writes.
+- The parental-rule display setting now appears under Child protection - Time
+  rules, matching the router's Display switch, instead of Energy-saving mode.
 - Structured private drafts and call-history results survive ordinary WAN
   telemetry rendering, but are cleared on navigation, router/user changes and
   disconnect. Exact schedule end time `24:00` is supported without accepting

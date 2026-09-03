@@ -29,7 +29,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 24, routers: [first, second]};
+  panel._metadata = {schema_version: 25, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -174,4 +174,56 @@ test("actual panel render is read-only and contains graph plus headlines without
   assert.ok(html.includes('data-more-info="sensor.a_wifi"'));
   assert.doesNotMatch(html, /data-control=|data-open-setting=|Private admin result|data-admin-feature=/);
   assert.equal(calls.length, before);
+});
+
+test("actual panel keeps one graph binding on a stable host and disposes it on every scope exit", async () => {
+  const {panel, calls} = fixture();
+  const shadow = panel.shadowRoot;
+  let currentHost;
+  Object.defineProperty(shadow, "innerHTML", {
+    set(value) {
+      this.html = value;
+      if (!value.includes("data-traffic-history-host")) {currentHost = undefined; return;}
+      currentHost = {
+        innerHTML: value, listeners: new Map(),
+        addEventListener(name, handler) {this.listeners.set(name, handler);},
+        removeEventListener(name, handler) {if (this.listeners.get(name) === handler) this.listeners.delete(name);},
+        querySelector() {},
+        replaceWith(host) {currentHost = host;},
+      };
+    },
+    get() {return this.html ?? "";},
+  });
+  shadow.querySelector = (selector) => selector === "[data-traffic-history-host]" ? currentHost : undefined;
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const first = panel._trafficHost;
+  const binding = panel._trafficBinding;
+  assert.equal(first.listeners.size, 8);
+  const listeners = [...first.listeners];
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(panel._trafficHost, first);
+  assert.equal(panel._trafficBinding, binding);
+  assert.deepEqual([...first.listeners], listeners);
+  assert.equal(calls.length, 1);
+  panel._selectRouter("entry-b");
+  assert.equal(first.listeners.size, 0);
+  assert.equal(first.innerHTML, "");
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const second = panel._trafficHost;
+  assert.notEqual(second, first);
+  assert.equal(second.listeners.size, 8);
+  panel.hass = {...panel._hass, user: {id: "user-b", is_admin: false}};
+  assert.equal(second.listeners.size, 0);
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const third = panel._trafficHost;
+  panel._selectView("administration");
+  assert.equal(third.listeners.size, 0);
+  assert.equal(panel._trafficHost, undefined);
+  panel._selectView("dashboard");
+  SpeedportSmartPanel.prototype._render.call(panel);
+  const fourth = panel._trafficHost;
+  panel.isConnected = false; panel.disconnectedCallback();
+  assert.equal(fourth.listeners.size, 0);
+  assert.equal(panel._trafficHost, undefined);
 });

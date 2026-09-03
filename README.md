@@ -166,6 +166,8 @@ The panel:
 - adapts to desktop and mobile layouts
 - keeps **Dashboard** focused on live traffic graphs, paired Wi-Fi band
   summaries, DSL link speeds, mobile receiver signal and wired devices
+- supports graph hover, touch and keyboard sample inspection, and displays
+  actual reported LAN link speeds rather than a generic connected label
 - presents reviewed controls and detailed router settings in **Administration**
 - keeps all entities and their recorded history available in Home Assistant's
   standard device pages, linked from Dashboard
@@ -177,17 +179,19 @@ The panel:
 
 Administration now follows the six router tabs **Overview**, **Status**,
 **Internet**, **Telephony**, **Network** and **System**, with contextual left
-navigation on desktop and a page menu on mobile. Its 48 content pages and Wi-Fi
-navigation group map 120 existing
+navigation on desktop and a page menu on mobile. Its 69 content pages and 13
+navigation groups map 120 existing
 router feature entries and 110 existing settings editors. Those counts describe
 navigation coverage, not 120 writable or universally supported capabilities.
-The organization follows the official
-[Smart 4R manual](https://www.telekom.de/hilfe/downloads/bedienungsanleitung-speedport-smart-4r),
+The organization follows a [read-only audit of the real router's complete
+navigation](docs/NATIVE_ADMIN_NAVIGATION.md),
 adapted to Home Assistant rather than copied pixel for pixel.
 
-Opening an available form reads its current values automatically. Choosing
-another form on the page or another existing target also reads that selection;
-it never saves it. **Save changes** still requires the exact typed confirmation,
+Opening a page reads its available existing-setting sections automatically,
+with each form displayed inline and requests paced to protect the router
+session. Selecting another existing target reads that target; it never saves
+it. Contextual creation, deletion and maintenance actions remain explicit.
+**Save changes** still requires the exact typed confirmation,
 and expired sessions or revisions require a fresh read. Secrets are not
 prefilled. **Refresh** reloads current state; **Cancel changes** restores the
 last loaded values without sending a router request. When management access

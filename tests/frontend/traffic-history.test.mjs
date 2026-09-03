@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  bindTrafficHistory,
   createTrafficHistoryController,
   renderTrafficHistory,
   trafficRateMbit,
@@ -400,4 +401,320 @@ test("invalid renderer snapshots stay empty", () => {
   for (const view of [null, {}, {start: "1", end: END}, {start: END, end: END}, {start: -Infinity, end: END}])
     assert.equal(renderTrafficHistory(view), "");
   assert.throws(() => createTrafficHistoryController({}), /invalid_history_controller/);
+});
+
+function inspectionFixture(initial) {
+  let view = initial;
+  const listeners = new Map();
+  let dom;
+  const host = {
+    addEventListener(name, handler) { listeners.set(name, handler); },
+    removeEventListener(name, handler) { if (listeners.get(name) === handler) listeners.delete(name); },
+    querySelector(selector) { return ({"[data-traffic-plot]": dom.plot, "[data-traffic-tooltip]": dom.tooltip, "[data-traffic-crosshair]": dom.line})[selector]; },
+  };
+  const replaceDOM = () => {
+    const tooltip = {hidden: true, textContent: "", style: {}, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }};
+    Object.defineProperty(tooltip, "innerHTML", {set() { throw new Error("tooltip_html_forbidden"); }});
+    const line = {hidden: true, style: {}};
+    const plot = {dataset: {trafficLanguage: "en", trafficDownload: "Download", trafficUpload: "Upload"}, focused: false,
+      contains(target) { return target === this || target === dom.svg; },
+      getBoundingClientRect() { return {left: 40, width: 900}; },
+      setPointerCapture(id) { this.capture = id; }, releasePointerCapture(id) { this.released = id; this.capture = null; },
+      focus() {
+        if (this.focused) return;
+        this.focused = true; listeners.get("focusin")?.({target: this});
+      },
+    };
+    dom = {plot, tooltip, line, svg: {}};
+    return dom;
+  };
+  replaceDOM();
+  const bind = bindTrafficHistory(host, () => view);
+  return {host, bind, listeners, dom: () => dom, replaceDOM, view: () => view, setView: (value) => { view = value; },
+    event(name, options = {}) {
+      const event = {target: dom.plot, pointerType: "mouse", pointerId: 1, clientX: 490, prevented: false,
+        preventDefault() { this.prevented = true; }, ...options};
+      listeners.get(name)?.(event); return event;
+    },
+    at(time, name = "pointermove", options = {}) {
+      return this.event(name, {clientX: 40 + (time - view.start) / TRAFFIC_HISTORY_WINDOW_MS * 900, ...options});
+    },
+  };
+}
+const inspectionView = (down, up = []) => ({entryId: "entry-a", userId: "user-a", start: END - TRAFFIC_HISTORY_WINDOW_MS,
+  end: END, staleAfterMs: 120000, series: {download: {points: down}, upload: {points: up}}});
+const point = (time, value, breakBefore = false) => ({time, value, breakBefore});
+
+test("inspection hooks are keyboard-focusable and labels remain escaped", async () => {
+  const {controller} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  const markup = renderTrafficHistory(controller.snapshot(), {downloadLabel: '<img src=x onerror="alert(1)">'});
+  assert.match(markup, /data-traffic-plot[^>]*tabindex="0" role="group"/);
+  assert.match(markup, /data-traffic-download="&lt;img/);
+  assert.match(markup, /aria-describedby="sp-traffic-inspection"/);
+  assert.match(markup, /data-traffic-tooltip role="status" aria-live="off" aria-atomic="true" hidden/);
+  assert.match(markup, /data-traffic-crosshair aria-hidden="true" hidden/);
+  assert.match(markup, /Arrow keys/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /touch-action:pan-y/);
+});
+
+test("hover reports formatted observed speeds and exact timestamps instead of interpolated values", () => {
+  const time = END - 30000;
+  const fixture = inspectionFixture(inspectionView([point(time, 10.123456789), point(END, 30)],
+    [point(time, 0), point(END, 8)]));
+  fixture.at(time + 10000);
+  const {tooltip, line} = fixture.dom();
+  assert.equal(tooltip.hidden, false);
+  assert.match(tooltip.textContent, /Download: 10.123 Mbit\/s/);
+  assert.match(tooltip.textContent, /Upload: 0 Mbit\/s/);
+  assert.equal(tooltip.attributes["aria-live"], "off");
+  const date = new Intl.DateTimeFormat("en", {year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit",
+    minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hourCycle: "h23", timeZoneName: "short"}).format(time);
+  assert.ok(tooltip.textContent.includes(date));
+  assert.equal(tooltip.textContent.split(date).length - 1, 1);
+  assert.doesNotMatch(tooltip.textContent.split("\n").slice(1).join("\n"), / · /);
+  assert.ok(Math.abs(parseFloat(line.style.left) - 96.66666666666667) < 1e-8);
+  assert.doesNotMatch(tooltip.textContent, /16\.66|2\.66/);
+});
+
+test("different direction observation times are both disclosed, never silently synchronized", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 30000, 1), point(END, 2)],
+    [point(END - 25000, 3), point(END, 4)]));
+  fixture.at(END - 24000);
+  const lines = fixture.dom().tooltip.textContent.split("\n");
+  assert.match(lines[1], /Download: 1 Mbit\/s/);
+  assert.match(lines[2], /Upload: 3 Mbit\/s/);
+  assert.ok(lines[1].includes(" · "));
+  assert.ok(!lines[2].includes(" · "));
+});
+
+test("tooltip keeps bounded intrinsic width at left, right and mobile chart edges", () => {
+  const tooltipCSS = TRAFFIC_HISTORY_STYLES.match(/\.sp-traffic-tooltip\{([^}]+)\}/)[1];
+  assert.match(tooltipCSS, /(?:^|;)width:max-content(?:;|$)/);
+  assert.match(tooltipCSS, /max-width:min\(360px,100%\)/);
+  // For the actual left/translation values set by the binding, intrinsic width
+  // capped to the plot gives x = ratio * (plotWidth - tooltipWidth), including End.
+  for (const plotWidth of [240, 320, 640, 1200]) for (const ratio of [0, 0.5, 0.97, 1]) {
+    const time = END - TRAFFIC_HISTORY_WINDOW_MS + ratio * TRAFFIC_HISTORY_WINDOW_MS;
+    const fixture = inspectionFixture(inspectionView([point(time, 12.345)]));
+    fixture.dom().plot.getBoundingClientRect = () => ({left: 40, width: plotWidth});
+    fixture.event("pointermove", {clientX: 40 + ratio * plotWidth});
+    if (ratio === 1) fixture.event("keydown", {key: "End"});
+    const {style} = fixture.dom().tooltip;
+    const tooltipWidth = Math.min(330, 360, plotWidth);
+    const translate = Number(style.transform.match(/translateX\(-([\d.]+)%\)/)[1]) / 100;
+    const left = parseFloat(style.left) / 100 * plotWidth - translate * tooltipWidth;
+    assert.ok(tooltipWidth >= Math.min(330, plotWidth));
+    assert.ok(left >= -1e-8, `${plotWidth}px, ${ratio}: left overflow`);
+    assert.ok(left + tooltipWidth <= plotWidth + 1e-8, `${plotWidth}px, ${ratio}: right overflow`);
+  }
+});
+
+test("tooltip precision stays readable without rounding small nonzero traffic to zero", () => {
+  for (const [value, display] of [[12.345678901234, "12.346"], [0, "0"], [0.00100001, "0.001"],
+    [0.000123456, "0.000123"], [0.00000000000123456, "0.00000000000123"]]) {
+    const fixture = inspectionFixture(inspectionView([point(END, value)]));
+    fixture.at(END);
+    assert.equal(fixture.dom().tooltip.textContent.split("\n")[1], `Download: ${display} Mbit/s`);
+  }
+});
+
+test("hover inside unavailable or long unobserved gaps never reaches across them", () => {
+  for (const down of [[point(END - 180000, 1), point(END - 120000, null), point(END - 30000, 3)],
+    [point(END - 240000, 1), point(END - 30000, 3)],
+    [point(END - 100000, 1), point(END - 30000, 3, true)]]) {
+    const fixture = inspectionFixture(inspectionView(down));
+    fixture.at(END - 70000);
+    assert.match(fixture.dom().tooltip.textContent, /Download: No sample/);
+    assert.match(fixture.dom().tooltip.textContent, /Upload: No sample/);
+    assert.doesNotMatch(fixture.dom().tooltip.textContent, /Mbit\/s/);
+    assert.equal(fixture.dom().line.hidden, false);
+  }
+});
+
+test("a lone actual point is selectable near its marker without turning distant gaps into values", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 10000, 5)]));
+  fixture.at(END - 12000);
+  assert.match(fixture.dom().tooltip.textContent, /Download: 5 Mbit\/s/);
+  fixture.at(END - 70000);
+  assert.match(fixture.dom().tooltip.textContent, /Download: No sample/);
+});
+
+test("overlapping sparse marker hit areas select the nearest actual observation", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 10000, 1), point(END - 5000, 2, true)]));
+  fixture.at(END - 4000);
+  assert.match(fixture.dom().tooltip.textContent, /Download: 2 Mbit\/s/);
+});
+
+test("pointer inspection is bounded to the plot and leaves outside events untouched", () => {
+  const fixture = inspectionFixture(inspectionView([point(END, 7)]));
+  fixture.event("pointermove", {target: {}, clientX: 940});
+  assert.equal(fixture.dom().tooltip.hidden, true);
+  fixture.event("pointermove", {clientX: Infinity});
+  assert.equal(fixture.dom().tooltip.hidden, true);
+  fixture.dom().plot.getBoundingClientRect = () => ({left: 40, width: 0});
+  fixture.event("pointermove");
+  assert.equal(fixture.dom().tooltip.hidden, true);
+  fixture.dom().plot.getBoundingClientRect = () => ({left: 40, width: 900});
+  fixture.at(END, "pointermove", {target: fixture.dom().svg});
+  assert.equal(fixture.dom().tooltip.hidden, false);
+  fixture.event("pointerout", {relatedTarget: fixture.dom().svg});
+  assert.equal(fixture.dom().tooltip.hidden, false);
+  fixture.event("pointerout", {relatedTarget: {}});
+  assert.equal(fixture.dom().tooltip.hidden, true);
+});
+
+test("touch tap and drag retain selected values and release pointer capture", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 30000, 1), point(END, 2)]));
+  fixture.at(END - 30000, "pointerdown", {pointerType: "touch", pointerId: 7});
+  assert.equal(fixture.dom().plot.capture, 7);
+  assert.match(fixture.dom().tooltip.textContent, /Download: 1 Mbit\/s/);
+  fixture.at(END, "pointermove", {pointerType: "touch", pointerId: 99});
+  assert.match(fixture.dom().tooltip.textContent, /Download: 1 Mbit\/s/);
+  fixture.at(END, "pointermove", {pointerType: "touch", pointerId: 7});
+  assert.match(fixture.dom().tooltip.textContent, /Download: 2 Mbit\/s/);
+  fixture.event("pointerup", {pointerType: "touch", pointerId: 7});
+  assert.equal(fixture.dom().plot.released, 7);
+  fixture.event("pointerout", {pointerType: "touch", relatedTarget: {}});
+  assert.equal(fixture.dom().tooltip.hidden, false);
+  fixture.event("pointercancel", {pointerType: "touch", pointerId: 7});
+  assert.equal(fixture.dom().tooltip.hidden, true);
+});
+
+test("keyboard navigation visits actual times, handles boundaries and Escape", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 60000, 1), point(END, 3)], [point(END - 30000, 2)]));
+  fixture.event("focusin");
+  assert.match(fixture.dom().tooltip.textContent, /Download: 3 Mbit\/s/);
+  const first = fixture.event("keydown", {key: "Home"});
+  assert.equal(first.prevented, true);
+  assert.match(fixture.dom().tooltip.textContent, /Download: 1 Mbit\/s/);
+  fixture.event("keydown", {key: "ArrowLeft"});
+  assert.match(fixture.dom().tooltip.textContent, /Download: 1 Mbit\/s/);
+  fixture.event("keydown", {key: "ArrowRight"});
+  assert.match(fixture.dom().tooltip.textContent, /Upload: 2 Mbit\/s/);
+  assert.equal(fixture.dom().tooltip.attributes["aria-live"], "polite");
+  fixture.event("keydown", {key: "End"});
+  fixture.event("keydown", {key: "ArrowRight"});
+  assert.match(fixture.dom().tooltip.textContent, /Download: 3 Mbit\/s/);
+  fixture.event("keydown", {key: "ArrowLeft"});
+  assert.match(fixture.dom().tooltip.textContent, /Upload: 2 Mbit\/s/);
+  assert.equal(fixture.event("keydown", {key: "Tab"}).prevented, false);
+  fixture.event("keydown", {key: "Escape"});
+  assert.equal(fixture.dom().tooltip.hidden, true);
+  assert.equal(fixture.dom().tooltip.textContent, "");
+  assert.equal(fixture.dom().line.hidden, true);
+});
+
+test("all-gap series stays honest on pointer inspection and keyboard focus", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 10000, null)]));
+  fixture.event("focusin");
+  fixture.event("keydown", {key: "End"});
+  assert.equal(fixture.dom().tooltip.hidden, true);
+  fixture.at(END - 10000);
+  assert.match(fixture.dom().tooltip.textContent, /Download: No sample/);
+});
+
+test("refresh preserves selected absolute time across WAN rerenders and restores keyboard focus", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 30000, 1), point(END, 2)]));
+  fixture.event("focusin"); fixture.event("keydown", {key: "Home"});
+  const before = fixture.dom().tooltip.textContent;
+  const moved = {...fixture.view(), start: fixture.view().start + 10000, end: END + 10000};
+  fixture.setView(moved); fixture.replaceDOM(); fixture.bind.refresh();
+  assert.equal(fixture.dom().plot.focused, true);
+  assert.equal(fixture.dom().tooltip.textContent, before);
+  assert.ok(Math.abs(parseFloat(fixture.dom().line.style.left) - 95.55555555555556) < 1e-8);
+});
+
+test("refresh retains a hover marker hit area without inventing a newer observation", () => {
+  const fixture = inspectionFixture(inspectionView([point(END - 10000, 5)]));
+  fixture.at(END - 12000);
+  const before = fixture.dom().tooltip.textContent;
+  fixture.replaceDOM(); fixture.bind.refresh();
+  assert.equal(fixture.dom().tooltip.textContent, before);
+  assert.equal(fixture.dom().plot.focused, false);
+});
+
+test("WAN plot replacement releases detached touch or pen capture and permits a new drag", () => {
+  for (const pointerType of ["touch", "pen"]) {
+    const fixture = inspectionFixture(inspectionView([point(END - 30000, 1), point(END, 2)]));
+    fixture.at(END - 30000, "pointerdown", {pointerType, pointerId: 7});
+    const old = fixture.dom();
+    const selected = old.tooltip.textContent;
+    assert.equal(old.plot.capture, 7);
+    fixture.replaceDOM(); fixture.bind.refresh();
+    assert.equal(old.plot.released, 7);
+    assert.equal(fixture.dom().tooltip.textContent, selected);
+    fixture.at(END, "pointermove", {pointerType, pointerId: 9});
+    assert.match(fixture.dom().tooltip.textContent, /Download: 2 Mbit\/s/);
+    fixture.at(END, "pointerdown", {pointerType, pointerId: 9});
+    assert.equal(fixture.dom().plot.capture, 9);
+    fixture.event("pointercancel", {pointerType, pointerId: 9});
+    assert.equal(fixture.dom().plot.released, 9);
+    assert.equal(fixture.dom().tooltip.hidden, true);
+    fixture.bind();
+    assert.equal(fixture.listeners.size, 0);
+  }
+});
+
+test("refresh leaves capture on an unchanged plot until cleanup releases it", () => {
+  const fixture = inspectionFixture(inspectionView([point(END, 2)]));
+  fixture.at(END, "pointerdown", {pointerType: "touch", pointerId: 7});
+  fixture.bind.refresh();
+  assert.equal(fixture.dom().plot.capture, 7);
+  assert.equal(fixture.dom().plot.released, undefined);
+  fixture.bind();
+  assert.equal(fixture.dom().plot.released, 7);
+});
+
+test("scope change, disposed controller, expired selection and getter failure clear inspection", () => {
+  for (const change of [(view) => ({...view, entryId: "entry-b"}), (view) => ({...view, userId: "user-b"}), () => null,
+    (view) => ({...view, start: view.start + TRAFFIC_HISTORY_WINDOW_MS + 1, end: view.end + TRAFFIC_HISTORY_WINDOW_MS + 1})]) {
+    const fixture = inspectionFixture(inspectionView([point(END - 10000, 5)]));
+    fixture.at(END - 10000);
+    fixture.setView(change(fixture.view())); fixture.bind.refresh();
+    assert.equal(fixture.dom().tooltip.hidden, true);
+    assert.equal(fixture.dom().tooltip.textContent, "");
+    assert.equal(fixture.dom().line.hidden, true);
+  }
+  const fixture = inspectionFixture(inspectionView([point(END, 5)]));
+  fixture.bind();
+  let fail = false;
+  const replacement = bindTrafficHistory(fixture.host, () => { if (fail) throw new Error("PRIVATE"); return fixture.view(); });
+  fixture.at(END); fail = true; replacement.refresh();
+  assert.equal(fixture.dom().tooltip.textContent, "");
+  replacement();
+});
+
+test("cleanup removes every listener, releases capture and makes refresh inert", () => {
+  const fixture = inspectionFixture(inspectionView([point(END, 5)]));
+  fixture.at(END, "pointerdown", {pointerType: "touch", pointerId: 3});
+  assert.equal(fixture.listeners.size, 8);
+  fixture.bind(); fixture.bind();
+  assert.equal(fixture.listeners.size, 0);
+  assert.equal(fixture.dom().plot.released, 3);
+  assert.equal(fixture.dom().tooltip.textContent, "");
+  fixture.bind.refresh(); fixture.at(END);
+  assert.equal(fixture.dom().tooltip.hidden, true);
+});
+
+test("tooltip uses textContent for hostile labels and localizes formatted values", () => {
+  const fixture = inspectionFixture(inspectionView([point(END, 1.234567)]));
+  fixture.dom().plot.dataset.trafficLanguage = "de";
+  fixture.dom().plot.dataset.trafficDownload = '<img src=x onerror="alert(1)">';
+  fixture.at(END);
+  assert.match(fixture.dom().tooltip.textContent, /<img src=x onerror="alert\(1\)">: 1,235 Mbit\/s/);
+  assert.match(fixture.dom().tooltip.textContent, /Upload: Kein Messwert/);
+  assert.match(fixture.dom().tooltip.textContent, /Beobachtete Messwerte/);
+});
+
+test("binder accepts a controller and performs no history query on any interaction", async () => {
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  const fixture = inspectionFixture(controller.snapshot());
+  fixture.bind();
+  const cleanup = bindTrafficHistory(fixture.host, controller);
+  fixture.at(END); fixture.event("focusin"); fixture.event("keydown", {key: "Home"}); cleanup.refresh(); cleanup();
+  assert.equal(calls.length, 1);
+  assert.throws(() => bindTrafficHistory({}, controller), /invalid_history_binding/);
+  assert.throws(() => bindTrafficHistory(fixture.host, {}), /invalid_history_binding/);
 });

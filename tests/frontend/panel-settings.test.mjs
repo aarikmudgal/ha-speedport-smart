@@ -18,9 +18,14 @@ class Shadow {
     for (const key of ["settings", "maintenance", "call-history", "file-transfer"]) {
       if (value.includes(`data-${key}-editor-host`)) this.hosts.set(key, new Host(this, key));
     }
+    for (const match of value.matchAll(/data-settings-section="([a-z0-9_]+)"/g)) {
+      this.hosts.set(`section:${match[1]}`, new Host(this, `section:${match[1]}`));
+    }
   }
   get innerHTML() { return this.html; }
   querySelector(selector) {
+    const section = selector.match(/^\[data-settings-section="([a-z0-9_]+)"\]$/);
+    if (section) return this.hosts.get(`section:${section[1]}`);
     if (selector === "[data-settings-editor-host]") return this.hosts.get("settings");
     if (selector === "[data-maintenance-editor-host]") return this.hosts.get("maintenance");
     if (selector === "[data-call-history-editor-host]") return this.hosts.get("call-history");
@@ -53,11 +58,13 @@ const MAINTENANCE = {
   execution_policy: "maintenance", confirmation: "typed", typed_confirmation: "FACTORY RESET ROUTER",
   warning: "All settings will be lost.", inputs: [], readback_policy: "reconnect_required",
 };
-function fixture({native = false} = {}) {
+function fixture({native = false, settings = [SETTING], fetchResult} = {}) {
   const calls = [];
   const panel = new SpeedportSmartPanel();
+  panel._privateReadWait = async () => {};
+  panel._scheduleRender = () => {};
   panel._metadata = {routers: [{entry_id: "entry-a", entry_state: "loaded", title: "Router",
-    settings: [SETTING], admin_actions: [MAINTENANCE], entities: [], capabilities: [], capability_families: [],
+    settings, admin_actions: [MAINTENANCE], entities: [], capabilities: [], capability_families: [],
     access_sources: [], management: {controls_available: true, state: "available"}}]};
   panel._selectedEntry = "entry-a"; panel._activeView = "administration";
   panel._hass = {user: {id: "admin", is_admin: true}, language: "en", states: {},
@@ -66,11 +73,12 @@ function fixture({native = false} = {}) {
       assert.equal(options.method, "POST");
       const message = JSON.parse(options.body);
       calls.push(structuredClone(message));
+      if (fetchResult) return fetchResult(message);
       if (message.type.endsWith("/admin_read")) return new Response(JSON.stringify({result: {
         entry_id: message.entry_id, schema_version: 2, sections: [],
       }}), {headers: {"content-type": "application/json"}});
       return new Response(JSON.stringify({result: {
-        setting_id: SETTING.id, revision: "revision", values: {hdvoice: true}, expires_in: 120,
+        setting_id: message.setting_id, revision: "revision", values: {hdvoice: true}, expires_in: 120,
       }}), {headers: {"content-type": "application/json"}});
     }};
   if (!native) panel._renderAdministration = (router) => panel._renderSettingsCatalog(router);
@@ -224,10 +232,10 @@ test("native navigation loads only selected page and does not repeat reads on te
   const {panel, calls} = fixture({native: true});
   assert.ok(panel.shadowRoot.innerHTML.includes('data-admin-tab="network"'));
   assert.ok(!panel.shadowRoot.innerHTML.includes('data-open-setting="telephony_hd_voice"'));
-  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  await panel._selectAdminPage("telephony", "telephony_number_hd_voice");
   assert.equal(panel._settingsEditor.snapshot().setting.id, SETTING.id);
   assert.equal(calls.length, 1);
-  assert.ok(panel.shadowRoot.innerHTML.includes('data-native-page="telephony_number_settings"'));
+  assert.ok(panel.shadowRoot.innerHTML.includes('data-native-page="telephony_number_hd_voice"'));
   assert.ok(!panel.shadowRoot.innerHTML.includes("Configuration editors"));
   panel._render(); panel._render();
   assert.equal(calls.length, 1);
@@ -236,14 +244,14 @@ test("native navigation loads only selected page and does not repeat reads on te
 
 test("cancelled page navigation preserves unsaved private drafts without reading", async () => {
   const {panel, calls} = fixture({native: true});
-  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  await panel._selectAdminPage("telephony", "telephony_number_hd_voice");
   panel._settingsEditor.setValue("hdvoice", false);
   panel._settingsEditor.setValue("password", "SYNTHETIC-SECRET");
   const previous = globalThis.confirm;
   globalThis.confirm = () => false;
   try {
     await panel._selectAdminPage("network", "network_wifi_basic");
-    assert.equal(panel._currentAdminPage().page.id, "telephony_number_settings");
+    assert.equal(panel._currentAdminPage().page.id, "telephony_number_hd_voice");
     assert.equal(panel._settingsEditor.snapshot().isDirty, true);
     assert.equal(calls.length, 1);
   } finally { globalThis.confirm = previous; }
@@ -251,7 +259,7 @@ test("cancelled page navigation preserves unsaved private drafts without reading
 
 test("confirmed native navigation disposes private hosts and old drafts", async () => {
   const {panel} = fixture({native: true});
-  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  await panel._selectAdminPage("telephony", "telephony_number_hd_voice");
   panel._settingsEditor.setValue("password", "SYNTHETIC-SECRET");
   const host = panel._settingsHost;
   const previous = globalThis.confirm;
@@ -267,7 +275,7 @@ test("confirmed native navigation disposes private hosts and old drafts", async 
 
 test("an in-flight setting write blocks page and destructive-editor replacement", async () => {
   const {panel, calls} = fixture({native: true});
-  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  await panel._selectAdminPage("telephony", "telephony_number_hd_voice");
   panel._settingsEditor.setValue("hdvoice", false);
   panel._settingsEditor.setConfirmation("SAVE SETTINGS");
   let resolve;
@@ -279,7 +287,7 @@ test("an in-flight setting write blocks page and destructive-editor replacement"
   await Promise.resolve();
   await panel._selectAdminPage("system", "system_recovery");
   click(panel, {openMaintenance: MAINTENANCE.id});
-  assert.equal(panel._currentAdminPage().page.id, "telephony_number_settings");
+  assert.equal(panel._currentAdminPage().page.id, "telephony_number_hd_voice");
   assert.equal(panel._settingsEditor.snapshot().isSaving, true);
   assert.equal(panel._maintenanceEditor.snapshot(), null);
   resolve(new Response(JSON.stringify({result: {status: "verified"}}), {headers: {"content-type": "application/json"}}));
@@ -311,10 +319,182 @@ test("late global administrator cache cannot restart selected page auto-loading"
   let release;
   panel._loadAdminRead = () => new Promise((resolve) => { release = resolve; });
   panel._selectView("administration");
-  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  await panel._selectAdminPage("telephony", "telephony_number_hd_voice");
   const epoch = panel._adminPageEpoch;
   release(); await Promise.resolve(); await Promise.resolve();
   assert.equal(panel._adminPageEpoch, epoch);
   assert.equal(calls.length, 1);
   assert.equal(panel._settingsEditor.snapshot().loaded, true);
+});
+
+const ENERGY_SETTINGS = ["system_led_schedule", "system_energy"].map((id) => ({...SETTING, id, title: id}));
+function privateResponse(result) {
+  return new Response(JSON.stringify({result}), {headers: {"content-type": "application/json"}});
+}
+function sectionResponse(message) {
+  return privateResponse({setting_id: message.setting_id, target_id: message.target_id,
+    revision: `revision-${message.setting_id}`, values: {hdvoice: true}, expires_in: 120});
+}
+async function microtasksUntil(predicate) {
+  for (let index = 0; index < 150 && !predicate(); index++) await Promise.resolve();
+  assert.ok(predicate(), "expected bounded asynchronous state transition");
+}
+
+test("native page automatically loads every inline section once with no setting launchers", async () => {
+  const {panel, calls} = fixture({native: true, settings: ENERGY_SETTINGS, fetchResult: sectionResponse});
+  await panel._selectAdminPage("system", "system_energy");
+  assert.deepEqual(calls.map((call) => call.setting_id), ENERGY_SETTINGS.map((setting) => setting.id));
+  assert.equal(panel._settingsEditors.size, 2);
+  for (const setting of ENERGY_SETTINGS) {
+    const record = panel._settingsEditors.get(setting.id);
+    assert.equal(record.editor.snapshot().loaded, true);
+    assert.match(record.host.innerHTML, /data-setting-action="save"/);
+    assert.ok(panel.shadowRoot.innerHTML.includes(`data-settings-section="${setting.id}"`));
+  }
+  assert.equal(/<nav class="admin-form-nav"|data-open-setting=|data-load-admin-page/.test(panel.shadowRoot.innerHTML), false);
+  await panel._selectAdminPage("system", "system_energy");
+  await panel._loadAdminPage(); panel._render();
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((call) => call.type.endsWith("/read")));
+});
+
+test("each inline host, binding, private draft and confirmation survives sibling and WAN rendering", async () => {
+  const {panel, calls} = fixture({native: true, settings: ENERGY_SETTINGS, fetchResult: sectionResponse});
+  await panel._selectAdminPage("system", "system_energy");
+  const records = [...panel._settingsEditors.values()];
+  const hosts = records.map((record) => record.host);
+  const listeners = hosts.map((host) => [...host.listeners]);
+  for (const record of records) {
+    record.editor.setValue("hdvoice", false);
+    record.editor.setValue("password", "SYNTHETIC-PRIVATE");
+    record.editor.setConfirmation("SAVE SETTINGS");
+  }
+  panel._hass.states = {"sensor.wan": {state: "30"}};
+  panel._render();
+  for (let index = 0; index < records.length; index++) {
+    const {editor, host} = records[index];
+    assert.equal(host, hosts[index]);
+    assert.equal(panel.shadowRoot.querySelector(`[data-settings-section="${editor.snapshot().setting.id}"]`), host);
+    assert.deepEqual([...host.listeners], listeners[index]);
+    assert.equal(editor.snapshot().confirmationReady, true);
+    assert.deepEqual(editor.snapshot().dirty.sort(), ["hdvoice", "password"]);
+  }
+  records[0].editor.cancelChanges();
+  assert.equal(records[1].editor.snapshot().confirmationReady, true);
+  assert.deepEqual(records[1].editor.snapshot().dirty.sort(), ["hdvoice", "password"]);
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /SYNTHETIC-PRIVATE/);
+  assert.equal(calls.length, 2);
+});
+
+test("multi-section navigation checks secondary dirty drafts and disposes all sections only after confirmation", async () => {
+  const {panel, calls} = fixture({native: true, settings: ENERGY_SETTINGS, fetchResult: sectionResponse});
+  await panel._selectAdminPage("system", "system_energy");
+  const records = [...panel._settingsEditors.values()];
+  records[1].editor.setValue("password", "SYNTHETIC-PRIVATE");
+  const before = globalThis.confirm;
+  try {
+    globalThis.confirm = () => false;
+    await panel._selectAdminPage("network", "network_wifi_environment");
+    assert.equal(panel._currentAdminPage().page.id, "system_energy");
+    assert.equal(panel._settingsEditors.size, 2);
+    globalThis.confirm = () => true;
+    await panel._selectAdminPage("network", "network_wifi_environment");
+    assert.equal(panel._settingsEditors.size, 0);
+    for (const record of records) {
+      assert.equal(record.editor.snapshot(), null);
+      assert.equal(record.host.innerHTML, "");
+      assert.equal(record.host.listeners.size, 0);
+    }
+    assert.equal(calls.length, 2);
+  } finally {globalThis.confirm = before;}
+});
+
+test("finite multi-section reads are paced after completion and duplicate opens share the current job", async () => {
+  let now = 0;
+  const sent = [];
+  const {panel} = fixture({native: true, settings: ENERGY_SETTINGS, fetchResult: (message) => {
+    sent.push({id: message.setting_id, time: now});
+    return sectionResponse(message);
+  }});
+  panel._privateReadNow = () => now;
+  const waits = [];
+  panel._privateReadWait = async (delay) => {waits.push(delay); now += delay;};
+  const opening = panel._selectAdminPage("system", "system_energy");
+  const firstJob = panel._loadAdminPage();
+  assert.equal(panel._loadAdminPage(), firstJob);
+  await opening; await firstJob;
+  assert.deepEqual(sent.map((item) => item.time), [0, 1000]);
+  assert.deepEqual(waits, [1000]);
+});
+
+for (const change of ["page", "permission", "detach"]) {
+  test(`${change} change cancels a paced section read before transport`, async () => {
+    const {panel, calls} = fixture({native: true, settings: ENERGY_SETTINGS, fetchResult: sectionResponse});
+    let release;
+    const wait = new Promise((resolve) => {release = resolve;});
+    let waiting = false;
+    panel._privateReadWait = () => {waiting = true; return wait;};
+    const opening = panel._selectAdminPage("system", "system_energy");
+    await microtasksUntil(() => waiting);
+    if (change === "page") await panel._selectAdminPage("network", "network_wifi_environment");
+    else if (change === "permission") panel.hass = {...panel._hass, user: {id: "admin", is_admin: false}};
+    else {panel.isConnected = false; panel.disconnectedCallback();}
+    release(); await opening;
+    assert.equal(calls.length, 1);
+    assert.equal(panel._settingsEditors.size, 0);
+  });
+}
+
+test("existing target editor reads automatically while create/delete actions stay unopened", async () => {
+  const settings = ["parental_profile_create", "parental_profile_edit", "parental_profile_delete"]
+    .map((id) => ({...SETTING, id, requires_target: id !== "parental_profile_create"}));
+  const {panel, calls} = fixture({native: true, settings, fetchResult: (message) =>
+    message.type.endsWith("/targets") ? privateResponse({setting_id: message.setting_id,
+      targets: [{id: "8", label: "Existing profile"}]}) : sectionResponse(message)});
+  await panel._selectAdminPage("internet", "internet_parental");
+  assert.deepEqual(calls.map((call) => call.type.split("/").at(-1)), ["targets", "read"]);
+  assert.ok(calls.every((call) => call.setting_id === "parental_profile_edit"));
+  assert.equal(calls[1].target_id, "8");
+  assert.equal(panel._settingsEditors.get("parental_profile_edit").editor.snapshot().loaded, true);
+  assert.match(panel.shadowRoot.innerHTML, /data-open-setting="parental_profile_create"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-open-setting="parental_profile_delete"/);
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-open-setting="parental_profile_edit"/);
+});
+
+test("one inline section failure does not prevent another section from loading", async () => {
+  const settings = ENERGY_SETTINGS.map((setting, index) => index ? setting : {...setting, fields: []});
+  const {panel, calls} = fixture({native: true, settings, fetchResult: sectionResponse});
+  await panel._selectAdminPage("system", "system_energy");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].setting_id, "system_energy");
+  assert.equal(panel._settingsEditors.get("system_energy").editor.snapshot().loaded, true);
+  assert.match(panel.shadowRoot.innerHTML, /data-retry-setting="system_led_schedule"/);
+});
+
+test("saving one inline section preserves sibling drafts and cannot dispatch another concurrent write", async () => {
+  let complete;
+  const saved = new Promise((resolve) => {complete = resolve;});
+  const {panel, calls} = fixture({native: true, settings: ENERGY_SETTINGS, fetchResult: (message) =>
+    message.type.endsWith("/save") ? saved : sectionResponse(message)});
+  await panel._selectAdminPage("system", "system_energy");
+  const [first, second] = [...panel._settingsEditors.values()].map((record) => record.editor);
+  for (const editor of [first, second]) {editor.setValue("hdvoice", false); editor.setConfirmation("SAVE SETTINGS");}
+  const saving = first.save();
+  await microtasksUntil(() => calls.some((call) => call.type.endsWith("/save")));
+  assert.deepEqual(second.snapshot().dirty, ["hdvoice"]);
+  assert.equal(second.snapshot().confirmationReady, true);
+  await panel._selectAdminPage("network", "network_wifi_environment");
+  assert.equal(panel._currentAdminPage().page.id, "system_energy");
+  await second.save();
+  assert.equal(calls.filter((call) => call.type.endsWith("/save")).length, 1);
+  assert.equal(second.snapshot().status, "busy_rejected");
+  assert.match(panel._settingsEditors.get("system_energy").host.innerHTML, /This change was not sent/);
+  assert.equal(first.snapshot().status, "saving");
+  complete(privateResponse({status: "verified"})); await saving;
+  assert.equal(first.snapshot().status, "verified");
+  const write = calls.find((call) => call.type.endsWith("/save"));
+  assert.equal(write.setting_id, "system_led_schedule");
+  assert.equal(write.revision, "revision-system_led_schedule");
+  assert.deepEqual(write.changes, {hdvoice: false});
+  assert.equal(calls.length, 3);
 });

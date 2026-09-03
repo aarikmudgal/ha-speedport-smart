@@ -27,6 +27,7 @@ const MESSAGES = Object.freeze({
   invalid: "Check the field values and type the confirmation exactly.",
   expired: "This read has expired. Reload current settings before saving.",
   rejected: "The request was rejected. Reload current settings before trying again.",
+  busy_rejected: "Another router request is still running. This change was not sent. Wait for it to finish, then reload current settings before trying again.",
   load_failed: "Current settings could not be loaded. Nothing was changed.",
   outcome_unknown: "The resulting router state could not be verified. Check the router and reload before trying again. The request will not be repeated automatically.",
   pending_confirmation: "The account-link request was sent. Choose whether to merge or replace local contacts, then confirm that separate operation. Nothing will continue automatically.",
@@ -467,7 +468,7 @@ export function createConfigurationEditorController({request, download, onChange
       } catch (error) {
         if (epoch !== generation) return false;
         // Raw server error messages may contain submitted private data.
-        state.status = ["rejected", "command_rejected", "invalid_input", "stale_revision",
+        state.status = error?.code === "action_busy" ? "busy_rejected" : ["rejected", "command_rejected", "invalid_input", "stale_revision",
           "unauthorized", "confirmation_required", "stale_settings", "administrator_required",
           "invalid_settings", "invalid_settings_target", "setting_unavailable", "rate_limited"].includes(error?.code)
           ? "rejected" : "outcome_unknown";
@@ -488,8 +489,28 @@ export function createConfigurationEditorController({request, download, onChange
 
 const WEEKDAYS = Object.freeze({mo: "Monday", di: "Tuesday", mi: "Wednesday", do: "Thursday", fr: "Friday", sa: "Saturday", so: "Sunday"});
 
+// Native Access data and Energy page sections, using the public field aliases
+// declared by configuration_internet.py and configuration_system.py. These are
+// presentation groups only; unknown future fields keep the generic fallback.
+const NATIVE_FIELD_GROUPS = Object.freeze({
+  internet_connection: [
+    {title: "Access data", fields: ["isp_selection", "t_number", "t_mbnr0", "t_mbnr1", "t_mbnr2", "t_mbnr3",
+      "t_password", "t_callident", "zustart_user", "zustart_password", "other_name", "other_user", "other_password",
+      "other_MTU", "other_vlan", "other_vlanid", "other_ip", "fixed_ipv4_address"]},
+    {title: "DNS server", fields: ["other_dns", "dns_ipv4_primary", "dns_ipv4_secondary", "other_dns6", "other_dns6_prim", "other_dns6_sek"]},
+  ],
+  system_led_schedule: [{title: "Display mode for LEDs", fields: ["led_mode", "led_from", "led_to"]}],
+  system_energy: [
+    {title: "Wi-Fi network", fields: ["use_wlan", "wlan_band", "wlan_power"]},
+    {title: "USB port", fields: ["use_usb"]},
+  ],
+});
+const nativeGroups = (setting) => Object.hasOwn(NATIVE_FIELD_GROUPS, setting.id) ? NATIVE_FIELD_GROUPS[setting.id] : [];
+
 function fieldGroup(setting, field) {
   const name = field.name;
+  const native = nativeGroups(setting).find((group) => group.fields.includes(name));
+  if (native) return native.title;
   if (setting.id === "wifi_identity") {
     if (["wlan_ssid", "wlan_visible"].includes(name)) return "2.4 GHz network";
     if (["wlan_5ghz_ssid", "wlan_5ghz_visible"].includes(name)) return "5 GHz network";
@@ -530,8 +551,9 @@ function groupedFields(setting, renderField, values) {
     groups.get(title).push(field);
   }
   // Keep the two networks together even when metadata arrives interleaved.
-  const order = setting.id === "wifi_identity"
-    ? ["2.4 GHz network", "5 GHz network", "Shared security and password"] : [...groups.keys()];
+  const preferred = setting.id === "wifi_identity"
+    ? ["2.4 GHz network", "5 GHz network", "Shared security and password"] : nativeGroups(setting).map((group) => group.title);
+  const order = [...new Set([...preferred, ...groups.keys()])];
   return order.filter((title) => groups.has(title)).map((title) => {
     const scheduleGroup = setting.id !== "wifi_schedule" ? null :
       title === "Daily schedule" ? "daily" : Object.values(WEEKDAYS).includes(title) ? "weekly" : null;
