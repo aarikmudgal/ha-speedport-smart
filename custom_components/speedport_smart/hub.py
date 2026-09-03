@@ -2192,7 +2192,7 @@ class SpeedportHub:
             }
             try:
                 return await self._async_update_group_locked(
-                    group, allow_wan_checkpoint=True
+                    group, record_poll_timing=True
                 )
             finally:
                 completed_at = time.perf_counter()
@@ -2202,7 +2202,7 @@ class SpeedportHub:
                 timing["total_update_ms"] = round((completed_at - queued_at) * 1_000, 3)
 
     async def _async_update_group_locked(
-        self, group: PollGroup, *, allow_wan_checkpoint: bool = False
+        self, group: PollGroup, *, record_poll_timing: bool = False
     ) -> GroupSnapshot:
         """Update one group while operation lock is held."""
         started_at = time.perf_counter()
@@ -2215,7 +2215,7 @@ class SpeedportHub:
                 partial = await self._async_fetch_fast()
             elif group is PollGroup.NORMAL:
                 partial = await self._async_fetch_normal(
-                    allow_wan_checkpoint=allow_wan_checkpoint
+                    record_poll_timing=record_poll_timing
                 )
             else:
                 partial = await self._async_fetch_families(
@@ -2690,63 +2690,20 @@ class SpeedportHub:
             for family, error_name in self._endpoint_errors.items()
         )
 
-    async def _async_publish_due_wan_locked(self) -> None:
-        """
-        Publish due counters after owned-session cleanup, before optional work.
-
-        Keep the outer operation lock: neither an administrator write nor another
-        router request may interleave with the still-pending NORMAL snapshot.
-        Public status is not read or marked as newly sampled here.
-        """
-        coordinator = self._coordinators.get(PollGroup.FAST)
-        if (
-            coordinator is None
-            or not (
-                self.has_capability("wan_counters") or self._wan_counter_probe_pending
-            )
-            or self._monotonic_time()
-            < max(self._wan_counter_next_poll_at, self._wan_counter_retry_at)
-        ):
-            return
-        partial = await self._async_fetch_wan_counters()
-        if not partial:
-            return
-        now = datetime.now(UTC)
-        transitions = self._merge_data(partial)
-        self._generation += 1
-        self._last_transitions = transitions
-        self._last_successful_update = now
-        self._poll_group_succeeded[PollGroup.FAST] = True
-        self._poll_group_last_success[PollGroup.FAST] = now
-        self._poll_group_last_error[PollGroup.FAST] = None
-        coordinator.async_set_updated_data(
-            GroupSnapshot(
-                group=PollGroup.FAST,
-                data=self._data,
-                generation=self._generation,
-                updated_at=now,
-                transitions=transitions,
-            )
-        )
-
     async def _async_fetch_normal(
-        self, *, allow_wan_checkpoint: bool = False
+        self, *, record_poll_timing: bool = False
     ) -> dict[str, Any]:
         """Fetch medium-frequency feature data and verified DSL telemetry."""
         family_started = time.perf_counter()
         await self._async_retry_degraded_access()
         partial = await self._async_fetch_families(NORMAL_FAMILIES)
         timing = (
-            self._poll_timing_ms.get(PollGroup.NORMAL) if allow_wan_checkpoint else None
+            self._poll_timing_ms.get(PollGroup.NORMAL) if record_poll_timing else None
         )
         if timing is not None:
             timing["feature_reads_ms"] = round(
                 (time.perf_counter() - family_started) * 1_000, 3
             )
-        # _async_fetch_families has completed its owned logout and settle wait.
-        # Command verification does not opt in: its transaction stays unchanged.
-        if allow_wan_checkpoint:
-            await self._async_publish_due_wan_locked()
         now = self._monotonic_time()
         if (
             self.has_capability("dsl")
@@ -2755,11 +2712,7 @@ class SpeedportHub:
         ):
             dsl_started = time.perf_counter()
             try:
-                # The hub already schedules a retry after busy responses. Do not
-                # sleep through exponential SOAP retries while WAN waits on us.
-                metrics = await self.client.get_dsl_metrics(
-                    busy_retries=0 if allow_wan_checkpoint else None
-                )
+                metrics = await self.client.get_dsl_metrics()
             except SpeedportSessionBusyError as err:
                 self._defer_dsl_metrics_busy_retry()
                 self._endpoint_errors["dsl_metrics"] = safe_error_class_name(err)

@@ -47,18 +47,18 @@ dashboard labels the configured window and shows the actual span when materially
 different; the rate entities expose both as attributes. Once unchanged counters
 fill the averaging window, the rate returns to zero.
 
-NORMAL polling publishes any due WAN sample after its protected reads have
-finished logout and session settling, before optional DSL telemetry. It uses the
-same WAN deadline and cooldown as FAST polling, so a waiting FAST update does
-not repeat that request. The operation lock stays held and administrator
-transactions remain atomic; there are no concurrent SOAP and web sessions.
-Scheduled DSL reads make one attempt on a busy response and use the existing
-deferred retry policy instead of sleeping through up to 7.5 seconds of inline
-retries. Discovery and explicitly requested DSL reads retain their retry defaults.
+WAN reads remain owned exclusively by the FAST polling sequence. NORMAL and
+SLOW work can delay a waiting WAN read, but they never insert an opportunistic
+WAN request immediately after an authenticated web session. This separation
+avoids a transient post-logout TR-064 busy response becoming a 60-second WAN
+cooldown. DSL retains its bounded busy retries inside the NORMAL sequence so a router
+lease still settling after logout is not immediately handed to FAST. Exhausting
+those retries uses the existing deferred DSL retry policy. Only a later FAST WAN
+request can change WAN cooldown state.
 
-Slow individual requests and protected batches can still delay samples. This
-change reduces avoidable blocking; it does not guarantee uninterrupted
-one-second delivery. Downloaded diagnostics separate polling lock wait, router
+Slow individual requests and protected batches can still delay samples. Busy
+DSL retries remain bounded and observable; uninterrupted one-second delivery is
+not guaranteed. Downloaded diagnostics separate polling lock wait, router
 work and total update time, plus NORMAL feature-read and DSL-read durations.
 
 After a failed read, current rates are unavailable until enough fresh counter
