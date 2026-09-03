@@ -31,6 +31,8 @@ REQUIRED_ENTRIES: Final = frozenset(
         "brand/icon@2x.png",
         "frontend/accessibility.js",
         "frontend/admin-navigation.js",
+        "frontend/dashboard-overview.js",
+        "frontend/traffic-history.js",
         "frontend/controls.js",
         "frontend/configuration-editor.js",
         "frontend/maintenance-editor.js",

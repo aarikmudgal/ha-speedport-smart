@@ -85,7 +85,7 @@ function router(overrides = {}) {
 
 function panelFixture(routerData = router()) {
   const panel = new SpeedportSmartPanel();
-  panel._metadata = { routers: [routerData], schema_version: 23 };
+  panel._metadata = { routers: [routerData], schema_version: 24 };
   panel._selectedEntry = routerData.entry_id;
   panel._platformIcons = {};
   panel._componentIcons = {};
@@ -166,8 +166,8 @@ test("eligible router renders exactly two mutually exclusive panel views", () =>
     viewButton(dashboard, "administration"),
     /aria-current="page"/,
   );
-  assert.match(dashboard, /<section class="access-overview">/);
-  assert.doesNotMatch(dashboard, /<div class="administration-view">/);
+  assert.match(dashboard, /<div class="dashboard-overview">/);
+  assert.doesNotMatch(dashboard, /<div class="administration-view/);
   assert.doesNotMatch(dashboard, /switch\.speedport_wifi/);
 
   panel._activeView = "administration";
@@ -183,7 +183,7 @@ test("eligible router renders exactly two mutually exclusive panel views", () =>
     /aria-current="page"/,
   );
   assert.ok(administration.includes('<div class="administration-view admin-native">'));
-  assert.doesNotMatch(administration, /<section class="access-overview">/);
+  assert.doesNotMatch(administration, /<div class="dashboard-overview">/);
   assert.ok(!administration.includes('data-control="switch.speedport_wifi"'));
   panel._adminTab = "network"; panel._adminPage = "network_wifi_basic";
   assert.ok(renderedMarkup(panel).includes('data-control="switch.speedport_wifi"'));
@@ -291,7 +291,8 @@ test("panel layout locks full-width breakpoints and Home Assistant theme inherit
 });
 
 test("router identity and telemetry are rendered only from current runtime data", () => {
-  const panel = panelFixture();
+  const headline = {...REPORTING_META, translation_key: "mobile_operator", section: "mobile"};
+  const panel = panelFixture(router({entities: [headline, WIFI_CONTROL_META]}));
   const first = renderedMarkup(panel);
   for (const value of [
     "Router-A-Unique",
@@ -304,12 +305,13 @@ test("router identity and telemetry are rendered only from current runtime data"
   }
 
   const secondRouter = router({
+    entities: [headline, WIFI_CONTROL_META],
     firmware: "Firmware-B-Unique",
     hardware_version: "Hardware-B-Unique",
     model: "Model-B-Unique",
     title: "Router-B-Unique",
   });
-  panel._metadata = { routers: [secondRouter], schema_version: 23 };
+  panel._metadata = { routers: [secondRouter], schema_version: 24 };
   panel._hass.states[REPORTING_META.entity_id] = {
     attributes: { friendly_name: "Runtime metric" },
     state: "Metric-B-Unique",
@@ -362,7 +364,7 @@ test("control stays singular and recovers in place across session loss", () => {
   const blockedRouter = router({
     management: { controls_available: false, state: "blocked" },
   });
-  panel._metadata = { routers: [blockedRouter], schema_version: 23 };
+  panel._metadata = { routers: [blockedRouter], schema_version: 24 };
   const blocked = renderedMarkup(panel);
   assert.equal(
     exactCount(blocked, `data-more-info="${WIFI_CONTROL_META.entity_id}"`),
@@ -387,7 +389,7 @@ test("control stays singular and recovers in place across session loss", () => {
     new RegExp(`data-control="${WIFI_CONTROL_META.entity_id}"[^>]*\\sdisabled(?:\\s|>|=)`),
   );
 
-  panel._metadata = { routers: [router()], schema_version: 23 };
+  panel._metadata = { routers: [router()], schema_version: 24 };
   const recovered = renderedMarkup(panel);
   assert.equal(
     exactCount(recovered, `data-more-info="${WIFI_CONTROL_META.entity_id}"`),

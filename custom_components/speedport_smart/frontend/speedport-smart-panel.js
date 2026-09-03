@@ -1,22 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=23";
+import { requestPrivateApi } from "./private-api.js?schema=24";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=24";
+import { createTrafficHistoryController, renderTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=24";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures,
-} from "./admin-navigation.js?schema=23";
-import { keepDialogFocus } from "./accessibility.js?schema=23";
+} from "./admin-navigation.js?schema=24";
+import { keepDialogFocus } from "./accessibility.js?schema=24";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=23";
+} from "./call-history-view.js?schema=24";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=23";
+} from "./file-transfer-editor.js?schema=24";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=23";
+} from "./maintenance-editor.js?schema=24";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=23";
+} from "./configuration-editor.js?schema=24";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -31,22 +33,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=23";
+} from "./controls.js?schema=24";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=23";
+} from "./entity-state.js?schema=24";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=23";
+} from "./render-state.js?schema=24";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=23";
+} from "./translations.js?schema=24";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -231,7 +233,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 23;
+const PANEL_SCHEMA_VERSION = 24;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3331,6 +3333,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._platformIconsLoading = false;
     this._selectedEntry = undefined;
     this._activeView = "dashboard";
+    this._trafficHistory = createTrafficHistoryController({
+      request: (message) => this._hass.connection.sendMessagePromise(message),
+      onChange: () => {
+        if (this.isConnected && this._activeView === "dashboard") this._scheduleRender();
+      },
+    });
     this._adminTab = "overview";
     this._adminPage = undefined;
     this._adminPageEpoch = 0;
@@ -3451,7 +3459,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       ) {
         const router = this._currentRouter();
         if (router?.entry_state === "loaded") {
-          this._loadAdminRead(router.entry_id);
+          this._loadAdminReadAndPage(router.entry_id);
         }
       }
     } else if (managementAvailabilityChanged) {
@@ -3462,7 +3470,10 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._loadPlatformIcons();
       this._loadMetadata();
     }
-    if (shouldRender) this._scheduleRender();
+    if (shouldRender) {
+      this._syncTrafficHistory();
+      this._scheduleRender();
+    }
   }
 
   set panel(value) {
@@ -3489,7 +3500,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       !this._adminRead
     ) {
       const entryId = this._currentRouter()?.entry_id;
-      if (entryId) this._loadAdminRead(entryId);
+      if (entryId) this._loadAdminReadAndPage(entryId);
     }
     if (!this._refreshTimer) {
       this._refreshTimer = window.setInterval(
@@ -3497,6 +3508,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         METADATA_REFRESH_INTERVAL_MS,
       );
     }
+    this._syncTrafficHistory();
     this._render();
   }
 
@@ -3506,6 +3518,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (this._renderFrame) window.cancelAnimationFrame(this._renderFrame);
     this._renderFrame = undefined;
     this._clearAdminRead();
+    this._trafficHistory.dispose();
     this.shadowRoot.innerHTML = "";
   }
 
@@ -3610,9 +3623,13 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._loadPlatformIcons();
     }
     this._loading = true;
+    const recoveringMetadata = Boolean(this._loadError);
     this._loadError = "";
     try {
       const previousRouter = this._currentRouter();
+      const previousPageSettings = new Set(adminPageSettings(
+        this._currentAdminPage().page, previousRouter?.settings || [], SETTINGS_FEATURE_LINKS,
+      ).filter((setting) => setting.supported && setting.available).map((setting) => setting.id));
       const previousActionGeneration = this._adminActionGeneration(previousRouter);
       const previousManagementAvailable = this._adminManagementAvailable(
         this._hass,
@@ -3655,18 +3672,23 @@ export class SpeedportSmartPanel extends HTMLElement {
       }
       if (
         selectedEntryLoaded &&
-        (selectionChanged || previousRouter?.entry_state !== "loaded") &&
+        (selectionChanged || previousRouter?.entry_state !== "loaded" || recoveringMetadata) &&
         this._activeView === "administration" &&
         this._hass?.user?.is_admin === true &&
         this._selectedEntry
       ) {
-        this._loadAdminRead(this._selectedEntry);
+        this._loadAdminReadAndPage(this._selectedEntry);
+      } else if (!actionSessionChanged && selectedEntryLoaded && !this._settingsEditor.snapshot() &&
+          adminPageSettings(this._currentAdminPage().page, selectedRouter.settings || [], SETTINGS_FEATURE_LINKS)
+            .some((setting) => setting.supported && setting.available && !previousPageSettings.has(setting.id))) {
+        this._queueAdminPageRecovery();
       }
     } catch (_error) {
       this._clearAdminRead();
       this._loadError = "error.metadata_unavailable";
     } finally {
       this._loading = false;
+      this._syncTrafficHistory();
       if (!this._pendingAction) this._render();
     }
   }
@@ -3677,6 +3699,30 @@ export class SpeedportSmartPanel extends HTMLElement {
       routers.find((router) => router.entry_id === this._selectedEntry) ||
       routers[0]
     );
+  }
+
+  _syncTrafficHistory() {
+    const router = this._currentRouter();
+    const userId = this._hass?.user?.id;
+    if (!this.isConnected || this._activeView !== "dashboard" || !router || router.entry_state !== "loaded" || !userId ||
+        typeof this._hass?.connection?.sendMessagePromise !== "function") {
+      this._trafficHistory.dispose();
+      return;
+    }
+    const entities = Object.fromEntries(["download", "upload"].map((direction) => [direction,
+      router.entities?.find((meta) => meta.domain === "sensor" && !meta.disabled_by && !meta.disabled &&
+        !meta.child_device && !meta.control && !meta.control_supported && /^sensor\.[a-z0-9_]+$/.test(meta.entity_id) &&
+        meta.translation_key === `wan_${direction}_rate`)?.entity_id ?? null,
+    ]));
+    const source = liveWanSourceFromEntityStates(
+      router.access_sources?.find((item) => item.id === "wan_counters"), router.entities, this._hass.states,
+    );
+    const sampleMeta = router.entities?.find((meta) => meta.translation_key === "wan_last_sample");
+    const sampledAt = sampleMeta ? this._hass.states?.[sampleMeta.entity_id]?.state : source?.last_sampled_at;
+    this._trafficHistory.open({entryId: router.entry_id, userId, entities, states: this._hass.states,
+      stale: source?.available === false || source?.retrying === true || source?.supported === false,
+      staleAfterMs: Math.max(30000, (Number(source?.effective_interval_seconds) || 10) * 4000), sampledAt,
+    });
   }
 
   _canShowAdministration(router = this._currentRouter()) {
@@ -3708,6 +3754,7 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _clearAdminRead() {
     this._adminPageEpoch += 1;
+    this._adminRecoverySelection = undefined;
     this._clearSettingsEditor();
     this._invalidateAdminReadSnapshot();
     this._clearAdminPrivateQueries();
@@ -3824,6 +3871,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (!this._canLeaveAdminPage()) return;
     this._clearAdminRead();
     this._selectedEntry = entryId;
+    this._syncTrafficHistory();
     this._pendingAction = undefined;
     this._notice = "";
     this._noticeKind = "status";
@@ -3831,11 +3879,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._activeView === "administration" &&
       this._hass?.user?.is_admin === true
     ) {
-      const epoch = this._adminPageEpoch;
-      this._loadAdminRead(entryId).then(() => {
-        if (epoch === this._adminPageEpoch && this._activeView === "administration" &&
-            this._currentRouter()?.entry_id === entryId) this._loadAdminPage();
-      });
+      this._loadAdminReadAndPage(entryId);
     } else {
       this._render();
     }
@@ -3851,9 +3895,11 @@ export class SpeedportSmartPanel extends HTMLElement {
     if (view !== this._activeView && !this._canLeaveAdminPage()) return;
     const previousView = this._activeView;
     this._activeView = view;
+    this._syncTrafficHistory();
     this._notice = "";
     if (view !== "administration") {
       this._adminPageEpoch += 1;
+      this._adminRecoverySelection = undefined;
       this._clearSettingsEditor();
       this._clearAdminPrivateQueries();
       this._clearAdminActionState();
@@ -3866,13 +3912,11 @@ export class SpeedportSmartPanel extends HTMLElement {
       if (entryId) {
         const cachedForEntry =
           this._adminReadEntry === entryId && Boolean(this._adminRead);
-        const epoch = this._adminPageEpoch;
-        this._loadAdminRead(entryId, {
-          force: previousView !== "administration" && cachedForEntry,
-        }).then(() => {
-          if (epoch === this._adminPageEpoch && previousView !== "administration" && this._activeView === "administration" &&
-              this._currentRouter()?.entry_id === entryId) this._loadAdminPage();
-        });
+        if (previousView !== "administration") {
+          this._loadAdminReadAndPage(entryId, {force: cachedForEntry});
+        } else {
+          this._loadAdminRead(entryId);
+        }
       }
     }
   }
@@ -3881,14 +3925,67 @@ export class SpeedportSmartPanel extends HTMLElement {
     return resolveAdminPage(this._adminTab, this._adminPage);
   }
 
+  async _loadAdminReadAndPage(entryId, options) {
+    if (this.isConnected === false) return;
+    const epoch = this._adminPageEpoch;
+    const userId = this._hass?.user?.id;
+    try {
+      await this._loadAdminRead(entryId, options);
+      if (this.isConnected !== false && epoch === this._adminPageEpoch && userId === this._hass?.user?.id &&
+          this._activeView === "administration" && this._hass?.user?.is_admin === true &&
+          this._currentRouter()?.entry_id === entryId) await this._loadAdminPage();
+    } catch {
+      // Render a bounded fallback; never leak a private response or retry a write.
+      if (this._currentRouter()?.entry_id === entryId && this._hass?.user?.id === userId) {
+        this._notice = "Settings could not be loaded. Use Refresh to try reading them again.";
+        this._render();
+      }
+    }
+  }
+
+  _queueAdminPageRecovery() {
+    const epoch = this._adminPageEpoch;
+    const entryId = this._currentRouter()?.entry_id;
+    const userId = this._hass?.user?.id;
+    if (this.isConnected === false || this._adminRecoveryEpoch === epoch || !this._adminManagementAvailable(this._hass) ||
+        this._activeView !== "administration" || this._hass?.user?.is_admin !== true) return;
+    this._adminRecoveryEpoch = epoch;
+    // Coalesce session notifications, then recheck identity/page/access before
+    // reading. Normal telemetry renders never trigger router configuration I/O.
+    Promise.resolve().then(() => {
+      if (this.isConnected === false || epoch !== this._adminPageEpoch || entryId !== this._currentRouter()?.entry_id ||
+          userId !== this._hass?.user?.id || this._hass?.user?.is_admin !== true ||
+          this._activeView !== "administration" || this._currentRouter()?.entry_state !== "loaded" ||
+          !this._adminManagementAvailable(this._hass) || this._settingsEditor.snapshot() ||
+          this._maintenanceEditor.snapshot() || this._fileTransferEditor.snapshot() || this._actionBusy) return;
+      return this._loadAdminPage();
+    }).catch(() => {
+      if (entryId === this._currentRouter()?.entry_id && userId === this._hass?.user?.id &&
+          this._activeView === "administration") {
+        this._notice = "Settings could not be loaded. Use Refresh to try reading them again.";
+        this._render();
+      }
+    });
+  }
+
   _invalidateAdminPageSession() {
     // Never erase the outcome of a dispatched write. Idle private snapshots and
-    // credentials belong to the old session and must be read again explicitly.
+    // credentials belong to the old session; reload the visible page on recovery.
     if (this._settingsEditor?.snapshot()?.isSaving || this._maintenanceEditor?.snapshot()?.busy ||
-        this._fileTransferEditor?.snapshot()?.busy) return;
+        this._fileTransferEditor?.snapshot()?.busy || this._actionBusy) return;
+    const selection = this._settingsEditor.snapshot();
+    if (selection) {
+      const pending = this._adminRecoverySelection;
+      const pageId = this._currentAdminPage().page.id;
+      this._adminRecoverySelection = {pageId: this._currentAdminPage().page.id,
+        settingId: selection.setting.id, targetId: selection.targetId ??
+          (pending?.pageId === pageId && pending.settingId === selection.setting.id ? pending.targetId : null)};
+      if (selection.isDirty) this._notice = "The router management session changed. Unsaved changes were discarded; current settings will load when access returns.";
+    }
     this._adminPageEpoch += 1;
     this._clearSettingsEditor();
     this._clearAdminPrivateQueries();
+    this._queueAdminPageRecovery();
   }
 
   _canLeaveAdminPage() {
@@ -3917,6 +4014,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       return;
     }
     this._adminPageEpoch += 1;
+    this._adminRecoverySelection = undefined;
     this._clearSettingsEditor();
     this._clearAdminPrivateQueries();
     this._clearAdminActionState();
@@ -3928,13 +4026,14 @@ export class SpeedportSmartPanel extends HTMLElement {
     await this._loadAdminPage();
   }
 
-  async _openAdminSetting(settingId) {
+  async _openAdminSetting(settingId, {targetId, recovering = false} = {}) {
     const router = this._currentRouter();
     const setting = router?.settings?.find((item) => item.id === settingId);
     if (this._activeView !== "administration" || this._hass?.user?.is_admin !== true ||
         !setting?.supported || !setting.available || !this._canLeaveAdminPage()) return;
     this._clearSettingsEditor();
-    await this._settingsEditor.open({entryId: router.entry_id, setting, autoLoad: true});
+    if (!recovering) this._adminRecoverySelection = undefined;
+    await this._settingsEditor.open({entryId: router.entry_id, setting, autoLoad: true, targetId});
     this._render();
   }
 
@@ -3946,8 +4045,14 @@ export class SpeedportSmartPanel extends HTMLElement {
     const current = () => epoch === this._adminPageEpoch && this._activeView === "administration" &&
       this._currentRouter()?.entry_id === router.entry_id;
     const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
-    const first = settings.find((setting) => setting.supported && setting.available);
-    if (first && !this._settingsEditor.snapshot()) await this._openAdminSetting(first.id);
+    const resume = this._adminRecoverySelection?.pageId === page.id ? this._adminRecoverySelection : undefined;
+    const first = settings.find((setting) => setting.supported && setting.available && (!resume || setting.id === resume.settingId));
+    if (first && !this._settingsEditor.snapshot()) {
+      await this._openAdminSetting(first.id, {targetId: resume?.targetId, recovering: Boolean(resume)});
+      const loaded = this._settingsEditor.snapshot();
+      if (current() && this._adminRecoverySelection === resume && loaded?.loaded &&
+          (resume?.targetId == null || loaded.targetId === resume.targetId)) this._adminRecoverySelection = undefined;
+    }
     if (!current()) return;
     // Read inventories only after page entry; never from telemetry rendering.
     for (const feature of adminPageFeatures(page, ADMIN_IA)) {
@@ -7232,57 +7337,19 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _renderDashboard(router, reporting, accessSourceStates) {
-    const heroEntities = reporting.filter((entity) =>
-      HERO_KEYS.has(entity.translation_key),
-    );
-    const sectionEntities = {};
-    for (const entity of reporting) {
-      if (HERO_KEYS.has(entity.translation_key)) continue;
-      const section = SECTION_INFO[entity.section] ? entity.section : "system";
-      if (!sectionEntities[section]) sectionEntities[section] = [];
-      sectionEntities[section].push(entity);
-    }
-    const sections = DASHBOARD_SECTION_ORDER.map((section) =>
-      this._renderSection(
-        section,
-        sectionEntities[section] || [],
-        router,
-        accessSourceStates,
-      ),
-    ).join("");
-    const hero = heroEntities.length
-      ? `<section class="hero-metrics">${heroEntities
-          .map((entity) =>
-            this._renderEntity(entity, {
-              hero: true,
-              sourceState: accessSourceStates[entity.access_source],
-            }),
-          )
-          .join("")}</section>`
-      : "";
-    return `
-      <section class="access-overview">
-        <header>
-          <div>
-            <span class="kicker">${escapeHtml(this._t("access.kicker"))}</span>
-            <h2>${escapeHtml(this._t("access.title"))}</h2>
-          </div>
-          <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">
-            <ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon>
-          </button>
-        </header>
-        <div class="source-grid">
-          ${(router.access_sources || [])
-            .map((source) =>
-              this._renderSource(accessSourceStates[source.id] || source),
-            )
-            .join("")}
-        </div>
-        ${this._renderCapabilities(router)}
-      </section>
-      ${hero}
-      <div class="sections">${sections}</div>
-    `;
+    const overview = renderDashboardOverview({
+      router: {...router, entities: reporting}, states: this._hass?.states,
+      trafficMarkup: renderTrafficHistory(this._trafficHistory.snapshot(), {language: this._language()}),
+      formatState: (state) => this._formatState(state),
+    });
+    const wan = accessSourceStates.wan_counters;
+    const interval = Number(wan?.effective_interval_seconds);
+    const cadence = wan && Number.isFinite(interval) && interval > 0
+      ? `<p class="dashboard-cadence">WAN samples every ${escapeHtml(interval)} s · ${escapeHtml(humanize(wan.state || wan.mode || ""))}</p>` : "";
+    const deviceLink = router.root_device_id ? `<a href="/config/devices/device/${encodeURIComponent(router.root_device_id)}">All entities in Home Assistant</a>` : "";
+    return `${overview}${cadence}<div class="dashboard-tools">${deviceLink}
+      <button class="icon-button" data-refresh title="${escapeHtml(this._t("action.refresh_metadata"))}" aria-label="${escapeHtml(this._t("action.refresh_metadata"))}">
+        <ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon></button></div>`;
   }
 
   _renderViewTabs(router) {
@@ -7630,7 +7697,7 @@ export class SpeedportSmartPanel extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       ${this._styles()}
-      <main class="shell ${this._activeView === "administration" ? "administration-shell" : ""}" ${this._pendingAction ? 'inert aria-hidden="true"' : ""}>
+      <main class="shell ${this._activeView === "administration" ? "administration-shell" : "dashboard-shell"}" ${this._pendingAction ? 'inert aria-hidden="true"' : ""}>
         <header class="hero">
           <div class="hero-copy">
             <div class="eyebrow">
@@ -7660,7 +7727,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         ${routerTabs}
         ${this._renderViewTabs(router)}
         ${notice}
-        ${this._renderManagement(router)}
+        ${this._activeView === "administration" || !this._adminManagementAvailable(this._hass, router) ? this._renderManagement(router) : ""}
         ${viewContent}
 
         <footer>
@@ -7756,6 +7823,8 @@ export class SpeedportSmartPanel extends HTMLElement {
   _styles() {
     return `
       <style>
+        ${DASHBOARD_OVERVIEW_STYLES}
+        ${TRAFFIC_HISTORY_STYLES}
         :host {
           --sp-magenta: var(--speedport-smart-accent-color, #e20074);
           --sp-magenta-deep: var(--speedport-smart-accent-deep-color, #b4005c);
@@ -8081,6 +8150,17 @@ export class SpeedportSmartPanel extends HTMLElement {
         .administration-shell .hero .router-visual,
         .administration-shell .hero-copy > p { display: none; }
         .administration-shell .hero-status { margin-top: 8px; }
+        .dashboard-shell .hero { min-height: 0; padding: 20px 28px; border-radius: 22px; }
+        .dashboard-shell .hero h1 { font-size: clamp(23px, 2.5vw, 32px); margin: 0; }
+        .dashboard-shell .hero .eyebrow,
+        .dashboard-shell .hero .router-identity,
+        .dashboard-shell .hero .router-visual,
+        .dashboard-shell .hero-copy > p { display: none; }
+        .dashboard-shell .hero-status { margin-top: 10px; }
+        .dashboard-shell .view-tabs { margin: 16px 0 20px; }
+        .dashboard-cadence { color: var(--sp-muted); font-size: 12px; margin: 14px 0 0; }
+        .dashboard-tools { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 16px; font-size: 13px; }
+        .dashboard-tools a { color: var(--sp-magenta); }
         .administration-shell .view-tabs { margin-top: 14px; padding: 4px; }
         .administration-shell .view-tabs button { min-height: 42px; padding-block: 10px; }
         .administration-shell .management-alert:not(.warning):not(.caution) { margin-top: 12px; padding: 12px 18px; }

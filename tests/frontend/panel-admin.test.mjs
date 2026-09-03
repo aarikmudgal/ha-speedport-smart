@@ -1815,7 +1815,7 @@ test("all native pages retain capability coverage without inventing controls", (
   assert.doesNotMatch(html, /data-control=/);
 });
 
-test("integration health remains on Dashboard instead of native router pages", () => {
+test("integration diagnostics stay out of headline overview and native router pages", () => {
   const fixture = panelFixture();
   const entities = [FAST_POLLING_HEALTH_META, ENDPOINT_FAILURE_META];
   fixture.panel._hass.states = {
@@ -1839,8 +1839,11 @@ test("integration health remains on Dashboard instead of native router pages", (
   assert.ok(!html.includes(FAST_POLLING_HEALTH_META.entity_id));
   assert.ok(!html.includes(ENDPOINT_FAILURE_META.entity_id));
   const dashboard = fixture.panel._renderDashboard(router("entry-a", entities), entities, {});
-  assert.ok(dashboard.includes(FAST_POLLING_HEALTH_META.entity_id));
-  assert.ok(dashboard.includes(ENDPOINT_FAILURE_META.entity_id));
+  assert.ok(!dashboard.includes(FAST_POLLING_HEALTH_META.entity_id));
+  assert.ok(!dashboard.includes(ENDPOINT_FAILURE_META.entity_id));
+  // Presentation narrowing never deletes or changes the underlying entity data.
+  assert.equal(fixture.panel._hass.states[FAST_POLLING_HEALTH_META.entity_id].state, "healthy");
+  assert.equal(fixture.panel._hass.states[ENDPOINT_FAILURE_META.entity_id].state, "0");
 });
 
 test("panel uses Home Assistant platform and state icons with custom overrides", async () => {
@@ -2088,12 +2091,14 @@ test("panel retries a transient Home Assistant icon-resource failure", async () 
   assert.deepEqual(categories, ["entity", "entity_component", "entity_component"]);
 });
 
-test("Dashboard keeps every report while Administration mirrors reviewed groups", () => {
+test("Dashboard shows headline telemetry while Administration keeps reviewed reports and controls", () => {
   const fixture = panelFixture();
+  const headline = {...REPORTING_META, entity_id: "sensor.wifi_5_clients", translation_key: "wifi_5_clients", section: "wireless"};
   fixture.panel._metadata = {
-    routers: [router("entry-a", [REPORTING_META, CONFIG_META, CONTROL_META])],
+    routers: [router("entry-a", [REPORTING_META, CONFIG_META, CONTROL_META, headline])],
   };
   fixture.panel._hass.states = {
+    [headline.entity_id]: {attributes: {}, state: "25"},
     [REPORTING_META.entity_id]: {
       attributes: { friendly_name: "Router CPU" },
       state: "20",
@@ -2121,8 +2126,9 @@ test("Dashboard keeps every report while Administration mirrors reviewed groups"
   );
 
   SpeedportSmartPanel.prototype._render.call(fixture.panel);
-  assert.match(fixture.panel.shadowRoot.innerHTML, /sensor\.speedport_system_cpu/);
-  assert.match(
+  assert.match(fixture.panel.shadowRoot.innerHTML, /data-more-info="sensor\.wifi_5_clients"/);
+  assert.doesNotMatch(fixture.panel.shadowRoot.innerHTML, /sensor\.speedport_system_cpu/);
+  assert.doesNotMatch(
     fixture.panel.shadowRoot.innerHTML,
     /sensor\.speedport_wifi_schedule_mode/,
   );

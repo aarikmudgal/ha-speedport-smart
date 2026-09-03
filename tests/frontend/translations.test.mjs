@@ -214,7 +214,8 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   assert.match(panel, /keepDialogFocus/);
   assert.match(entityState, /meta\?\.custom_name/);
   assert.match(panel, /aria-live="\$\{/);
-  assert.match(panel, /aria-label="\$\{escapeHtml\(this\._t\("action\.refresh_metadata"\)\)\}"/);
+  assert.match(panel, /aria-label="Router administration categories"/);
+  assert.match(panel, /data-admin-menu aria-expanded=/);
   assert.match(panel, /inert aria-hidden="true"/);
   assert.match(panel, /_focusAfterRenderEntityId/);
   assert.match(panel, /!meta\?\.control/);
@@ -248,7 +249,7 @@ test("Panel keeps the accessible dialog and live-status contract", async () => {
   const frontendSchema = panel.match(/PANEL_SCHEMA_VERSION = (\d+)/)?.[1];
   const backendSchema = backend.match(/PANEL_SCHEMA_VERSION: Final = (\d+)/)?.[1];
   assert.ok(frontendSchema);
-  assert.equal(frontendSchema, "23");
+  assert.equal(frontendSchema, "24");
   assert.equal(frontendSchema, backendSchema);
   assert.match(panel, new RegExp(`accessibility\\.js\\?schema=${frontendSchema}`));
   assert.match(panel, new RegExp(`translations\\.js\\?schema=${frontendSchema}`));

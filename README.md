@@ -164,11 +164,11 @@ The panel:
 
 - follows the active Home Assistant light or dark theme
 - adapts to desktop and mobile layouts
-- keeps comprehensive reporting in **Dashboard** and presents reviewed controls
-  in **Administration** alongside related reporting context
-- groups data hierarchically by connection, bandwidth, DSL, mobile, Wi-Fi,
-  clients, telephony, router services, and management capability
-- groups child-device entities into individual device cards
+- keeps **Dashboard** focused on live traffic graphs, paired Wi-Fi band
+  summaries, DSL link speeds, mobile receiver signal and wired devices
+- presents reviewed controls and detailed router settings in **Administration**
+- keeps all entities and their recorded history available in Home Assistant's
+  standard device pages, linked from Dashboard
 - uses live Home Assistant entity states; router names and values are not
   hardcoded
 - respects the signed-in user's entity permissions
@@ -190,8 +190,9 @@ another form on the page or another existing target also reads that selection;
 it never saves it. **Save changes** still requires the exact typed confirmation,
 and expired sessions or revisions require a fresh read. Secrets are not
 prefilled. **Refresh** reloads current state; **Cancel changes** restores the
-last loaded values without sending a router request. The separate Dashboard
-view is unchanged. See the [Dashboard and Administration guide](docs/dashboard.md) for
+last loaded values without sending a router request. When management access
+recovers, an emptied settings page automatically reads again; it does not
+require navigation away and back. See the [Dashboard and Administration guide](docs/dashboard.md) for
 navigation, privacy and outcome details. No live writes were tested for this
 redesign; router owners must validate writes explicitly.
 

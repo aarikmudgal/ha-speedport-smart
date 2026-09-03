@@ -10,6 +10,14 @@ Automated feature-branch prereleases are intentionally not listed one by one.
 
 ### Added
 
+- A compact Dashboard with a 15-minute download/upload history graph, live
+  sample values, paired Wi-Fi band summaries, DSL sync/capacity, mobile receiver
+  signal/details and an explicitly identified wired-device list. Graph history
+  comes from Home Assistant Recorder; it adds no router polling and preserves
+  existing entity history and statistics.
+- Automatic selected-page settings recovery after management-session changes
+  or restored access, with stale-read cancellation and no automatic writes.
+
 - DHCP and SSDP discovery hints with private-unicast IPv4 filtering, an exact
   captured SSDP fingerprint, a public HTTP status preflight, user confirmation,
   exact host/serial deduplication, and a second read-only identity check. Only

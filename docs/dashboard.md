@@ -1,10 +1,37 @@
 # Dashboard and Administration
 
-The bundled Home Assistant panel has two separate views. **Dashboard** retains
-its existing reporting, live traffic graphs and device cards.
-The new **Administration** layout organizes router settings into pages within
+The bundled Home Assistant panel has two separate views. **Dashboard** is a
+compact connection overview. **Administration** organizes router settings into pages within
 that same panel. It does not embed the router website or replace Home
 Assistant's standard device and entity pages.
+
+## Dashboard overview
+
+- A full-width download/upload graph shows the last 15 minutes, followed by
+  incoming Home Assistant samples. Its two series use distinct colors and line
+  styles. The current sample values remain visible above the graph.
+- Separate 2.4 GHz and 5 GHz Wi-Fi blocks show status, channel and connected
+  device counts.
+- DSL sync speeds and WAN capacity are labeled separately from consumed
+  bandwidth. Mobile receiver details include the reported network type, band,
+  frequency and signal metrics when those entities exist.
+- Wired devices are grouped in a compact list. Only trackers explicitly
+  identified as LAN appear; missing Wi-Fi information is not treated as proof
+  that a device uses Ethernet.
+
+The graph reads only the selected router's two rate entities from Home
+Assistant Recorder on entry, then consumes the existing live state stream.
+It does not add router polling, alter polling cadence, or change Recorder
+configuration. Missing history is reported explicitly; live samples can still
+accumulate while the view is open. Unknown and unavailable values are not
+converted to zero. History availability depends on the user's permissions,
+Recorder configuration and retention. Leaving the view clears its in-memory
+graph state, not recorded data.
+
+The active WAN cadence remains visible. Detailed entities, history and
+diagnostics are still available through **All entities in Home Assistant**.
+The overview follows the current Home Assistant theme and fills the available
+width on desktop and mobile. Router-specific values are never demo data.
 
 ## Administration navigation
 
@@ -42,6 +69,12 @@ values. This does not load every editor in the background. Existing-object
 forms first read their available targets, then read the selected target; the
 target picker reads a newly selected target automatically. None of these
 navigation or selection operations saves router settings.
+
+If a management-session change invalidates an idle form, the visible page
+automatically reads again after access recovers. This is one guarded read for
+the recovered page, not a retry on every telemetry update. Page, router and
+permission changes cancel pending navigation reads. In-flight writes are not
+replaced or replayed. A failed read still provides a manual Refresh fallback.
 
 The form groups related fields together. For example, Wi-Fi name and encryption
 shows the 2.4 GHz network, the 5 GHz network, then shared security settings.
