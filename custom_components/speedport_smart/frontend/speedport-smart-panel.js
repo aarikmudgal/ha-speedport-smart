@@ -1,19 +1,22 @@
-import { requestPrivateApi } from "./private-api.js?schema=22";
-import { keepDialogFocus } from "./accessibility.js?schema=22";
+import { requestPrivateApi } from "./private-api.js?schema=23";
+import {
+  NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures,
+} from "./admin-navigation.js?schema=23";
+import { keepDialogFocus } from "./accessibility.js?schema=23";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=22";
+} from "./call-history-view.js?schema=23";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=22";
+} from "./file-transfer-editor.js?schema=23";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=22";
+} from "./maintenance-editor.js?schema=23";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=22";
+} from "./configuration-editor.js?schema=23";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -28,22 +31,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=22";
+} from "./controls.js?schema=23";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=22";
+} from "./entity-state.js?schema=23";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=22";
+} from "./render-state.js?schema=23";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=22";
+} from "./translations.js?schema=23";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -228,7 +231,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 22;
+const PANEL_SCHEMA_VERSION = 23;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3328,6 +3331,11 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._platformIconsLoading = false;
     this._selectedEntry = undefined;
     this._activeView = "dashboard";
+    this._adminTab = "overview";
+    this._adminPage = undefined;
+    this._adminPageEpoch = 0;
+    this._adminMenuOpen = false;
+    this._privateRequestQueue = Promise.resolve();
     this._settingsHost = undefined;
     this._settingsBinding = undefined;
     this._settingsEditor = createConfigurationEditorController({
@@ -3448,6 +3456,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       }
     } else if (managementAvailabilityChanged) {
       this._clearAdminActionState();
+      this._invalidateAdminPageSession();
     }
     if (firstAssignment) {
       this._loadPlatformIcons();
@@ -3642,6 +3651,7 @@ export class SpeedportSmartPanel extends HTMLElement {
         this._clearAdminRead();
       } else if (actionSessionChanged) {
         this._clearAdminActionState();
+        this._invalidateAdminPageSession();
       }
       if (
         selectedEntryLoaded &&
@@ -3697,6 +3707,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _clearAdminRead() {
+    this._adminPageEpoch += 1;
     this._clearSettingsEditor();
     this._invalidateAdminReadSnapshot();
     this._clearAdminPrivateQueries();
@@ -3733,7 +3744,17 @@ export class SpeedportSmartPanel extends HTMLElement {
         message?.entry_id !== this._currentRouter()?.entry_id) {
       return Promise.reject(new Error("administrator_required"));
     }
-    return requestPrivateApi(this._hass, message);
+    const epoch = this._adminPageEpoch;
+    const userId = this._hass.user?.id;
+    const run = this._privateRequestQueue.then(() => {
+      if ((message.type !== ADMIN_READ_API_TYPE && epoch !== this._adminPageEpoch) || this._hass?.user?.id !== userId ||
+          this._hass?.user?.is_admin !== true || this._activeView !== "administration" ||
+          message.entry_id !== this._currentRouter()?.entry_id) throw new Error("administrator_required");
+      return requestPrivateApi(this._hass, message);
+    });
+    // The queue retains completion only, never a private response/credential.
+    this._privateRequestQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   async _loadAdminRead(entryId, { force = false } = {}) {
@@ -3800,6 +3821,7 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _selectRouter(entryId) {
     if (!entryId || entryId === this._selectedEntry) return;
+    if (!this._canLeaveAdminPage()) return;
     this._clearAdminRead();
     this._selectedEntry = entryId;
     this._pendingAction = undefined;
@@ -3809,7 +3831,11 @@ export class SpeedportSmartPanel extends HTMLElement {
       this._activeView === "administration" &&
       this._hass?.user?.is_admin === true
     ) {
-      this._loadAdminRead(entryId);
+      const epoch = this._adminPageEpoch;
+      this._loadAdminRead(entryId).then(() => {
+        if (epoch === this._adminPageEpoch && this._activeView === "administration" &&
+            this._currentRouter()?.entry_id === entryId) this._loadAdminPage();
+      });
     } else {
       this._render();
     }
@@ -3822,10 +3848,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     ) {
       return;
     }
+    if (view !== this._activeView && !this._canLeaveAdminPage()) return;
     const previousView = this._activeView;
     this._activeView = view;
     this._notice = "";
     if (view !== "administration") {
+      this._adminPageEpoch += 1;
       this._clearSettingsEditor();
       this._clearAdminPrivateQueries();
       this._clearAdminActionState();
@@ -3838,9 +3866,102 @@ export class SpeedportSmartPanel extends HTMLElement {
       if (entryId) {
         const cachedForEntry =
           this._adminReadEntry === entryId && Boolean(this._adminRead);
+        const epoch = this._adminPageEpoch;
         this._loadAdminRead(entryId, {
           force: previousView !== "administration" && cachedForEntry,
+        }).then(() => {
+          if (epoch === this._adminPageEpoch && previousView !== "administration" && this._activeView === "administration" &&
+              this._currentRouter()?.entry_id === entryId) this._loadAdminPage();
         });
+      }
+    }
+  }
+
+  _currentAdminPage() {
+    return resolveAdminPage(this._adminTab, this._adminPage);
+  }
+
+  _invalidateAdminPageSession() {
+    // Never erase the outcome of a dispatched write. Idle private snapshots and
+    // credentials belong to the old session and must be read again explicitly.
+    if (this._settingsEditor?.snapshot()?.isSaving || this._maintenanceEditor?.snapshot()?.busy ||
+        this._fileTransferEditor?.snapshot()?.busy) return;
+    this._adminPageEpoch += 1;
+    this._clearSettingsEditor();
+    this._clearAdminPrivateQueries();
+  }
+
+  _canLeaveAdminPage() {
+    if (this._actionBusy || this._settingsEditor?.snapshot()?.isSaving ||
+        this._maintenanceEditor?.snapshot()?.busy || this._fileTransferEditor?.snapshot()?.busy) {
+      this._notice = "Wait for the current router request to finish before leaving this page.";
+      this._render();
+      return false;
+    }
+    const state = this._settingsEditor?.snapshot();
+    if (state?.isDirty || state?.link || state?.downloadAvailable ||
+        this._fileTransferEditor?.snapshot()?.filename) {
+      return globalThis.confirm?.("Leave this page? Unsaved changes and temporary private data will be discarded.") !== false;
+    }
+    return true;
+  }
+
+  async _selectAdminPage(tabId, pageId) {
+    if (this._activeView !== "administration" || !this._canLeaveAdminPage()) return;
+    const {tab, page} = resolveAdminPage(tabId, pageId);
+    const current = this._currentAdminPage();
+    this._adminMenuOpen = false;
+    if (current.tab.id === tab.id && current.page.id === page.id) {
+      this._render();
+      if (!this._settingsEditor.snapshot()) await this._loadAdminPage();
+      return;
+    }
+    this._adminPageEpoch += 1;
+    this._clearSettingsEditor();
+    this._clearAdminPrivateQueries();
+    this._clearAdminActionState();
+    this._pendingAction = undefined;
+    this._adminTab = tab.id;
+    this._adminPage = page.id;
+    this._notice = "";
+    this._render();
+    await this._loadAdminPage();
+  }
+
+  async _openAdminSetting(settingId) {
+    const router = this._currentRouter();
+    const setting = router?.settings?.find((item) => item.id === settingId);
+    if (this._activeView !== "administration" || this._hass?.user?.is_admin !== true ||
+        !setting?.supported || !setting.available || !this._canLeaveAdminPage()) return;
+    this._clearSettingsEditor();
+    await this._settingsEditor.open({entryId: router.entry_id, setting, autoLoad: true});
+    this._render();
+  }
+
+  async _loadAdminPage() {
+    const router = this._currentRouter();
+    if (this._activeView !== "administration" || this._hass?.user?.is_admin !== true || !router) return;
+    const epoch = ++this._adminPageEpoch;
+    const {page} = this._currentAdminPage();
+    const current = () => epoch === this._adminPageEpoch && this._activeView === "administration" &&
+      this._currentRouter()?.entry_id === router.entry_id;
+    const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
+    const first = settings.find((setting) => setting.supported && setting.available);
+    if (first && !this._settingsEditor.snapshot()) await this._openAdminSetting(first.id);
+    if (!current()) return;
+    // Read inventories only after page entry; never from telemetry rendering.
+    for (const feature of adminPageFeatures(page, ADMIN_IA)) {
+      for (const actionId of feature.adminActions) {
+        if (!current()) return;
+        if (actionId === "dect_handset_set_paging") await this._loadDectHandsetTargets();
+        else if (actionId === "voip_line_set_active") await this._loadVoipLineTargets();
+        else if (ADMIN_ACTION_INFO[actionId]?.risk === "destructive") {
+          await this._loadDestructiveAdminActionTargets(actionId);
+        }
+      }
+      if (feature.id === "telephony_call_lists" && current()) {
+        this._callHistoryView.open({entryId: router.entry_id});
+        await this._callHistoryView.load();
       }
     }
   }
@@ -3990,10 +4111,28 @@ export class SpeedportSmartPanel extends HTMLElement {
     );
     if (!target) return;
 
+    if (target.dataset.adminTab) {
+      return this._selectAdminPage(target.dataset.adminTab);
+    }
+    if (target.dataset.adminPage) {
+      return this._selectAdminPage(this._adminTab, target.dataset.adminPage);
+    }
+    if (target.dataset.adminMenu !== undefined) {
+      this._adminMenuOpen = !this._adminMenuOpen;
+      this._render();
+      return;
+    }
+    if (target.dataset.loadAdminPage !== undefined) {
+      this._loadAdminPage();
+      return;
+    }
+
     if (target.dataset.openTransfer) {
       const router = this._currentRouter();
       const action = router?.file_transfers?.find((item) => item.id === target.dataset.openTransfer);
-      if (this._hass?.user?.is_admin === true && action?.supported && action.available) {
+      if (this._activeView === "administration" && this._hass?.user?.is_admin === true &&
+          action?.supported && action.available && this._canLeaveAdminPage()) {
+        this._clearSettingsEditor();
         this._fileTransferEditor.open({entryId: router.entry_id, action});
         this._fileTransferHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
       }
@@ -4004,7 +4143,9 @@ export class SpeedportSmartPanel extends HTMLElement {
       const router = this._currentRouter();
       const action = router?.admin_actions?.find((item) =>
         item.id === target.dataset.openMaintenance && item.execution_policy === "maintenance");
-      if (this._hass?.user?.is_admin === true && action?.supported && action.available) {
+      if (this._activeView === "administration" && this._hass?.user?.is_admin === true &&
+          action?.supported && action.available && this._canLeaveAdminPage()) {
+        this._clearSettingsEditor();
         this._maintenanceEditor.open({entryId: router.entry_id, action});
         this._maintenanceHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
       }
@@ -4015,8 +4156,7 @@ export class SpeedportSmartPanel extends HTMLElement {
       const router = this._currentRouter();
       const setting = router?.settings?.find((item) => item.id === target.dataset.openSetting);
       if (this._hass?.user?.is_admin === true && setting?.supported && setting.available) {
-        this._settingsEditor.open({entryId: router.entry_id, setting});
-        this._settingsHost?.scrollIntoView?.({block: "nearest", behavior: "smooth"});
+        return this._openAdminSetting(setting.id);
       }
       return;
     }
@@ -6710,7 +6850,7 @@ export class SpeedportSmartPanel extends HTMLElement {
     capabilities,
     sourceAvailable,
     accessSourceStates,
-    { canReadAdmin = false } = {},
+    { canReadAdmin = false, pageMode = false, readSections } = {},
   ) {
     if (features.length === 0) return "";
     const cards = features
@@ -6771,7 +6911,7 @@ export class SpeedportSmartPanel extends HTMLElement {
             isSemanticControl(entity) &&
             adminFeatureForControl(entity) === feature.id,
         );
-        const controlMarkup = featureControls.length
+        const controlMarkup = featureControls.length && !pageMode
           ? this._renderAdministrationEntities(
               featureControls,
               accessSourceStates,
@@ -6781,7 +6921,8 @@ export class SpeedportSmartPanel extends HTMLElement {
           ? feature.readSections
               .filter(
                 (sectionId) =>
-                  ADMIN_READ_SECTION_OWNER.get(sectionId) === feature.id,
+                  ADMIN_READ_SECTION_OWNER.get(sectionId) === feature.id &&
+                  (!readSections || readSections.includes(sectionId)),
               )
               .map((sectionId) =>
                 this._renderAdminReadSection(
@@ -6810,7 +6951,7 @@ export class SpeedportSmartPanel extends HTMLElement {
           (!feature.adminActionReplacesBlocked || supportedReplacementAction)
           ? this._renderAdminActions(feature)
           : "";
-        const settingsMarkup = canReadAdmin && featureSettings.length
+        const settingsMarkup = canReadAdmin && featureSettings.length && !pageMode
           ? `<div class="sp-settings-buttons">${featureSettings.map((setting) => `<button type="button" data-open-setting="${escapeHtml(setting.id)}"${setting.available ? "" : " disabled"}>${escapeHtml(setting.title)}</button>`).join("")}</div>${SETTINGS_FEATURE_LINKS[feature.id]?.complete ? "" : "<p>Partial coverage: the editors above are implemented; other options in this feature remain pending.</p>"}`
           : "";
         const ownedMarkup =
@@ -6833,6 +6974,16 @@ export class SpeedportSmartPanel extends HTMLElement {
             ${blockedReason}
           </span>
         `;
+        if (pageMode) {
+          // Forms are already available in the page-local editor, not repeated
+          // under every overlapping capability. Preserve contextual read/actions.
+          if (!ownedMarkup && (featureSettings.length || featureControls.length)) return "";
+          return `<section class="admin-native-section" data-admin-feature="${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
+            <header><h3 id="${escapeHtml(headingId)}">${escapeHtml(this._t(feature.titleKey))}</h3>
+              <span class="admin-feature-status">${escapeHtml(status)}</span>${featureRisk}</header>
+            ${ownedMarkup || `<p class="admin-native-unavailable">${escapeHtml(this._t(feature.blockedReasonKey || "admin.contract.blocked_hint"))}</p>`}
+          </section>`;
+        }
         if (ownedMarkup) {
           return `
             <details class="admin-feature-card status-${escapeHtml(presentation.key)} ${feature.risk ? `risk-${escapeHtml(feature.risk)}` : ""} ${feature.destructive ? "destructive-candidate" : ""} has-owned-content" data-admin-feature="${escapeHtml(feature.id)}" data-detail-id="admin-feature:${escapeHtml(feature.id)}" aria-labelledby="${escapeHtml(headingId)}">
@@ -6969,8 +7120,8 @@ export class SpeedportSmartPanel extends HTMLElement {
     const host = this.shadowRoot.querySelector("[data-settings-editor-host]");
     if (!host) return;
     this._settingsHost = host;
-    host.innerHTML = renderConfigurationEditor(this._settingsEditor);
-    if (!this._settingsBinding) this._settingsBinding = bindConfigurationEditor(host, this._settingsEditor);
+    host.innerHTML = renderConfigurationEditor(this._settingsEditor, {pageMode: true});
+    if (!this._settingsBinding) this._settingsBinding = bindConfigurationEditor(host, this._settingsEditor, {pageMode: true});
   }
 
   _renderSettingsCatalog(router) {
@@ -7005,97 +7156,77 @@ export class SpeedportSmartPanel extends HTMLElement {
       accessSourceStates.protected_json?.available !== false;
     const adminReadAvailable = sourceAvailable && !this._adminReadError;
     const runtimeEntities = [...controls, ...reporting];
-    const administrationEntities = runtimeEntities.filter(
-      (entity) => adminPlacementFor(entity),
-    );
-    const areas = ADMIN_IA.map((area) => {
-      const subsectionMarkup = area.subsections
-        .map((subsection) => {
-          const entities = administrationEntities.filter((entity) => {
-            const placement = adminPlacementFor(entity);
-            return (
-              placement?.areaId === area.id &&
-              placement.subsectionId === subsection.id
-            );
-          });
-          const overviewEntities = entities.filter(
-            (entity) => !isSemanticControl(entity),
-          );
-          const risk = highestAdminRisk(entities);
-          const featureCount = subsection.features.length;
-          const overviewMarkup = this._renderAdministrationEntities(
-            overviewEntities,
-            accessSourceStates,
-          );
-          return `
-            <details class="administration-subsection" data-detail-id="admin-subsection:${escapeHtml(subsection.id)}">
-              <summary>
-                <span class="administration-summary-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(subsection.icon)}"></ha-icon></span>
-                <span class="administration-summary-copy">
-                  <strong>${escapeHtml(this._t(subsection.titleKey))}</strong>
-                  <small>${escapeHtml(this._t(featureCount === 1 ? "admin.count.feature" : "admin.count.features", { count: featureCount }))}</small>
-                </span>
-                ${this._renderRiskBadge(risk, { summary: true })}
-                <ha-icon class="administration-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
-              </summary>
-              <div class="administration-subsection-content">
-                ${this._renderAdminFeatureCatalog(
-                  subsection.features,
-                  runtimeEntities,
-                  sections,
-                  capabilities,
-                  adminReadAvailable,
-                  accessSourceStates,
-                  { canReadAdmin: this._hass?.user?.is_admin === true },
-                )}
-                ${
-                  overviewMarkup
-                    ? `<section class="administration-subsection-overview" aria-label="${escapeHtml(this._t(subsection.titleKey))}">${overviewMarkup}</section>`
-                    : ""
-                }
-              </div>
-            </details>
-          `;
-        })
-        .filter(Boolean)
-        .join("");
-      const areaEntities = administrationEntities.filter(
-        (entity) => adminPlacementFor(entity)?.areaId === area.id,
-      );
-      const risk = highestAdminRisk(areaEntities);
-      const featureCount = area.subsections.reduce(
-        (count, subsection) => count + subsection.features.length,
-        0,
-      );
-      return `
-        <details class="administration-area" data-detail-id="admin-area:${escapeHtml(area.id)}">
-          <summary>
-            <span class="administration-summary-icon" aria-hidden="true"><ha-icon icon="${escapeHtml(area.icon)}"></ha-icon></span>
-            <span class="administration-summary-copy">
-              <strong>${escapeHtml(this._t(area.titleKey))}</strong>
-              <small>${escapeHtml(this._t(featureCount === 1 ? "admin.count.feature" : "admin.count.features", { count: featureCount }))}</small>
-            </span>
-            ${this._renderRiskBadge(risk, { summary: true })}
-            <ha-icon class="administration-chevron" icon="mdi:chevron-down" aria-hidden="true"></ha-icon>
-          </summary>
-          <div class="administration-subsections">${subsectionMarkup}</div>
-        </details>
-      `;
-    })
-      .filter(Boolean)
-      .join("");
+    const {tab, page} = this._currentAdminPage();
+    const features = adminPageFeatures(page, ADMIN_IA);
+    const nativeControls = features.flatMap((feature) => runtimeEntities.filter((entity) =>
+      isSemanticControl(entity) && adminFeatureForControl(entity) === feature.id));
+    const nativeControlMarkup = features.map((feature) => {
+      const owned = nativeControls.filter((entity) => adminFeatureForControl(entity) === feature.id);
+      if (!owned.length) return "";
+      const presentation = this._adminFeaturePresentation(feature, runtimeEntities, sections, capabilities, adminReadAvailable);
+      return `<div data-admin-control-feature="${escapeHtml(feature.id)}"><span class="admin-control-status">${escapeHtml(this._t(`admin.feature.status.${presentation.key}`))}</span>${this._renderAdministrationEntities(owned, accessSourceStates)}</div>`;
+    }).join("");
+    const settings = adminPageSettings(page, router.settings || [], SETTINGS_FEATURE_LINKS);
+    const editorId = this._settingsEditor.snapshot()?.setting.id;
+    const canReadAdmin = this._hass?.user?.is_admin === true;
+    const pageEntities = reporting.filter((entity) =>
+      page.entityGroups.includes(capabilityGroupFor(entity)) && entity.access_source !== "integration");
+    const nativeTabs = NATIVE_ADMIN_TABS.map((item) => `<button type="button" data-admin-tab="${escapeHtml(item.id)}"
+      ${item.id === tab.id ? 'aria-current="page" class="active"' : ""}>
+      <ha-icon icon="${escapeHtml(item.icon)}" aria-hidden="true"></ha-icon>${escapeHtml(item.title)}</button>`).join("");
+    const parentId = page.parentId || page.id;
+    const navigation = tab.pages.filter((item) => !item.parentId || item.parentId === parentId)
+      .map((item) => `<button type="button" data-admin-page="${escapeHtml(item.id)}"
+        class="${item.parentId ? "nested " : ""}${item.id === page.id ? "active" : ""}"
+        ${item.id === page.id ? 'aria-current="page"' : ""}>${escapeHtml(item.title)}</button>`).join("");
+    const forms = canReadAdmin && settings.length ? `<section class="admin-page-forms" aria-label="Page settings">
+      ${settings.length > 1 ? `<nav class="admin-form-nav" aria-label="Settings and actions">${settings.map((setting) => `<button type="button"
+        data-open-setting="${escapeHtml(setting.id)}" ${editorId === setting.id ? 'aria-current="true" class="active"' : ""}
+        ${!setting.supported || !setting.available ? 'disabled title="Current settings are unavailable. Check management access and router capability."' : ""}
+        >${escapeHtml(setting.title)}</button>`).join("")}</nav>` : ""}
+      ${!settings.some((setting) => setting.supported && setting.available) ? '<p class="admin-native-unavailable">These settings are currently unavailable. Check management access; this firmware or connected hardware may not expose them.</p>' : ""}
+      ${!editorId && settings.some((setting) => setting.supported && setting.available) ? '<button type="button" class="secondary" data-load-admin-page>Load current page settings</button>' : ""}
+    </section>` : "";
+    const overview = tab.id === "overview" ? `${this._renderRouterIdentity(router)}${this._renderAdminReadOverview()}` : "";
+    const integrationTools = tab.id === "overview" ? `<details class="admin-native-section" data-detail-id="admin-integration-tools">
+      <summary>Home Assistant integration tools</summary>
+      ${this._renderAdminFeatureCatalog(ADMIN_IA.filter((area) => area.id === "home_assistant")
+        .flatMap((area) => area.subsections.flatMap((section) => section.features)),
+      runtimeEntities, sections, capabilities, adminReadAvailable, accessSourceStates, {canReadAdmin})}
+    </details>` : "";
+    const readSections = page.readSections || [];
+    const featureReadSections = new Set(features.flatMap((feature) => feature.readSections.filter((sectionId) =>
+      ADMIN_READ_SECTION_OWNER.get(sectionId) === feature.id)));
+    const extraRead = canReadAdmin ? readSections.filter((id) => !featureReadSections.has(id)).map((id) =>
+      this._renderAdminReadSection(id, sections.get(id), {sourceAvailable: adminReadAvailable})).join("") : "";
     return `
-      <div class="administration-view">
-        <section class="administration-intro">
-          <span class="kicker">${escapeHtml(this._t("administration.kicker"))}</span>
-          <h2>${escapeHtml(this._t("administration.title"))}</h2>
-          <p>${escapeHtml(this._t("administration.subtitle"))}</p>
-        </section>
-        ${this._renderAdminReadOverview()}
-        ${this._renderSettingsCatalog(router)}
-        <section class="administration-areas" aria-label="${escapeHtml(this._t("administration.areas.label"))}">
-          ${areas || `<div class="administration-empty"><h2>${escapeHtml(this._t("administration.no_controls.title"))}</h2><p>${escapeHtml(this._t("administration.no_controls.body"))}</p></div>`}
-        </section>
+      <div class="administration-view admin-native">
+        <nav class="admin-native-tabs" aria-label="Router administration categories">${nativeTabs}</nav>
+        <div class="admin-native-layout">
+          <aside class="admin-native-sidebar ${this._adminMenuOpen ? "menu-open" : ""}">
+            <button type="button" class="admin-menu-toggle" data-admin-menu aria-expanded="${this._adminMenuOpen}" aria-controls="admin-page-navigation">
+              <ha-icon icon="mdi:menu" aria-hidden="true"></ha-icon>${escapeHtml(tab.title)} · ${escapeHtml(page.title)}</button>
+            <nav id="admin-page-navigation" aria-label="${escapeHtml(tab.title)} settings">${navigation}</nav>
+          </aside>
+          <section class="admin-native-page" aria-labelledby="admin-page-title" data-native-page="${escapeHtml(page.id)}">
+            <header class="admin-page-heading"><div><span class="kicker">${escapeHtml(tab.title)}</span><h2 id="admin-page-title">${escapeHtml(page.title)}</h2></div>
+              ${canReadAdmin ? '<span class="admin-local-badge"><ha-icon icon="mdi:lan" aria-hidden="true"></ha-icon>Local router settings</span>' : ""}</header>
+            ${!canReadAdmin ? this._renderAdminReadOverview() : ""}
+            ${this._adminReadError ? `<p class="admin-native-unavailable" role="status">${escapeHtml(this._t(this._adminReadError))} <button class="secondary compact" data-admin-refresh>Refresh status</button></p>` : ""}
+            ${overview}
+            ${nativeControlMarkup ? `<section class="admin-native-section admin-native-controls" aria-label="Current controls">${nativeControlMarkup}</section>` : ""}
+            ${forms}
+            <div data-settings-editor-host></div>
+            <div data-maintenance-editor-host></div>
+            <div data-file-transfer-editor-host></div>
+            <div data-call-history-editor-host></div>
+            ${this._renderAdminFeatureCatalog(features, runtimeEntities, sections, capabilities,
+              adminReadAvailable, accessSourceStates, {canReadAdmin, pageMode: true, readSections})}
+            ${extraRead}
+            ${pageEntities.length ? `<section class="admin-native-section"><h3>Current status</h3>${this._renderAdministrationEntities(pageEntities, accessSourceStates)}</section>` : ""}
+            ${integrationTools}
+          </section>
+        </div>
       </div>
     `;
   }
@@ -7405,6 +7536,12 @@ export class SpeedportSmartPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
+    const activeEditorElement = this.shadowRoot.activeElement;
+    const privateFocus = activeEditorElement &&
+      [this._settingsHost, this._maintenanceHost, this._fileTransferHost, this._callHistoryHost]
+        .some((host) => host?.contains?.(activeEditorElement)) ? activeEditorElement : undefined;
+    const privateSelection = privateFocus && typeof privateFocus.selectionStart === "number"
+      ? [privateFocus.selectionStart, privateFocus.selectionEnd] : undefined;
     const renderState = captureRenderState(this.shadowRoot);
     const routers = this._metadata?.routers || [];
     const router = this._currentRouter();
@@ -7493,7 +7630,7 @@ export class SpeedportSmartPanel extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       ${this._styles()}
-      <main class="shell" ${this._pendingAction ? 'inert aria-hidden="true"' : ""}>
+      <main class="shell ${this._activeView === "administration" ? "administration-shell" : ""}" ${this._pendingAction ? 'inert aria-hidden="true"' : ""}>
         <header class="hero">
           <div class="hero-copy">
             <div class="eyebrow">
@@ -7606,6 +7743,9 @@ export class SpeedportSmartPanel extends HTMLElement {
           }
         }
       });
+    } else if (privateFocus?.isConnected) {
+      privateFocus.focus?.({preventScroll: true});
+      if (privateSelection) privateFocus.setSelectionRange?.(...privateSelection);
     } else if (renderState.focus) {
       window.requestAnimationFrame(() => {
         restoreFocusState(this.shadowRoot, renderState);
@@ -7934,6 +8074,64 @@ export class SpeedportSmartPanel extends HTMLElement {
           cursor: pointer;
         }
         .administration-view { width: 100%; min-width: 0; }
+        .administration-shell .hero { min-height: 0; padding: 22px 28px; border-radius: 20px; }
+        .administration-shell .hero h1 { font-size: clamp(23px, 2.5vw, 32px); margin: 6px 0; }
+        .administration-shell .hero .eyebrow,
+        .administration-shell .hero .router-identity,
+        .administration-shell .hero .router-visual,
+        .administration-shell .hero-copy > p { display: none; }
+        .administration-shell .hero-status { margin-top: 8px; }
+        .administration-shell .view-tabs { margin-top: 14px; padding: 4px; }
+        .administration-shell .view-tabs button { min-height: 42px; padding-block: 10px; }
+        .administration-shell .management-alert:not(.warning):not(.caution) { margin-top: 12px; padding: 12px 18px; }
+        .administration-shell .management-alert:not(.warning):not(.caution) p { display: none; }
+        .admin-native { margin-top: 22px; }
+        .admin-native-tabs { display: flex; gap: 4px; overflow-x: auto; padding: 6px; border: 1px solid var(--sp-border); border-radius: 16px; background: var(--sp-surface); }
+        .admin-native-tabs button { flex: 1 0 auto; display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 48px; padding: 10px 18px; border: 0; border-radius: 11px; background: transparent; color: var(--sp-muted); cursor: pointer; font-weight: 650; }
+        .admin-native-tabs button.active { color: var(--sp-magenta); background: color-mix(in srgb, var(--sp-magenta) 10%, var(--sp-surface)); }
+        .admin-native-tabs ha-icon { --mdc-icon-size: 21px; }
+        .admin-native-layout { display: grid; grid-template-columns: 235px minmax(0, 1fr); gap: 22px; align-items: start; margin-top: 20px; }
+        .admin-native-sidebar { position: sticky; top: 16px; min-width: 0; padding: 10px; border: 1px solid var(--sp-border); border-radius: 16px; background: var(--sp-surface); }
+        .admin-native-sidebar nav { display: grid; gap: 3px; }
+        .admin-native-sidebar nav button { text-align: left; min-height: 44px; padding: 11px 13px; border: 0; border-radius: 9px; background: transparent; color: var(--sp-text); cursor: pointer; font-size: 14px; overflow-wrap: anywhere; }
+        .admin-native-sidebar nav button.nested { margin-inline-start: 12px; padding-inline-start: 16px; border-inline-start: 2px solid var(--sp-border); border-radius: 0 9px 9px 0; color: var(--sp-muted); font-size: 13px; }
+        .admin-native-sidebar nav button.active { color: var(--sp-magenta); background: color-mix(in srgb, var(--sp-magenta) 9%, var(--sp-surface)); font-weight: 700; border-color: var(--sp-magenta); }
+        .admin-native button:focus-visible { outline: 3px solid var(--sp-magenta); outline-offset: 3px; }
+        .admin-native button:hover:not(:disabled) { filter: brightness(.96); }
+        .admin-native-page { min-width: 0; width: 100%; }
+        .admin-page-heading { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 6px 2px 18px; }
+        .admin-page-heading h2 { margin: 6px 0 0; font-size: clamp(22px, 2.4vw, 30px); }
+        .admin-local-badge { display: flex; align-items: center; gap: 7px; color: var(--sp-muted); font-size: 12px; white-space: nowrap; }
+        .admin-local-badge ha-icon { --mdc-icon-size: 17px; }
+        .admin-menu-toggle { display: none; }
+        .admin-native-page .admin-read-overview { margin-top: 0; }
+        .admin-native-page > .router-identity { padding: 20px; border: 1px solid var(--sp-border); border-radius: 16px; background: var(--sp-surface); }
+        .admin-form-nav { display: flex; flex-wrap: wrap; gap: 7px; padding-bottom: 14px; }
+        .admin-form-nav button { min-height: 40px; padding: 9px 13px; border: 1px solid var(--sp-border); border-radius: 9px; background: var(--sp-surface); color: var(--sp-text); cursor: pointer; font-size: 13px; }
+        .admin-form-nav button.active { border-color: var(--sp-magenta); color: var(--sp-magenta); background: color-mix(in srgb, var(--sp-magenta) 6%, var(--sp-surface)); }
+        .admin-form-nav button:disabled { color: var(--sp-muted); cursor: not-allowed; opacity: .65; }
+        .admin-native-section { min-width: 0; padding: 22px; margin-top: 16px; border: 1px solid var(--sp-border); border-radius: 16px; background: var(--sp-surface); }
+        .admin-native-section > header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+        .admin-native-section h3 { font-size: 16px; margin: 0 auto 0 0; }
+        .admin-native-section > h3 { margin-bottom: 14px; }
+        .admin-native-controls { margin: 0 0 16px; }
+        .admin-control-status { display: block; margin: 4px 0 8px; color: var(--sp-muted); font-size: 12px; }
+        .admin-native-section .admin-feature-owned { border: 0; padding: 0; }
+        .admin-native-page .admin-feature-catalog { display: block; margin-top: 0; }
+        .admin-native-unavailable { color: var(--sp-muted); line-height: 1.5; font-size: 14px; padding: 14px; border: 1px solid var(--sp-border); border-radius: 12px; background: var(--sp-surface-soft); }
+        .admin-native-page [data-settings-editor-host]:not(:empty) { margin-top: 0; }
+        @media (max-width: 760px) {
+          .administration-shell .hero { padding: 18px; }
+          .admin-native-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+          .admin-native-tabs button { padding: 9px 13px; min-height: 44px; font-size: 13px; }
+          .admin-native-tabs ha-icon { display: none; }
+          .admin-native-sidebar { position: static; padding: 8px; }
+          .admin-menu-toggle { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px; min-height: 44px; border: 0; background: transparent; color: var(--sp-text); text-align: left; cursor: pointer; }
+          .admin-native-sidebar nav { display: none; }
+          .admin-native-sidebar.menu-open nav { display: grid; padding-top: 8px; border-top: 1px solid var(--sp-border); }
+          .admin-local-badge { display: none; }
+          .admin-native-section { padding: 16px; }
+        }
         .sp-settings-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 18px; }
         .sp-settings-catalog h3 { margin: 8px 0; font-size: 15px; }
         .sp-settings-buttons { display: flex; flex-wrap: wrap; gap: 8px; }

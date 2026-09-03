@@ -53,7 +53,7 @@ const MAINTENANCE = {
   execution_policy: "maintenance", confirmation: "typed", typed_confirmation: "FACTORY RESET ROUTER",
   warning: "All settings will be lost.", inputs: [], readback_policy: "reconnect_required",
 };
-function fixture() {
+function fixture({native = false} = {}) {
   const calls = [];
   const panel = new SpeedportSmartPanel();
   panel._metadata = {routers: [{entry_id: "entry-a", entry_state: "loaded", title: "Router",
@@ -66,15 +66,18 @@ function fixture() {
       assert.equal(options.method, "POST");
       const message = JSON.parse(options.body);
       calls.push(structuredClone(message));
+      if (message.type.endsWith("/admin_read")) return new Response(JSON.stringify({result: {
+        entry_id: message.entry_id, schema_version: 2, sections: [],
+      }}), {headers: {"content-type": "application/json"}});
       return new Response(JSON.stringify({result: {
         setting_id: SETTING.id, revision: "revision", values: {hdvoice: true}, expires_in: 120,
       }}), {headers: {"content-type": "application/json"}});
     }};
-  panel._renderAdministration = (router) => panel._renderSettingsCatalog(router);
+  if (!native) panel._renderAdministration = (router) => panel._renderSettingsCatalog(router);
   panel._render();
   return {panel, calls};
 }
-function click(panel, dataset) { panel._handleClick({target: {closest: () => ({dataset})}}); }
+function click(panel, dataset) { return panel._handleClick({target: {closest: () => ({dataset})}}); }
 
 test("every editor feature link names a real administration feature", () => {
   const features = new Set(ADMIN_IA.flatMap((area) => area.subsections)
@@ -87,14 +90,15 @@ test("every editor feature link names a real administration feature", () => {
   }
 });
 
-test("catalog and feature buttons open the same editor without router requests", () => {
+test("page setting selection automatically reads current settings without a write", async () => {
   const {panel, calls} = fixture();
   assert.match(panel.shadowRoot.innerHTML, /data-open-setting="telephony_hd_voice"/);
   assert.deepEqual(panel._settingsForFeature("telephony_hd_voice"), [SETTING]);
-  click(panel, {openSetting: SETTING.id});
+  await click(panel, {openSetting: SETTING.id});
   assert.equal(panel._settingsEditor.snapshot().setting.id, SETTING.id);
   assert.match(panel._settingsHost.innerHTML, /HD Voice/);
-  assert.equal(calls.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, "speedport_smart/panel/settings/read");
 });
 
 test("unsupported unavailable and nonadministrator editor clicks cannot open", () => {
@@ -122,8 +126,7 @@ test("metadata catalog escapes text, has disabled capabilities, exposes no priva
 
 test("WAN telemetry rerender preserves editor host, listeners and private drafts", async () => {
   const {panel, calls} = fixture();
-  click(panel, {openSetting: SETTING.id});
-  await panel._settingsEditor.load();
+  await click(panel, {openSetting: SETTING.id});
   panel._settingsEditor.setValue("password", "SYNTHETIC-SECRET");
   panel._settingsEditor.setValue("hdvoice", false);
   panel._settingsEditor.setConfirmation("SAVE SETTINGS");
@@ -144,11 +147,12 @@ test("WAN telemetry rerender preserves editor host, listeners and private drafts
 
 test("navigation away from administration clears both editors and their drafts", async () => {
   const {panel} = fixture();
-  click(panel, {openSetting: SETTING.id}); await panel._settingsEditor.load();
+  await click(panel, {openSetting: SETTING.id});
   panel._settingsEditor.setValue("password", "SYNTHETIC-SECRET");
+  const host = panel._settingsHost;
   click(panel, {openMaintenance: MAINTENANCE.id});
   assert.equal(panel._maintenanceEditor.snapshot().action.id, MAINTENANCE.id);
-  const host = panel._settingsHost;
+  assert.equal(panel._settingsEditor.snapshot(), null);
   panel._selectView("dashboard");
   assert.equal(panel._settingsEditor.snapshot(), null);
   assert.equal(panel._maintenanceEditor.snapshot(), null);
@@ -214,4 +218,103 @@ test("call history cannot open for nonadministrators or an unloaded entry", () =
     assert.equal(panel._callHistoryView.snapshot(), null);
     assert.equal(calls.length, 0);
   }
+});
+
+test("native navigation loads only selected page and does not repeat reads on telemetry renders", async () => {
+  const {panel, calls} = fixture({native: true});
+  assert.ok(panel.shadowRoot.innerHTML.includes('data-admin-tab="network"'));
+  assert.ok(!panel.shadowRoot.innerHTML.includes('data-open-setting="telephony_hd_voice"'));
+  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  assert.equal(panel._settingsEditor.snapshot().setting.id, SETTING.id);
+  assert.equal(calls.length, 1);
+  assert.ok(panel.shadowRoot.innerHTML.includes('data-native-page="telephony_number_settings"'));
+  assert.ok(!panel.shadowRoot.innerHTML.includes("Configuration editors"));
+  panel._render(); panel._render();
+  assert.equal(calls.length, 1);
+  assert.ok(calls.every((call) => call.type.endsWith("/read")));
+});
+
+test("cancelled page navigation preserves unsaved private drafts without reading", async () => {
+  const {panel, calls} = fixture({native: true});
+  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  panel._settingsEditor.setValue("hdvoice", false);
+  panel._settingsEditor.setValue("password", "SYNTHETIC-SECRET");
+  const previous = globalThis.confirm;
+  globalThis.confirm = () => false;
+  try {
+    await panel._selectAdminPage("network", "network_wifi_basic");
+    assert.equal(panel._currentAdminPage().page.id, "telephony_number_settings");
+    assert.equal(panel._settingsEditor.snapshot().isDirty, true);
+    assert.equal(calls.length, 1);
+  } finally { globalThis.confirm = previous; }
+});
+
+test("confirmed native navigation disposes private hosts and old drafts", async () => {
+  const {panel} = fixture({native: true});
+  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  panel._settingsEditor.setValue("password", "SYNTHETIC-SECRET");
+  const host = panel._settingsHost;
+  const previous = globalThis.confirm;
+  globalThis.confirm = () => true;
+  try {
+    await panel._selectAdminPage("network", "network_wifi_basic");
+    assert.equal(panel._settingsEditor.snapshot(), null);
+    assert.equal(host.innerHTML, "");
+    assert.equal(host.listeners.size, 0);
+    assert.ok(!panel.shadowRoot.innerHTML.includes("SYNTHETIC-SECRET"));
+  } finally { globalThis.confirm = previous; }
+});
+
+test("an in-flight setting write blocks page and destructive-editor replacement", async () => {
+  const {panel, calls} = fixture({native: true});
+  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  panel._settingsEditor.setValue("hdvoice", false);
+  panel._settingsEditor.setConfirmation("SAVE SETTINGS");
+  let resolve;
+  panel._hass.fetchWithAuth = async (_path, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Promise((done) => { resolve = done; });
+  };
+  const saving = panel._settingsEditor.save();
+  await Promise.resolve();
+  await panel._selectAdminPage("system", "system_recovery");
+  click(panel, {openMaintenance: MAINTENANCE.id});
+  assert.equal(panel._currentAdminPage().page.id, "telephony_number_settings");
+  assert.equal(panel._settingsEditor.snapshot().isSaving, true);
+  assert.equal(panel._maintenanceEditor.snapshot(), null);
+  resolve(new Response(JSON.stringify({result: {status: "verified"}}), {headers: {"content-type": "application/json"}}));
+  await saving;
+  assert.equal(calls.length, 2);
+});
+
+test("serialized private reads discard stale queued page requests before sending", async () => {
+  const {panel, calls} = fixture({native: true});
+  let release;
+  panel._hass.fetchWithAuth = async (_path, options) => {
+    calls.push(JSON.parse(options.body));
+    if (calls.length === 1) await new Promise((resolve) => { release = resolve; });
+    return new Response(JSON.stringify({result: {}}), {headers: {"content-type": "application/json"}});
+  };
+  const one = panel._requestPrivate({type: "speedport_smart/panel/settings/read", entry_id: "entry-a", setting_id: SETTING.id});
+  await Promise.resolve();
+  const two = panel._requestPrivate({type: "speedport_smart/panel/settings/read", entry_id: "entry-a", setting_id: SETTING.id});
+  const rejected = assert.rejects(two, /administrator_required/);
+  await panel._selectAdminPage("network", "network_wifi_basic");
+  release(); await one; await rejected;
+  assert.equal(calls.length, 1);
+  assert.equal(await panel._privateRequestQueue, undefined);
+});
+
+test("late global administrator cache cannot restart selected page auto-loading", async () => {
+  const {panel, calls} = fixture({native: true});
+  panel._activeView = "dashboard";
+  let release;
+  panel._loadAdminRead = () => new Promise((resolve) => { release = resolve; });
+  panel._selectView("administration");
+  await panel._selectAdminPage("telephony", "telephony_number_settings");
+  const epoch = panel._adminPageEpoch;
+  release(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(panel._adminPageEpoch, epoch);
+  assert.equal(calls.length, 1);
+  assert.equal(panel._settingsEditor.snapshot().loaded, true);
 });

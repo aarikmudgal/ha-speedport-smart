@@ -69,6 +69,7 @@ def _release_source(root: Path) -> Path:
         "brand/icon.png": b"test-icon",
         "brand/icon@2x.png": b"test-icon-2x",
         "frontend/accessibility.js": b"export {};\n",
+        "frontend/admin-navigation.js": b"export {};\n",
         "frontend/controls.js": b"export {};\n",
         "frontend/entity-state.js": b"export {};\n",
         "frontend/render-state.js": b"export {};\n",

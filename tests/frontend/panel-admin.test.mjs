@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { NATIVE_ADMIN_TABS, resolveAdminPage } from "../../custom_components/speedport_smart/frontend/admin-navigation.js";
 
 class TestElement {
   attachShadow() {
@@ -206,6 +207,29 @@ function panelFixture({ admin = true, entries = ["entry-a"] } = {}) {
   return { calls, panel };
 }
 
+function renderNativePages(panel, ...args) {
+  // Coverage is across explicit native pages, never an all-features landing page.
+  const previous = [panel._adminTab, panel._adminPage];
+  const markup = [];
+  const seen = new Set();
+  try {
+    for (const tab of NATIVE_ADMIN_TABS) {
+      for (const item of tab.pages) {
+        const {page} = resolveAdminPage(tab.id, item.id);
+        if (seen.has(page.id)) continue;
+        seen.add(page.id);
+        panel._adminTab = tab.id; panel._adminPage = page.id;
+        const html = panel._renderAdministration(...args);
+        assert.ok(html.includes(`data-native-page="${page.id}"`), page.id);
+        markup.push(html);
+      }
+    }
+    return markup.join("\n");
+  } finally {
+    [panel._adminTab, panel._adminPage] = previous;
+  }
+}
+
 test("Dashboard and Administration use disjoint entity sets", () => {
   assert.deepEqual(
     splitPanelEntities([REPORTING_META, CONFIG_META, CONTROL_META]),
@@ -236,7 +260,7 @@ test("permission-denied controls stay in Administration without an action", () =
       state: "unknown",
     },
   };
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", [READ_ONLY_CONTROL_META]),
     [READ_ONLY_CONTROL_META],
     [],
@@ -248,7 +272,7 @@ test("permission-denied controls stay in Administration without an action", () =
 });
 
 test("all reviewed permission-denied controls retain exact placement and zero actions", () => {
-  const reviewed = ADMIN_IA.flatMap((area) =>
+  const reviewed = ADMIN_IA.filter((area) => area.id !== "home_assistant").flatMap((area) =>
     area.subsections.flatMap((subsection) =>
       subsection.controls.map((control) => ({
         control,
@@ -256,7 +280,7 @@ test("all reviewed permission-denied controls retain exact placement and zero ac
       })),
     ),
   );
-  assert.equal(reviewed.length, 14);
+  assert.equal(reviewed.length, 12);
 
   const fixture = panelFixture();
   for (const { control, placement } of reviewed) {
@@ -272,7 +296,7 @@ test("all reviewed permission-denied controls retain exact placement and zero ac
       state: domain === "switch" ? "off" : "unknown",
     };
     assert.deepEqual(adminPlacementFor(meta), placement, control);
-    const html = fixture.panel._renderAdministration(
+    const html = renderNativePages(fixture.panel,
       router("entry-a", [meta]),
       [meta],
       [],
@@ -313,30 +337,25 @@ test("backend management feature owns controls before the legacy semantic fallba
     undefined,
   );
 
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", [semanticControl]),
     [semanticControl],
     [],
     {},
   );
   const featureStart = html.indexOf(
-    'data-admin-feature="internet_reconnect"',
+    'data-admin-control-feature="internet_reconnect"',
   );
   const controlStart = html.indexOf(
     `data-control="${semanticControl.entity_id}"`,
   );
-  const nextFeature = html.indexOf('data-admin-feature="', featureStart + 1);
+  const nextFeature = html.indexOf('data-admin-control-feature="', featureStart + 1);
   assert.notEqual(featureStart, -1);
   assert.ok(controlStart > featureStart);
   assert.ok(nextFeature === -1 || controlStart < nextFeature);
-  assert.match(
-    html,
-    /<details class="admin-feature-card[^>]*data-admin-feature="internet_reconnect"[^>]*data-detail-id="admin-feature:internet_reconnect"/,
-  );
-  assert.match(
-    html,
-    /<details class="admin-feature-card[^>]*aria-labelledby="speedport-admin-feature-internet_reconnect"[\s\S]*?<summary class="admin-feature-summary">[\s\S]*?<strong id="speedport-admin-feature-internet_reconnect">/,
-  );
+  assert.equal(html.split(`data-control="${semanticControl.entity_id}"`).length - 1, 1);
+  assert.ok(html.slice(featureStart, controlStart).includes("Control available"));
+  assert.ok(html.indexOf('aria-label="Current controls"') < controlStart);
 });
 
 test("capability catalog explains permission-denied controls", () => {
@@ -1044,22 +1063,16 @@ test("manual capability gaps are explicit safe cards without invented controls",
   }
 
   const fixture = panelFixture();
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", []),
     [],
     [],
     { protected_json: { available: true } },
   );
   for (const featureId of Object.keys(expected)) {
-    const tag = expected[featureId].readSections?.length ? "details" : "article";
     const marker = `data-admin-feature="${featureId}"`;
     assert.equal(html.split(marker).length - 1, 1, featureId);
-    assert.match(
-      html,
-      new RegExp(
-        `<${tag} class="admin-feature-card[^>]*data-admin-feature="${featureId}"`,
-      ),
-    );
+    assert.ok(html.includes(`<section class="admin-native-section" data-admin-feature="${featureId}"`), featureId);
   }
   assert.ok(
     html.includes(
@@ -1139,7 +1152,7 @@ test("DECT action candidates explain exact proof gaps without exposing controls"
   }
 
   const fixture = panelFixture();
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", []),
     [],
     [],
@@ -1156,10 +1169,7 @@ test("DECT action candidates explain exact proof gaps without exposing controls"
       candidate.blockedReasonKey,
     );
   }
-  assert.equal(
-    html.split('class="admin-feature-blocked-reason"').length - 1,
-    expected.length,
-  );
+  assert.ok(html.includes('class="admin-native-unavailable"'));
   assert.doesNotMatch(html, /data-control=/);
 });
 
@@ -1193,7 +1203,7 @@ test("static blocked operations stay noninteractive and use backend risk tiers",
   }
 
   const fixture = panelFixture();
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", []),
     [],
     [],
@@ -1219,7 +1229,7 @@ test("static blocked operations stay noninteractive and use backend risk tiers",
 });
 
 test("reviewed controls and cached reads render once under deterministic feature owners", () => {
-  const featureRecords = ADMIN_IA.flatMap((area) =>
+  const featureRecords = ADMIN_IA.filter((area) => area.id !== "home_assistant").flatMap((area) =>
     area.subsections.flatMap((subsection) =>
       subsection.features.map((feature) => ({
         areaId: area.id,
@@ -1294,18 +1304,18 @@ test("reviewed controls and cached reads render once under deterministic feature
               : "unknown",
     };
   }
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", controls),
     controls,
     [],
     { protected_json: { available: true } },
   );
-  const featureWindow = (featureId) => {
-    const marker = `data-admin-feature="${featureId}"`;
+  const controlWindow = (featureId) => {
+    const marker = `data-admin-control-feature="${featureId}"`;
     const start = html.indexOf(marker);
     assert.notEqual(start, -1, featureId);
     const following = html.slice(start + marker.length);
-    const next = following.search(/data-admin-feature="[^"]+"/);
+    const next = following.search(/data-admin-control-feature="[^"]+"|<\/section>/);
     return next === -1
       ? html.slice(start)
       : html.slice(start, start + marker.length + next);
@@ -1314,37 +1324,22 @@ test("reviewed controls and cached reads render once under deterministic feature
   for (const meta of controls) {
     const marker = `data-control="${meta.entity_id}"`;
     assert.equal(html.split(marker).length - 1, 1, meta.entity_id);
-    assert.match(featureWindow(meta.management_feature), new RegExp(marker));
-    assert.match(
-      featureWindow(meta.management_feature),
-      new RegExp(
-        `data-detail-id="admin-feature:${meta.management_feature}"`,
-      ),
-    );
+    assert.match(controlWindow(meta.management_feature), new RegExp(marker));
+    assert.ok(controlWindow(meta.management_feature).includes('class="admin-control-status"'));
   }
   for (const sectionId of ADMIN_READ_SECTION_ORDER) {
     const marker = `data-detail-id="admin-read:${sectionId}"`;
-    assert.equal(html.split(marker).length - 1, 1, sectionId);
-    const owner = readReferences.get(sectionId)?.[0];
-    assert.ok(owner, sectionId);
-    assert.match(featureWindow(owner), new RegExp(marker));
-    assert.match(
-      featureWindow(owner),
-      new RegExp(`data-detail-id="admin-feature:${owner}"`),
-    );
+    assert.ok(html.includes(marker), sectionId);
   }
-  assert.match(
-    html,
-    /<details class="admin-feature-card[^>]*data-admin-feature="internet_connection_diagnostics"/,
-  );
-  assert.doesNotMatch(
-    html,
-    /<article class="admin-feature-card[^>]*data-admin-feature="internet_connection_diagnostics"/,
-  );
-  assert.match(
-    html,
-    /<article class="admin-feature-card[^>]*data-admin-feature="internet_provider_configuration"/,
-  );
+  for (const tab of NATIVE_ADMIN_TABS) for (const page of tab.pages) {
+    fixture.panel._adminTab = tab.id; fixture.panel._adminPage = page.id;
+    const current = fixture.panel._renderAdministration(router("entry-a", controls), controls, [], {protected_json: {available: true}});
+    for (const sectionId of ADMIN_READ_SECTION_ORDER) {
+      assert.ok(current.split(`data-detail-id="admin-read:${sectionId}"`).length - 1 <= 1, `${page.id}: ${sectionId}`);
+    }
+  }
+  assert.ok(html.includes('<section class="admin-native-section" data-admin-feature="internet_connection_diagnostics"'));
+  assert.ok(html.includes('<section class="admin-native-section" data-admin-feature="internet_provider_configuration"'));
 });
 
 test("feature status comes only from current entities, collections, and capabilities", () => {
@@ -1462,7 +1457,7 @@ test("Administration explains blocked, absent, and unsupported features distinct
     attributes: {},
     state: "unknown",
   };
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", [CONFIG_META, reconnect]),
     [reconnect],
     [CONFIG_META],
@@ -1505,7 +1500,11 @@ test("Administration explains blocked, absent, and unsupported features distinct
     featureWindow("system_safe_mail_allowlist"),
     /No local router control/,
   );
-  assert.match(featureWindow("internet_reconnect"), /Control available/);
+  const reconnectStart = html.indexOf('data-admin-control-feature="internet_reconnect"');
+  assert.notEqual(reconnectStart, -1);
+  const reconnectControl = html.indexOf(`data-control="${reconnect.entity_id}"`, reconnectStart);
+  assert.ok(reconnectControl > reconnectStart);
+  assert.ok(html.slice(reconnectStart, reconnectControl).includes("Control available"));
 });
 
 test("broad related telemetry never claims exact blocked-setting coverage", () => {
@@ -1759,7 +1758,7 @@ test("unmanifested controls cannot appear in Administration", () => {
     [unknown.entity_id]: { attributes: {}, state: "unknown" },
   };
 
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", [unknown]),
     [unknown],
     [],
@@ -1771,31 +1770,24 @@ test("unmanifested controls cannot appear in Administration", () => {
   assert.doesNotMatch(html, /data-control="button\.speedport_future_generic_admin_action"/);
 });
 
-test("complete capability catalog remains visible and noninteractive without live data", () => {
+test("all native pages retain capability coverage without inventing controls", () => {
   const fixture = panelFixture();
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", []),
     [],
     [],
     { protected_json: { available: true } },
   );
-  const featureMarkers = html.match(/data-admin-feature="[^"]+"/g) || [];
-  const inventoryCard = html.match(
-    /<article class="admin-feature-card[^>]*data-admin-feature="home_assistant_capability_inventory"[\s\S]*?<\/article>/,
-  )?.[0];
-
-  assert.equal(featureMarkers.length, 122);
-  assert.ok(inventoryCard);
-  assert.match(inventoryCard, /Read-only by design/);
-  assert.doesNotMatch(inventoryCard, /destructive-candidate/);
-  assert.equal(
-    (html.match(/class="administration-area"/g) || []).length,
-    ADMIN_IA.length,
-  );
-  assert.equal(
-    (html.match(/class="administration-subsection"/g) || []).length,
-    28,
-  );
+  const featureMarkers = (html.match(/data-admin-feature="[^"]+"/g) || [])
+    .filter((marker) => !marker.includes('="home_assistant_'));
+  assert.equal(featureMarkers.length, 120);
+  assert.equal(new Set(featureMarkers).size, 120);
+  assert.ok(html.includes('data-detail-id="admin-integration-tools"'));
+  assert.ok(html.includes('data-admin-feature="home_assistant_capability_inventory"'));
+  assert.ok(!html.includes('data-admin-tab="home_assistant"'));
+  assert.ok(!html.includes('class="administration-area"'));
+  assert.ok(!html.includes('class="administration-subsection"'));
+  assert.equal(new Set([...html.matchAll(/data-native-page="([^"]+)"/g)].map((match) => match[1])).size, 48);
   for (const label of [
     "Provider, account, MTU, VLAN, and fixed-IP configuration",
     "Analog socket incoming and outgoing number assignment",
@@ -1812,24 +1804,18 @@ test("complete capability catalog remains visible and noninteractive without liv
     "Delete a VoIP provider",
     "Activate or deactivate a VoIP telephone number",
     "Restore 5G receiver factory settings, optionally deleting its eSIM",
-    "Read-only router capability inventory",
   ]) {
     assert.match(html, new RegExp(label));
   }
   assert.match(html, /No local router control/);
-  assert.match(html, /Read-only until safely verified/);
   assert.match(
     html,
     /safe local write and readback flow has not yet been verified/,
   );
-  assert.match(html, /aria-label="Risk: Destructive">Destructive/);
-  assert.match(html, /aria-label="Risk: Disruptive">Disruptive/);
-  assert.match(html, /aria-label="Risk: Lockout">Lockout/);
-  assert.match(html, /aria-label="Risk: Sensitive">Sensitive/);
   assert.doesNotMatch(html, /data-control=/);
 });
 
-test("Administration renders integration polling and endpoint health cards", () => {
+test("integration health remains on Dashboard instead of native router pages", () => {
   const fixture = panelFixture();
   const entities = [FAST_POLLING_HEALTH_META, ENDPOINT_FAILURE_META];
   fixture.panel._hass.states = {
@@ -1843,17 +1829,18 @@ test("Administration renders integration polling and endpoint health cards", () 
     },
   };
 
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", entities),
     [],
     entities,
     {},
   );
 
-  assert.match(html, /sensor\.speedport_fast_polling_health/);
-  assert.match(html, /sensor\.speedport_endpoint_failures/);
-  assert.match(html, /Fast polling health/);
-  assert.match(html, /Endpoint failures/);
+  assert.ok(!html.includes(FAST_POLLING_HEALTH_META.entity_id));
+  assert.ok(!html.includes(ENDPOINT_FAILURE_META.entity_id));
+  const dashboard = fixture.panel._renderDashboard(router("entry-a", entities), entities, {});
+  assert.ok(dashboard.includes(FAST_POLLING_HEALTH_META.entity_id));
+  assert.ok(dashboard.includes(ENDPOINT_FAILURE_META.entity_id));
 });
 
 test("panel uses Home Assistant platform and state icons with custom overrides", async () => {
@@ -2145,17 +2132,17 @@ test("Dashboard keeps every report while Administration mirrors reviewed groups"
   );
 
   fixture.panel._activeView = "administration";
-  SpeedportSmartPanel.prototype._render.call(fixture.panel);
-  assert.match(
-    fixture.panel.shadowRoot.innerHTML,
-    /button\.speedport_reboot_router/,
-  );
-  assert.match(fixture.panel.shadowRoot.innerHTML, /Cached laptop/);
-  assert.match(
-    fixture.panel.shadowRoot.innerHTML,
-    /sensor\.speedport_wifi_schedule_mode/,
-  );
-  assert.match(fixture.panel.shadowRoot.innerHTML, /sensor\.speedport_system_cpu/);
+  for (const [tab, page, expected] of [
+    ["system", "system_recovery", "button.speedport_reboot_router"],
+    ["network", "network_devices", "Cached laptop"],
+    ["network", "network_wifi_basic", "sensor.speedport_wifi_schedule_mode"],
+    ["system", "system_information", "sensor.speedport_system_cpu"],
+  ]) {
+    fixture.panel._adminTab = tab; fixture.panel._adminPage = page;
+    SpeedportSmartPanel.prototype._render.call(fixture.panel);
+    assert.ok(fixture.panel.shadowRoot.innerHTML.includes(expected), page);
+    assert.ok(fixture.panel.shadowRoot.innerHTML.includes(`data-native-page="${page}"`));
+  }
 });
 
 test("administrator payload validation keeps only fixed sections and fields", () => {
@@ -2304,7 +2291,7 @@ test("LAN IPv6 technical flags stay exact read-only administrator data", () => {
   const fixture = panelFixture();
   fixture.panel._adminReadEntry = "entry-a";
   fixture.panel._adminRead = normalized;
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     { ...router("entry-a"), capabilities: ["lan"] },
     [],
     [],
@@ -2347,7 +2334,7 @@ test("public Status domain_name stays an exact administrator-only technical read
   const fixture = panelFixture();
   fixture.panel._adminReadEntry = "entry-a";
   fixture.panel._adminRead = normalized;
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     { ...router("entry-a"), capabilities: ["system"] },
     [],
     [],
@@ -2391,7 +2378,7 @@ test("public Status fail_reason stays an exact Internet technical read", () => {
   const fixture = panelFixture();
   fixture.panel._adminReadEntry = "entry-a";
   fixture.panel._adminRead = normalized;
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     { ...router("entry-a"), capabilities: ["internet"] },
     [],
     [],
@@ -2829,7 +2816,7 @@ test("administrator renderer nests all collections in fixed related areas", () =
     "entry-a",
   );
 
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a"),
     [CONTROL_META],
     [
@@ -2865,17 +2852,8 @@ test("administrator renderer nests all collections in fixed related areas", () =
     { protected_json: { available: true } },
   );
 
-  assert.equal(
-    (html.match(/class="admin-read-section /g) || []).length,
-    ADMIN_READ_SECTION_ORDER.length,
-  );
-  for (const id of [
-    "admin-area:internet",
-    "admin-area:telephony",
-    "admin-area:network",
-  ]) {
-    assert.match(html, new RegExp(`data-detail-id="${id}"`));
-  }
+  assert.equal(new Set([...html.matchAll(/data-detail-id="admin-read:([^"]+)"/g)].map((match) => match[1])).size, ADMIN_READ_SECTION_ORDER.length);
+  for (const id of ["internet_receiver", "telephony_registration", "network_devices"]) assert.ok(html.includes(`data-native-page="${id}"`));
   for (const title of [
     "Network devices",
     "Mesh nodes",
@@ -2922,7 +2900,7 @@ test("known, empty, unavailable, and not-observed collections remain distinct", 
     capabilities: ["nat"],
   };
 
-  let html = fixture.panel._renderAdministration(
+  let html = renderNativePages(fixture.panel,
     natRouter,
     [],
     [],
@@ -2932,7 +2910,7 @@ test("known, empty, unavailable, and not-observed collections remain distinct", 
   assert.match(html, /Not present in the cached snapshot/);
   assert.match(html, /Network devices|Mesh nodes|VPN peers/);
 
-  html = fixture.panel._renderAdministration(
+  html = renderNativePages(fixture.panel,
     natRouter,
     [],
     [],
@@ -2953,7 +2931,7 @@ test("known, empty, unavailable, and not-observed collections remain distinct", 
     ]),
     "entry-a",
   );
-  html = fixture.panel._renderAdministration(
+  html = renderNativePages(fixture.panel,
     router("entry-a", []),
     [],
     [],
@@ -2980,18 +2958,17 @@ test("failed admin refresh marks cached feature evidence temporarily unavailable
   );
   fixture.panel._adminReadError = "error.admin_read_unavailable";
 
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", []),
     [],
     [],
     { protected_json: { available: true } },
   );
-  const card = html.match(
-    /<(?:article|details) class="admin-feature-card ([^"]*)"[^>]*data-admin-feature="network_client_inventory"/,
-  );
-
-  assert.ok(card);
-  assert.match(card[1], /status-temporarily_unavailable/);
+  const start = html.indexOf('data-admin-feature="network_client_inventory"');
+  assert.notEqual(start, -1);
+  const next = html.indexOf('data-admin-feature="', start + 1);
+  const card = html.slice(start, next === -1 ? undefined : next);
+  assert.ok(card.includes(PANEL_TRANSLATIONS.en["admin.feature.status.temporarily_unavailable"]));
 });
 
 test("risk badges and summaries show exact backend-provided tiers", () => {
@@ -3014,18 +2991,19 @@ test("risk badges and summaries show exact backend-provided tiers", () => {
     [lockoutControl.entity_id]: { attributes: {}, state: "unknown" },
   };
 
-  const html = fixture.panel._renderAdministration(
+  const html = renderNativePages(fixture.panel,
     router("entry-a", [normalControl, lockoutControl]),
     [normalControl, lockoutControl],
     [],
     {},
   );
 
-  assert.match(html, /class="admin-risk-badge risk-normal"/);
-  assert.match(html, /class="admin-risk-badge risk-lockout"/);
-  assert.match(html, /aria-label="Risk: Lockout">Lockout/);
-  assert.match(html, /aria-label="Highest risk: Lockout">Lockout/);
-  assert.match(html, /aria-label="Risk: Destructive">Destructive/);
+  assert.ok(html.includes(`data-control="${normalControl.entity_id}"`));
+  assert.ok(html.includes(`data-control="${lockoutControl.entity_id}"`));
+  // Native navigation has no risk summary cards; action-level risk labels stay exact.
+  assert.ok(fixture.panel._renderRiskBadge("lockout").includes('aria-label="Risk: Lockout">Lockout'));
+  assert.ok(fixture.panel._renderRiskBadge("destructive").includes('aria-label="Risk: Destructive">Destructive'));
+  assert.equal(highestAdminRisk([normalControl, lockoutControl]), "lockout");
 });
 
 test("successful existing action refreshes only the active administrator cache", async () => {
@@ -3277,8 +3255,9 @@ test("Administration stays full-width, responsive, and theme-native", async () =
     source,
     /\.admin-read-overview\s*\{[^}]*background:\s*var\(--sp-surface\)/s,
   );
-  assert.match(source, /data-detail-id="admin-area:/);
-  assert.match(source, /data-detail-id="admin-subsection:/);
+  assert.ok(source.includes('class="admin-native-layout"'));
+  assert.ok(source.includes('class="admin-native-page"'));
+  assert.ok(source.includes('data-admin-menu aria-expanded='));
   assert.match(source, /color-mix\(in srgb, var\(--sp-warning\)/);
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
   assert.doesNotMatch(source, /localStorage|sessionStorage|console\./);

@@ -1197,6 +1197,8 @@ test("fixed action errors and context changes expose no server detail", async ()
   panel._prepareAdminAction("dect_handset_enroll");
   const pending = panel._runPendingAction();
   panel._selectRouter("entry-b");
+  assert.equal(panel._selectedEntry, "entry-a");
+  assert.equal(panel._actionBusy, true);
   resolveAction(
     actionEnvelope("dect_handset_enroll", {
       status: "verified",
@@ -1204,7 +1206,8 @@ test("fixed action errors and context changes expose no server detail", async ()
     }),
   );
   await pending;
-
+  panel._loadAdminRead = async () => {};
+  panel._selectRouter("entry-b");
   assert.equal(panel._selectedEntry, "entry-b");
   assert.equal(panel._pendingAction, undefined);
   assert.equal(panel._actionBusy, false);
@@ -1249,7 +1252,7 @@ test("management availability and generation changes invalidate target tokens", 
     truncated: false,
   };
   panel._hass.connection.sendMessagePromise = async () => ({
-    schema_version: 22,
+    schema_version: 23,
     routers: [
       {
         ...router([actionMetadata("voip_line_set_active")]),
@@ -1274,7 +1277,7 @@ test("management availability and generation changes invalidate target tokens", 
   panel._adminActionState.voipLineTargets.expiresAt = Date.now() + 60_000;
   panel._adminActionState.voipLineTargets.generation = 2;
   panel._hass.connection.sendMessagePromise = async () => ({
-    schema_version: 22,
+    schema_version: 23,
     routers: [
       {
         ...router([

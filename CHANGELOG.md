@@ -61,11 +61,22 @@ Automated feature-branch prereleases are intentionally not listed one by one.
   router's exact bounded total and remaining-entry counts. Private results never
   enter entities, Recorder, coordinator data, diagnostics, URLs, or browser
   storage.
-- A responsive Administration catalog covering 122 router-management features
-  across Internet, telephony, Wi-Fi, LAN, Mesh, Powerline, security, storage,
-  mobile receivers, and system services. Every entry distinguishes reviewed
-  controls, related read-only evidence, blocked contracts, and unsupported
-  local management.
+- A responsive Administration view organized into the six router tabs Overview,
+  Status, Internet, Telephony, Network and System, with contextual left
+  navigation and a mobile page menu. Its 48 content pages and Wi-Fi navigation
+  group map 120 existing router
+  feature entries and 110 existing settings editors. These navigation counts
+  do not imply that every feature is writable or supported. The organization
+  follows the official Smart 4R manual while using Home Assistant's theme;
+  the separate Dashboard remains unchanged.
+- Page-local automatic reads for the selected settings form and existing
+  target, grouped Wi-Fi and schedule fields, and explicit Refresh, Save changes
+  and Cancel changes controls. Saves retain exact typed confirmation,
+  requester-bound revisions and expiry checks; secrets are never prefilled.
+  Dirty target changes require discard confirmation. Navigation and failed
+  responses never repeat writes. No live writes were tested for this redesign;
+  router owners still need to validate writes and recovery explicitly. See the
+  [Dashboard and Administration guide](docs/dashboard.md).
 - Structured, revision-bound editors for Internet providers, DNS, LAN/DHCP,
   Wi-Fi identities/radios/security/schedules, forwarding ranges, blocking rules,
   parental rules, DNS exceptions, prioritization and Dynamic DNS configuration.

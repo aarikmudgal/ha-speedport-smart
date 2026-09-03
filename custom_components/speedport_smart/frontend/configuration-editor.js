@@ -1,4 +1,4 @@
-/** Explicit, revision-bound settings editing. No polling or browser storage. */
+/** Revision-bound editing with optional page-local reads. No polling or storage. */
 const KINDS = new Set(["boolean", "enum", "integer", "text", "secret", "time", "identifiers"]);
 const NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 const TARGET_ID = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$/;
@@ -156,7 +156,7 @@ export function createConfigurationEditorController({request, download, onChange
     return result;
   };
   const controller = {
-    open({entryId, setting}) {
+    open({entryId, setting, autoLoad = false, targetId = null}) {
       clear();
       if (typeof entryId !== "string" || !entryId || !setting ||
           typeof setting.id !== "string" || !NAME.test(setting.id) ||
@@ -170,9 +170,11 @@ export function createConfigurationEditorController({request, download, onChange
         requires_target: setting.requires_target === true,
         target_limit: Number.isInteger(setting.target_limit) && setting.target_limit > 0 && setting.target_limit <= 5000 ? setting.target_limit : 256,
         fields: Object.freeze(fieldsOf(setting.fields)),
-      }), status: setting.requires_target === true ? "target_required" : "idle",
+      }), autoLoad: autoLoad === true, status: setting.requires_target === true ? "target_required" : "idle",
         revision: null, targets: Object.freeze([]), targetId: null, link: null};
+      const epoch = generation;
       notify();
+      if (epoch === generation && state?.autoLoad) return controller.refresh({targetId});
     },
     close() { if (busy) return false; clear(); notify(); return true; },
     dispose() { clear(); },
@@ -181,13 +183,38 @@ export function createConfigurationEditorController({request, download, onChange
       if (!state) return null;
       expireLink();
       // Secret values and typed confirmation never enter the render snapshot.
-      return {...state, busy, loaded, values: Object.fromEntries(drafts),
+      const dirty = [...Object.keys(changes())];
+      return {...state, busy, isBusy: busy, isSaving: ["saving", "link_finishing"].includes(state.status),
+        loaded, values: Object.fromEntries(drafts),
         downloadAvailable: credentialDownload !== null,
         linkPending: pendingLink !== null,
         link: state.link && {...state.link},
-        dirty: [...Object.keys(changes())],
+        dirty, isDirty: dirty.length > 0 && (loaded || state.status === "expired"),
         confirmationReady: confirmation === state.setting.confirmation,
         expired: loaded && now() >= expiresAt};
+    },
+    async refresh({targetId} = {}) {
+      if (!state || busy) return false;
+      if (!state.setting.requires_target) return controller.load();
+      const preferred = targetId ?? state.targetId;
+      const inventory = controller.loadTargets();
+      const epoch = generation;
+      if (!await inventory || epoch !== generation || !state) return false;
+      const selected = preferred === null || preferred === undefined
+        ? state.targets[0] : state.targets.find((target) => target.id === preferred);
+      // Never silently substitute another object after a selected target disappears.
+      if (!selected) {
+        if (state.targets.length) { state.status = "target_required"; notify(); }
+        return false;
+      }
+      const automatic = state.autoLoad;
+      const selection = controller.selectTarget(selected.id);
+      return automatic ? selection : controller.load();
+    },
+    cancelChanges() {
+      if (!state || busy || !loaded || pendingLink !== null) return false;
+      drafts = new Map(baseline);
+      clearCredentials(); state.status = "ready"; notify(); return true;
     },
     async loadTargets() {
       if (!state || busy || !state.setting.requires_target) return false;
@@ -231,7 +258,10 @@ export function createConfigurationEditorController({request, download, onChange
       clearLink();
       clearCredentials(); baseline.clear(); drafts.clear();
       state.revision = null; state.targetId = targetId; state.status = "targets_ready";
+      const epoch = generation;
       notify();
+      if (epoch !== generation) return false;
+      if (state.autoLoad) return controller.load();
       return true;
     },
     async load() {
@@ -456,8 +486,64 @@ export function createConfigurationEditorController({request, download, onChange
   return controller;
 }
 
-/** Render within the native panel; all colours inherit the current HA theme. */
-export function renderConfigurationEditor(controller) {
+const WEEKDAYS = Object.freeze({mo: "Monday", di: "Tuesday", mi: "Wednesday", do: "Thursday", fr: "Friday", sa: "Saturday", so: "Sunday"});
+
+function fieldGroup(setting, field) {
+  const name = field.name;
+  if (setting.id === "wifi_identity") {
+    if (["wlan_ssid", "wlan_visible"].includes(name)) return "2.4 GHz network";
+    if (["wlan_5ghz_ssid", "wlan_5ghz_visible"].includes(name)) return "5 GHz network";
+    return "Shared security and password";
+  }
+  if (setting.id === "wifi_radio") {
+    if (["wlan_band", "wlan_power"].includes(name)) return "Radio settings";
+    return name.startsWith("wlan_5ghz_") ? "5 GHz radio" : "2.4 GHz radio";
+  }
+  if (setting.id === "wifi_schedule") {
+    const weekday = name.match(/^wlan_time_(mo|di|mi|do|fr|sa|so)_/);
+    if (weekday) return WEEKDAYS[weekday[1]];
+    return ["wlan_dfrom", "wlan_dto"].includes(name) ? "Daily schedule" : "Schedule settings";
+  }
+  const parentalDay = name.match(/^(?:trule_|tr_)(mo|di|mi|do|fr|sa|so)_/);
+  if (parentalDay) return WEEKDAYS[parentalDay[1]];
+  if (/^(?:trule_d(?:from|to)|tr_dmaxtime)/.test(name)) return "Daily schedule";
+  if (setting.id === "dynamic_dns") {
+    if (["dyndns_user", "dyndns_password"].includes(name)) return "Provider credentials";
+    if (name.startsWith("dyndns_upd") || name === "dyndns_update_path") return "Custom update server";
+    return "Dynamic DNS service";
+  }
+  if (field.kind === "secret") return "Credentials";
+  if (field.kind === "identifiers") return "Selections and assignments";
+  if (field.kind === "time") return "Schedule";
+  return "Settings";
+}
+
+function scheduleGroupHidden(group, mode) {
+  return group === "daily" ? mode !== "1" : group === "weekly" && mode !== "2";
+}
+
+function groupedFields(setting, renderField, values) {
+  const groups = new Map();
+  for (const field of setting.fields) {
+    const title = fieldGroup(setting, field);
+    if (!groups.has(title)) groups.set(title, []);
+    groups.get(title).push(field);
+  }
+  // Keep the two networks together even when metadata arrives interleaved.
+  const order = setting.id === "wifi_identity"
+    ? ["2.4 GHz network", "5 GHz network", "Shared security and password"] : [...groups.keys()];
+  return order.filter((title) => groups.has(title)).map((title) => {
+    const scheduleGroup = setting.id !== "wifi_schedule" ? null :
+      title === "Daily schedule" ? "daily" : Object.values(WEEKDAYS).includes(title) ? "weekly" : null;
+    const visibility = scheduleGroup === null ? "" :
+      ` data-setting-schedule-group="${scheduleGroup}"${scheduleGroupHidden(scheduleGroup, values.wlan_timerule) ? " hidden" : ""}`;
+    return `<fieldset class="sp-settings-group"${visibility}><legend>${escape(title)}</legend><div class="sp-settings-fields">` +
+      groups.get(title).map(renderField).join("") + "</div></fieldset>";
+  }).join("");
+}
+
+/** Render within the native panel; pageMode keeps loading/navigation chrome local. */
+export function renderConfigurationEditor(controller, {pageMode = false} = {}) {
   // A replaced DOM cannot secretly retain an earlier password/confirmation.
   // The host should rerender on editor notifications, not on live WAN ticks.
   controller.clearSensitiveDrafts();
@@ -470,8 +556,8 @@ export function renderConfigurationEditor(controller) {
     `<select id="${prefix}-target" data-setting-target aria-describedby="${prefix}-target-help"${view.busy || !view.targets.length ? " disabled" : ""}>` +
     `<option value="" disabled${view.targetId === null ? " selected" : ""}>Select a target</option>` +
     view.targets.map((target, index) => `<option value="${index}"${target.id === view.targetId ? " selected" : ""}>${escape(target.label)} (${escape(target.id)})</option>`).join("") +
-    `</select><small id="${prefix}-target-help">Changing targets discards unsaved changes. Selection does not load or save settings.</small></div>`;
-  const fields = view.setting.fields.map((field) => {
+    `</select><small id="${prefix}-target-help">${pageMode ? "Changing targets asks before discarding unsaved changes." : "Changing targets discards unsaved changes."} ${view.autoLoad ? "Selection loads current values; it never saves changes." : "Selection does not load or save settings."}</small></div>`;
+  const renderField = (field) => {
     const id = `${prefix}-${field.name}`;
     const value = view.values[field.name];
     const common = `id="${escape(id)}" data-setting-field="${escape(field.name)}"` +
@@ -480,24 +566,40 @@ export function renderConfigurationEditor(controller) {
     if (field.kind === "boolean") {
       input = `<input type="checkbox" ${common}${value === true ? " checked" : ""}>`;
     } else if (field.kind === "identifiers") {
+      if (pageMode && field.choices.length > 0 && field.choices.length <= 8) {
+        return `<fieldset class="sp-settings-field sp-settings-choices" aria-describedby="${escape(id)}-help"><legend>${escape(field.label)}</legend>` +
+          field.choices.map((choice, index) => `<label class="sp-settings-check" for="${escape(id)}-${index}">` +
+            `<input type="checkbox" id="${escape(id)}-${index}" data-setting-field="${escape(field.name)}" data-setting-choice="${index}"${disabled ? " disabled" : ""}${Array.isArray(value) && value.includes(choice.value) ? " checked" : ""}>` +
+            `<span>${escape(choice.label)}</span></label>`).join("") +
+          `<small id="${escape(id)}-help">${escape(field.description)}</small></fieldset>`;
+      }
       input = `<select multiple size="${Math.min(8, Math.max(3, field.choices.length))}" ${common}>` +
         field.choices.map((choice, index) => `<option value="${index}"${Array.isArray(value) && value.includes(choice.value) ? " selected" : ""}>${escape(choice.label)}</option>`).join("") + "</select>";
     } else if (field.kind === "enum") {
       input = `<select ${common}>${field.choices.map((choice, index) =>
         `<option value="${index}"${choice.value === value ? " selected" : ""}>${escape(choice.label)}</option>`).join("")}</select>`;
     } else {
-      const type = {secret: "password", integer: "number", time: "text", text: "text"}[field.kind];
+      const scheduleClock = /^wlan_(?:d(?:from|to)|time_(?:mo|di|mi|do|fr|sa|so)_(?:from|to))$/.test(field.name) ||
+        /^trule_(?:d|(?:mo|di|mi|do|fr|sa|so)_)(?:from|to)[23]?$/.test(field.name);
+      const clock = field.kind === "time" || scheduleClock;
+      const startClock = scheduleClock && /from[23]?$/.test(field.name);
+      const allowsEndOfDay = (!startClock && /24:00/.test(field.description)) || /(?:_to|dto)[23]?$/.test(field.name) || value === "24:00";
+      const type = pageMode && clock && !allowsEndOfDay ? "time" :
+        {secret: "password", integer: "number", time: "text", text: "text"}[field.kind];
       const constraints = ["minimum", "maximum"].filter((key) => field[key] !== undefined)
         .map((key) => ` ${field.kind === "integer" ? (key === "minimum" ? "min" : "max") :
           (key === "minimum" ? "minlength" : "maxlength")}="${field[key]}"`).join("");
       input = `<input type="${type}" ${common}${constraints}` +
-        (field.kind === "time" ? ' inputmode="numeric" placeholder="HH:MM" pattern="(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)"' : "") +
+        (type === "time" ? ' step="60"' : clock ? ' inputmode="numeric" placeholder="HH:MM" pattern="(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)"' : "") +
         (field.kind === "secret" ? ' autocomplete="new-password"' : ` value="${escape(value ?? "")}"`) + ">";
     }
-    return `<div class="sp-settings-field"><label for="${escape(id)}">${escape(field.label)}</label>${input}` +
+    return `<div class="sp-settings-field${pageMode && field.kind === "boolean" ? " sp-settings-boolean" : ""}">` +
+      (pageMode && field.kind === "boolean" ? `<label class="sp-settings-check" for="${escape(id)}">${input}<span>${escape(field.label)}</span></label>` : `<label for="${escape(id)}">${escape(field.label)}</label>${input}`) +
       `<small id="${escape(id)}-help">${escape(field.description)}` +
       `${field.kind === "secret" ? " Leave blank to request no credential change. Some edits require re-entering it. Credentials are never loaded into this form." : ""}</small></div>`;
-  }).join("");
+  };
+  const fields = pageMode ? groupedFields(view.setting, renderField, view.values) :
+    `<div class="sp-settings-fields">${view.setting.fields.map(renderField).join("")}</div>`;
   const linkPhrase = view.link?.mergeExisting === true ? LINK_PHRASES.merge :
     view.link?.mergeExisting === false ? LINK_PHRASES.replace : null;
   const linkSection = !view.linkPending ? "" : `<fieldset class="sp-settings-link">
@@ -518,34 +620,52 @@ export function renderConfigurationEditor(controller) {
     .sp-settings-field{display:flex;min-width:0;flex-direction:column;gap:8px}.sp-settings-field input:not([type=checkbox]),.sp-settings-field select{width:100%;min-width:0;padding:10px;border:1px solid var(--divider-color);border-radius:8px;background:var(--secondary-background-color);color:var(--primary-text-color)}
     .sp-settings-field input[type=checkbox]{align-self:flex-start;width:22px;height:22px;accent-color:var(--primary-color)}.sp-settings-field small{color:var(--secondary-text-color);overflow-wrap:anywhere}
     .sp-settings-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}.sp-settings-actions button{padding:10px 16px;color:var(--primary-text-color);background:var(--secondary-background-color);border:1px solid var(--divider-color);border-radius:8px;cursor:pointer}.sp-settings-editor :focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}.sp-settings-editor :disabled{opacity:.55;cursor:default}.sp-settings-warning{white-space:pre-wrap;overflow-wrap:anywhere}.sp-settings-confirmation{margin-top:16px}.sp-settings-link{min-width:0;margin:20px 0 0;padding:16px;border:1px solid var(--divider-color);border-radius:8px}
-    </style><section class="sp-settings-editor" aria-labelledby="${prefix}-title" aria-busy="${view.busy}">
+    .sp-settings-group{min-width:0;margin:20px 0 0;padding:16px;border:1px solid var(--divider-color);border-radius:8px}.sp-settings-group>legend{font-weight:600;padding:0 6px}.sp-settings-check{display:flex;align-items:center;gap:10px;cursor:pointer}.sp-settings-check input[type=checkbox]{flex:none;margin:0;align-self:auto}.sp-settings-boolean{justify-content:flex-start;padding-top:8px}.sp-settings-choices{margin:0;padding:0;border:0}.sp-settings-choices>legend{margin-bottom:10px}.sp-settings-page .sp-settings-confirmation{padding-top:16px;border-top:1px solid var(--divider-color)}
+    </style><section class="sp-settings-editor${pageMode ? " sp-settings-page" : ""}" aria-labelledby="${prefix}-title" aria-busy="${view.busy}">
     <h3 id="${prefix}-title">${escape(view.setting.title)}</h3>
     ${view.setting.warning ? `<p class="sp-settings-warning">${escape(view.setting.warning)}</p>` : ""}
     ${view.setting.fields.some((field) => field.kind === "secret") ? "<p class=\"sp-settings-warning\">Use HTTPS for Home Assistant when entering credentials. Router HTTPS does not secure the connection between this browser and Home Assistant.</p>" : ""}
     ${view.setting.live_write_verified ? "" : "<p>Live router changes for this setting still require user validation.</p>"}
     <p role="status" aria-live="polite">${escape(MESSAGES[view.status] ?? MESSAGES.load_failed)}</p>
     ${targetPicker}
-    <div class="sp-settings-fields">${fields}</div>
+    ${fields}
     <div class="sp-settings-field sp-settings-confirmation"><label for="${prefix}-confirm">Type <strong>${escape(view.setting.confirmation)}</strong> to confirm these changes</label>
     <input id="${prefix}-confirm" type="text" data-setting-confirmation autocomplete="off"${disabled ? " disabled" : ""}></div>
     ${linkSection}
-    <div class="sp-settings-actions">${view.setting.requires_target ? `<button type="button" data-setting-action="loadTargets"${view.busy ? " disabled" : ""}>Load available targets</button>` : ""}
-    <button type="button" data-setting-action="load"${view.busy || (view.setting.requires_target && !view.targetId) ? " disabled" : ""}>Load current settings</button>
+    <div class="sp-settings-actions">${pageMode ? `<button type="button" data-setting-action="refresh"${view.busy ? " disabled" : ""}>Refresh</button>` :
+      `${view.setting.requires_target ? `<button type="button" data-setting-action="loadTargets"${view.busy ? " disabled" : ""}>Load available targets</button>` : ""}
+      <button type="button" data-setting-action="load"${view.busy || (view.setting.requires_target && !view.targetId) ? " disabled" : ""}>Load current settings</button>`}
     <button type="button" data-setting-action="save"${disabled ? " disabled" : ""}>Save changes</button>
     ${view.downloadAvailable ? '<button type="button" data-setting-action="downloadCredentials">Download private VPN credentials</button>' : ""}
-    <button type="button" data-setting-action="close"${view.busy ? " disabled" : ""}>Close</button></div></section>`;
+    ${pageMode ? `<button type="button" data-setting-action="cancelChanges"${view.busy || !view.loaded ? " disabled" : ""}>Cancel changes</button>` : `<button type="button" data-setting-action="close"${view.busy ? " disabled" : ""}>Close</button>`}</div></section>`;
 }
 
 /** Bind once to a stable container; caller must dispose on router/navigation change. */
-export function bindConfigurationEditor(root, controller) {
+export function bindConfigurationEditor(root, controller, {
+  pageMode = false,
+  confirmDiscard = (message) => globalThis.confirm?.(message) === true,
+} = {}) {
   const onInput = (event) => {
     const target = event.target;
     if (!target || !root.contains(target)) return;
     if (target.hasAttribute?.("data-setting-target")) {
       const index = target.value;
       if (/^\d+$/.test(index)) {
-        const item = controller.snapshot()?.targets[Number(index)];
-        if (item) { clearDOMCredentials(); controller.selectTarget(item.id); }
+        const view = controller.snapshot();
+        const item = view?.targets[Number(index)];
+        if (item && item.id !== view.targetId) {
+          if ((pageMode || root.querySelector?.(".sp-settings-page")) && view.isDirty) {
+            let accepted = false;
+            try { accepted = confirmDiscard("Discard unsaved changes and load the selected target?") === true; }
+            catch (_error) { /* No usable confirmation means no draft may be discarded. */ }
+            if (!accepted) {
+              const previous = view.targets.findIndex((candidate) => candidate.id === view.targetId);
+              target.value = previous < 0 ? "" : String(previous);
+              return;
+            }
+          }
+          clearDOMCredentials(); controller.selectTarget(item.id);
+        }
       }
       return;
     }
@@ -568,8 +688,18 @@ export function bindConfigurationEditor(root, controller) {
     if (field.kind === "boolean") value = target.checked;
     if (field.kind === "integer") value = /^-?\d+$/.test(value) ? Number(value) : NaN;
     if (field.kind === "enum") value = field.choices[Number(value)]?.value;
-    if (field.kind === "identifiers") value = [...target.selectedOptions].map((option) => field.choices[Number(option.value)]?.value);
-    controller.setValue(name, value);
+    if (field.kind === "identifiers") value = target.hasAttribute?.("data-setting-choice")
+      ? [...root.querySelectorAll(`[data-setting-field="${field.name}"][data-setting-choice]`)]
+        .filter((input) => input.checked).map((input) => field.choices[Number(input.getAttribute("data-setting-choice"))]?.value)
+      : [...target.selectedOptions].map((option) => field.choices[Number(option.value)]?.value);
+    if (controller.setValue(name, value) && name === "wlan_timerule" &&
+        controller.snapshot()?.setting.id === "wifi_schedule" &&
+        (pageMode || root.querySelector?.(".sp-settings-page"))) {
+      // Change visibility in place: no rerender, draft clearing or router request.
+      for (const group of root.querySelectorAll("[data-setting-schedule-group]")) {
+        group.hidden = scheduleGroupHidden(group.getAttribute("data-setting-schedule-group"), value);
+      }
+    }
   };
   const clearDOMCredentials = () => {
     for (const input of root.querySelectorAll('input[type="password"], [data-setting-confirmation], [data-setting-link-confirmation]')) input.value = "";
@@ -579,7 +709,7 @@ export function bindConfigurationEditor(root, controller) {
     if (!button || !root.contains(button) || button.disabled) return;
     event.preventDefault();
     const action = button.getAttribute("data-setting-action");
-    if (!["load", "loadTargets", "save", "close", "downloadCredentials", "finishLink"].includes(action)) return;
+    if (!["load", "loadTargets", "refresh", "cancelChanges", "save", "close", "downloadCredentials", "finishLink"].includes(action)) return;
     if (action === "close") { clearDOMCredentials(); controller.close(); return; }
     Promise.resolve(controller[action]()).finally(clearDOMCredentials);
   };

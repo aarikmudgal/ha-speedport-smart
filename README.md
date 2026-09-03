@@ -175,6 +175,26 @@ The panel:
 - requires confirmation before every router-changing action and an exact typed
   phrase for destructive administrator actions
 
+Administration now follows the six router tabs **Overview**, **Status**,
+**Internet**, **Telephony**, **Network** and **System**, with contextual left
+navigation on desktop and a page menu on mobile. Its 48 content pages and Wi-Fi
+navigation group map 120 existing
+router feature entries and 110 existing settings editors. Those counts describe
+navigation coverage, not 120 writable or universally supported capabilities.
+The organization follows the official
+[Smart 4R manual](https://www.telekom.de/hilfe/downloads/bedienungsanleitung-speedport-smart-4r),
+adapted to Home Assistant rather than copied pixel for pixel.
+
+Opening an available form reads its current values automatically. Choosing
+another form on the page or another existing target also reads that selection;
+it never saves it. **Save changes** still requires the exact typed confirmation,
+and expired sessions or revisions require a fresh read. Secrets are not
+prefilled. **Refresh** reloads current state; **Cancel changes** restores the
+last loaded values without sending a router request. The separate Dashboard
+view is unchanged. See the [Dashboard and Administration guide](docs/dashboard.md) for
+navigation, privacy and outcome details. No live writes were tested for this
+redesign; router owners must validate writes explicitly.
+
 The router device page also links directly to the configured local Speedport
 web interface through Home Assistant's standard **Visit** action.
 
@@ -184,7 +204,9 @@ traffic-priority slots, private Wi-Fi SSIDs, DDNS domain/update-server identity,
 VPN peers, telephony providers and lines, DECT handsets and repeaters, IP phones
 and PBX clients, USB and storage devices, NAS shares, mobile receivers, and
 Powerline devices. These details are projected from the integration's existing
-cached normalized state: opening the view does not send another router request.
+cached normalized state; reading that cached projection does not send another
+router request. A settings form opened on the same Administration page performs
+its own fresh read as described above.
 The response is allowlisted, bounded, loaded only on demand, kept in browser
 memory, and cleared when the router selection, connection, or administrator
 access changes. It is never written to browser storage.
@@ -265,7 +287,7 @@ temporarily unavailable. Restarting the router should not be a routine
 recovery step.
 
 For support and capability development, administrators can use
-**Administration → Home Assistant → Read-only capability discovery → Capture
+**Administration → Overview → Home Assistant integration tools → Read-only capability discovery → Capture
 inventory**. This explicit action checks every known safe candidate data source
 in one serialized session. It uses only the required login/logout lifecycle and
 JSON reads: it does not run WAN/TR-064 polling, submit a router setting, invoke

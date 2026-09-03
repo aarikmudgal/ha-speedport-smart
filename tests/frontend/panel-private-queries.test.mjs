@@ -213,14 +213,19 @@ test("private responses are allowlisted, bounded, and bound to their request", (
 
 test("queries render only under their owning read-only feature cards", () => {
   const { panel } = fixture();
-  const html = panel._renderAdministration(
+  panel._adminTab = "telephony"; panel._adminPage = "telephony_pbx";
+  const pbxHtml = panel._renderAdministration(
     router(),
     [],
     [],
     { protected_json: { available: true } },
   );
-  const pbx = featureWindow(html, "telephony_ip_pbx");
-  const phonebook = featureWindow(html, "telephony_phonebook_management");
+  assert.ok(!pbxHtml.includes('data-admin-query="phonebook_search"'));
+  panel._adminPage = "telephony_phonebook";
+  const phonebookHtml = panel._renderAdministration(router(), [], [], {protected_json: {available: true}});
+  assert.ok(!phonebookHtml.includes('data-admin-query="ip_pbx_refresh"'));
+  const pbx = featureWindow(pbxHtml, "telephony_ip_pbx");
+  const phonebook = featureWindow(phonebookHtml, "telephony_phonebook_management");
 
   assert.match(pbx, /data-admin-query="ip_pbx_refresh"/);
   assert.match(phonebook, /data-admin-query="phonebook_search"/);

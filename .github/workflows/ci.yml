@@ -57,6 +57,7 @@ jobs:
       - name: Check frontend syntax
         run: |
           node --check custom_components/speedport_smart/frontend/accessibility.js
+          node --check custom_components/speedport_smart/frontend/admin-navigation.js
           node --check custom_components/speedport_smart/frontend/controls.js
           node --check custom_components/speedport_smart/frontend/configuration-editor.js
           node --check custom_components/speedport_smart/frontend/maintenance-editor.js

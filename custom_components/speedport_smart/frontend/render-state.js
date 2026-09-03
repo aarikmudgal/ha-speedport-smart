@@ -1,5 +1,9 @@
 const FOCUS_DATA_KEYS = [
   "adminRefresh",
+  "adminTab",
+  "adminPage",
+  "adminMenu",
+  "openSetting",
   "control",
   "moreInfo",
   "router",
@@ -74,6 +78,10 @@ export function restoreDetailsState(root, state) {
 function dataCandidates(root, key) {
   const selectors = {
     adminRefresh: "[data-admin-refresh]",
+    adminTab: "[data-admin-tab]",
+    adminPage: "[data-admin-page]",
+    adminMenu: "[data-admin-menu]",
+    openSetting: "[data-open-setting]",
     control: "[data-control]",
     moreInfo: "[data-more-info]",
     router: "[data-router]",
