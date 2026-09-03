@@ -2313,7 +2313,10 @@ async def test_modern_login_and_authenticated_decode(
     }
     proof_form = _decode_form(proof_request[2]["data"], challenge_key)
     assert proof_form["showpw"] == "0"
-    assert len(proof_form["password"]) == 64
+    assert (
+        proof_form["password"]
+        == "f4634568116c65c091b65da570d81b9614117d11abc2c8fe3940eb43b04fc774"  # noqa: S105
+    )
     proof_plaintext = (
         AESCCM(challenge_key, tag_length=16)
         .decrypt(challenge_key[:8], bytes.fromhex(proof_request[2]["data"]), None)

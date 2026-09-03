@@ -3729,7 +3729,10 @@ class SpeedportClient:
             raise SpeedportAuthenticationError(
                 "Router returned invalid login challenge"
             )
-        password_hash = sha256(f"{challenge}:{self._password}".encode()).hexdigest()
+        # The firmware mandates SHA-256(challenge:password) as its transient
+        # login proof. This is protocol compatibility, not password storage.
+        # codeql[py/weak-sensitive-data-hashing]  # noqa: ERA001
+        login_proof = sha256(f"{challenge}:{self._password}".encode()).hexdigest()
         # A proof request may be accepted even when its response cannot be
         # decoded or the connection drops. Retain only this router-issued key
         # so logout/close can release the tentative session without ever
@@ -3737,7 +3740,7 @@ class SpeedportClient:
         self._session_cleanup_key = challenge_key
         result = await self._post_json_unlocked(
             "data/Login.json",
-            {"showpw": "0", "password": password_hash},
+            {"showpw": "0", "password": login_proof},
             authenticated=False,
             referer=None,
             ensure_auth=False,

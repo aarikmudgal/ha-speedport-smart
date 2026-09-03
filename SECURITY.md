@@ -59,6 +59,12 @@ The integration:
 - never runs router-changing commands during setup, polling, discovery,
   diagnostics, retry, or reload
 
+Normal login follows the router firmware's fixed
+`SHA-256(challenge:password)` wire protocol. The result is a transient login
+proof, not a stored password hash, and the integration cannot substitute a
+password KDF without becoming incompatible with the router. Keep Home
+Assistant and the router on a trusted local network.
+
 Native entity services use normal Home Assistant permissions. Panel confirmation
 does not intercept an automation or another caller invoking those services.
 Structured writes, secret changes and destructive operations instead require
