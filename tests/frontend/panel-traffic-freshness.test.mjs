@@ -79,6 +79,41 @@ test("stopped precise and diagnostic sample clocks expire without artificial hea
   assert.equal(view.calls.length, 1);
 });
 
+for (const offset of [0.001, 0.25, 2, 5]) {
+  test(`a ${offset}s HA clock lead keeps real unchanged WAN samples visible without inventing observations`, async (t) => {
+    const view = fixture(t, "0");
+    for (let seconds = 0; seconds <= 90; seconds += 10) {
+      view.setTime(seconds);
+      view.source.last_sampled_at = iso(seconds + offset);
+      view.states["sensor.sample_clock"].state = iso(Math.floor((seconds + offset) / 60) * 60);
+      await view.sync();
+      assert.equal(view.current().current, 0, `false stale at second ${seconds}`);
+      assert.equal(view.current().lastSampleAt, BASE + (seconds + offset) * 1000);
+    }
+    const actualTimes = view.current().points.map(({time}) => time);
+    assert.equal(actualTimes.at(-1), BASE + (90 + offset) * 1000);
+    view.setTime(121 + offset);
+    await view.sync();
+    assert.equal(view.current().current, null);
+    assert.deepEqual(view.current().points.map(({time}) => time), actualTimes);
+    assert.equal(view.calls.length, 1);
+  });
+}
+
+test("subsecond clock skew and network jitter do not alternate valid native WAN values with blanks", async (t) => {
+  const view = fixture(t);
+  for (const [browser, observed, value] of [[31, 31.25, "1.66"], [32, 31.9, "4.41"], [33, 33.25, "4.59"], [33.5, 33.25, "4.59"]]) {
+    view.setTime(browser);
+    view.source.last_sampled_at = iso(observed);
+    view.states["sensor.download"] = {state: value, last_updated: iso(observed), attributes: {unit_of_measurement: "Mbit/s"}};
+    await view.sync();
+    assert.equal(view.current().current, Number(value));
+    assert.equal(view.current().lastSampleAt, BASE + observed * 1000);
+  }
+  assert.deepEqual(view.current().points.map(({time}) => time), [31.9, 33.25].map((seconds) => BASE + seconds * 1000));
+  assert.equal(view.calls.length, 1);
+});
+
 test("a genuinely newer diagnostic clock wins over older precise metadata", async (t) => {
   const view = fixture(t);
   view.setTime(61); view.source.last_sampled_at = iso(29);
@@ -90,11 +125,11 @@ test("a genuinely newer diagnostic clock wins over older precise metadata", asyn
 
 for (const [label, metadata, diagnostic, expected] of [
   ["invalid metadata", "invalid", iso(60), 60],
-  ["future metadata", iso(62), iso(60), 60],
+  ["future metadata", iso(67), iso(60), 60],
   ["invalid diagnostic", iso(59), "unknown", 59],
-  ["future diagnostic", iso(59), iso(62), 59],
+  ["future diagnostic", iso(59), iso(67), 59],
   ["both invalid", "unavailable", "invalid", -600],
-  ["both future", iso(62), iso(63), -600],
+  ["both future", iso(67), iso(68), -600],
   ["non-string clocks", true, null, -600],
 ]) {
   test(`${label} cannot displace the freshest valid WAN observation`, async (t) => {

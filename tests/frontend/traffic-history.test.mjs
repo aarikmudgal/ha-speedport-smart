@@ -4,10 +4,12 @@ import {
   bindTrafficHistory,
   createTrafficHistoryController,
   renderTrafficHistory,
+  refreshTrafficHistoryContent,
   trafficRateMbit,
   TRAFFIC_HISTORY_MAX_POINTS,
   TRAFFIC_HISTORY_STYLES,
   TRAFFIC_HISTORY_WINDOW_MS,
+  TRAFFIC_HISTORY_WINDOWS_MINUTES,
 } from "../../custom_components/speedport_smart/frontend/traffic-history.js";
 
 const END = Date.parse("2026-09-03T12:00:00Z");
@@ -67,6 +69,98 @@ test("one fixed two-entity read covers the preceding15min without artificial bou
   assert.equal(calls.length, 1);
   assert.equal(controller.snapshot().series.download.points.length, 1);
   assert.equal(controller.snapshot().historyStatus, "empty");
+});
+
+test("timeframe selection makes one scoped history read and survives live updates", async () => {
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  for (const minutes of [5, 30, 60, 15]) {
+    const before = calls.length;
+    await controller.setWindowMinutes(minutes);
+    assert.equal(calls.length, before + 1);
+    assert.equal(calls.at(-1).start_time, iso(END - minutes * 60000));
+    assert.deepEqual(calls.at(-1).entity_ids, [DOWN, UP]);
+    assert.equal(controller.snapshot().windowMinutes, minutes);
+    assert.equal(controller.snapshot().series.download.current, 12);
+    await controller.open({...SCOPE, states: states(END)});
+    await controller.setWindowMinutes(minutes);
+    assert.equal(calls.length, before + 1);
+    const markup = renderTrafficHistory(controller.snapshot());
+    assert.match(markup, new RegExp(`<option value="${minutes}" selected>`));
+    assert.ok(markup.includes(`${minutes} min ago`));
+  }
+  for (const invalid of [0, 1, 10, 24 * 60, null, undefined, "60", Infinity, {}, []])
+    assert.equal(await controller.setWindowMinutes(invalid), false);
+  assert.equal(calls.length, 5);
+  controller.close();
+  assert.equal(await controller.setWindowMinutes(60), false);
+  assert.equal(calls.length, 5);
+});
+
+test("one-hour history keeps the whole window in bounded original observations", async () => {
+  const start = END - 3600000;
+  const original = Array.from({length: 3601}, (_, index) => row(start + index * 1000,
+    index === 1801 ? "unavailable" : String(index)));
+  const {controller, calls} = setup({[DOWN]: original, [UP]: []});
+  await controller.open({...SCOPE, states: states(END, "3600")});
+  await controller.setWindowMinutes(60);
+  const view = controller.snapshot();
+  assert.equal(view.historyStatus, "ready");
+  const points = view.series.download.points;
+  assert.ok(points.length <= TRAFFIC_HISTORY_MAX_POINTS);
+  assert.ok(points[0].time <= start + 4000, "first hour samples must not be tail-truncated");
+  assert.equal(points.at(-1).time, END);
+  assert.ok(points.some((point) => point.breakBefore && point.time >= start + 1801000));
+  assert.ok(points.every((point) => original.some((row) => row.lu * 1000 === point.time &&
+    (point.value === null || Number(row.s) === point.value))));
+  assert.match(renderTrafficHistory(view), /60 min ago/);
+  assert.equal(calls.length, 2);
+});
+
+test("timeframe change drops pending prior history and resets on user or router change", async () => {
+  for (const change of [{userId: "user-b"}, {entryId: "entry-b"}]) {
+    const first = deferred(); const second = deferred(); const calls = [];
+    const controller = createTrafficHistoryController({now: () => END, request: (message) => {
+      calls.push(message); return calls.length === 1 ? first.promise : calls.length === 2 ? second.promise : Promise.resolve({});
+    }});
+    const loading = controller.open({...SCOPE, states: states(END)});
+    const changed = controller.setWindowMinutes(60);
+    first.resolve({[DOWN]: [row(END - 1000, "999")]}); await loading;
+    assert.equal(controller.snapshot().historyStatus, "loading");
+    assert.equal(controller.snapshot().windowMinutes, 60);
+    await controller.open({...SCOPE, ...change, states: states(END, "5")});
+    assert.equal(controller.snapshot().windowMinutes, 15);
+    second.resolve({[DOWN]: [row(END - 3000000, "777")]}); await changed;
+    assert.equal(controller.snapshot().series.download.current, 5);
+    assert.ok(controller.snapshot().series.download.points.every((point) => ![777, 999].includes(point.value)));
+    assert.equal(calls.length, 3);
+    controller.dispose();
+    assert.equal(controller.snapshot(), null);
+  }
+});
+
+test("timeframe history errors retain real live samples and never trigger automatic retries", async () => {
+  const calls = [];
+  const controller = createTrafficHistoryController({now: () => END, request: async (message) => {
+    calls.push(message); if (calls.length > 1) throw new Error("PRIVATE-BODY"); return {};
+  }});
+  await controller.open({...SCOPE, states: states(END)});
+  assert.equal(await controller.setWindowMinutes(30), false);
+  assert.equal(controller.snapshot().windowMinutes, 30);
+  assert.equal(controller.snapshot().series.download.current, 12);
+  const markup = renderTrafficHistory(controller.snapshot());
+  assert.match(markup, /History unavailable/);
+  assert.doesNotMatch(markup, /PRIVATE-BODY/);
+  await controller.open({...SCOPE, states: states(END)});
+  await controller.setWindowMinutes(30);
+  assert.equal(calls.length, 2);
+  const gate = deferred();
+  const disposed = createTrafficHistoryController({now: () => END, request: () => gate.promise});
+  const first = disposed.open({...SCOPE, states: states(END)});
+  const second = disposed.setWindowMinutes(60);
+  disposed.dispose(); gate.resolve({[DOWN]: [row(END, "999")]});
+  await Promise.all([first, second]);
+  assert.equal(disposed.snapshot(), null);
 });
 
 test("compact history uses last_updated, per-row units, and only selected entities", async () => {
@@ -223,10 +317,10 @@ test("successful clock accepts numeric milliseconds but never revives unavailabl
   assert.equal(controller.snapshot().series.download.current, null);
 });
 
-test("future, invalid, and older WAN observation clocks cannot advance a state", async () => {
+test("far-future, invalid, and older WAN observation clocks cannot advance a state", async () => {
   const {controller} = setup();
   await controller.open({...SCOPE, states: states(END)});
-  for (const sampledAt of [iso(END + 1), "invalid", iso(END - 1000), true, null, Infinity])
+  for (const sampledAt of [iso(END + 5001), "invalid", iso(END - 1000), true, null, Infinity])
     controller.update({...SCOPE, states: states(END), sampledAt});
   assert.deepEqual(controller.snapshot().series.download.points.map(({time}) => time), [END]);
 });
@@ -238,15 +332,39 @@ test("long unobserved intervals break lines even when history contains no unavai
   assert.equal((output.match(/class="sp-traffic-line sp-traffic-download"/g) ?? []).length, 3);
 });
 
-test("live out-of-order, future, and unparseable timestamps never create fabricated samples", async () => {
+test("live out-of-order, far-future, and unparseable timestamps never create fabricated samples", async () => {
   const {controller} = setup();
   await controller.open({...SCOPE, states: states(END)});
   controller.update({...SCOPE, states: states(END - 5000, "99")});
   assert.equal(controller.snapshot().series.download.current, 12);
-  controller.update({...SCOPE, states: states(END + 1, "100")});
+  controller.update({...SCOPE, states: states(END + 5001, "100")});
   controller.update({...SCOPE, states: {[DOWN]: {state: "999", attributes: {unit_of_measurement: "Mbit/s"}}}});
   assert.deepEqual(controller.snapshot().series.download.points.map(({value}) => value), [12]);
   assert.equal(controller.snapshot().series.download.current, null);
+});
+
+test("live clock tolerance preserves real timestamps and does not plot future observations early", async () => {
+  const {controller, setTime} = setup();
+  await controller.open({...SCOPE, states: states(END + 5000, "1.66")});
+  let view = controller.snapshot();
+  assert.equal(view.series.download.current, 1.66);
+  assert.equal(view.series.download.lastSampleAt, END + 5000);
+  assert.equal(view.series.download.points[0].time, END + 5000);
+  assert.equal(view.end, END);
+  assert.doesNotMatch(renderTrafficHistory(view), /class="sp-traffic-line sp-traffic-download"/);
+  setTime(END + 5000);
+  view = controller.snapshot();
+  assert.equal(view.series.download.points[0].time, END + 5000);
+  assert.match(renderTrafficHistory(view), /class="sp-traffic-line sp-traffic-download"/);
+});
+
+test("live clock tolerance does not accept even one millisecond of future Recorder history", async () => {
+  const {controller} = setup({[DOWN]: [row(END + 1, "999")], [UP]: []});
+  await controller.open({...SCOPE, states: states(END + 250, "1.66")});
+  const view = controller.snapshot();
+  assert.equal(view.historyStatus, "unavailable");
+  assert.equal(view.series.download.current, 1.66);
+  assert.ok(view.series.download.points.every(({value}) => value !== 999));
 });
 
 test("points stay bounded, preserve actual subsecond timestamps, and expire after15min", async () => {
@@ -455,7 +573,7 @@ function inspectionFixture(initial) {
   const host = {
     addEventListener(name, handler) { listeners.set(name, handler); },
     removeEventListener(name, handler) { if (listeners.get(name) === handler) listeners.delete(name); },
-    querySelector(selector) { return ({"[data-traffic-plot]": dom.plot, "[data-traffic-tooltip]": dom.tooltip, "[data-traffic-crosshair]": dom.line})[selector]; },
+    querySelector(selector) { return ({"[data-traffic-plot]": dom.plot, "[data-traffic-tooltip]": dom.tooltip, "[data-traffic-crosshair]": dom.line, "[data-traffic-window]": dom.select})[selector]; },
   };
   const replaceDOM = () => {
     const tooltip = {hidden: true, textContent: "", style: {}, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }};
@@ -470,7 +588,7 @@ function inspectionFixture(initial) {
         this.focused = true; listeners.get("focusin")?.({target: this});
       },
     };
-    dom = {plot, tooltip, line, svg: {}};
+    dom = {plot, tooltip, line, svg: {}, select: {value: "15"}};
     return dom;
   };
   replaceDOM();
@@ -482,7 +600,7 @@ function inspectionFixture(initial) {
       listeners.get(name)?.(event); return event;
     },
     at(time, name = "pointermove", options = {}) {
-      return this.event(name, {clientX: 40 + (time - view.start) / TRAFFIC_HISTORY_WINDOW_MS * 900, ...options});
+      return this.event(name, {clientX: 40 + (time - view.start) / (view.end - view.start) * 900, ...options});
     },
   };
 }
@@ -733,7 +851,7 @@ test("scope change, disposed controller, expired selection and getter failure cl
 test("cleanup removes every listener, releases capture and makes refresh inert", () => {
   const fixture = inspectionFixture(inspectionView([point(END, 5)]));
   fixture.at(END, "pointerdown", {pointerType: "touch", pointerId: 3});
-  assert.equal(fixture.listeners.size, 8);
+  assert.equal(fixture.listeners.size, 9);
   fixture.bind(); fixture.bind();
   assert.equal(fixture.listeners.size, 0);
   assert.equal(fixture.dom().plot.released, 3);
@@ -762,4 +880,86 @@ test("binder accepts a controller and performs no history query on any interacti
   assert.equal(calls.length, 1);
   assert.throws(() => bindTrafficHistory({}, controller), /invalid_history_binding/);
   assert.throws(() => bindTrafficHistory(fixture.host, {}), /invalid_history_binding/);
+});
+
+test("native timeframe select has four bounded presets and is the only interaction that reads history", async () => {
+  assert.ok(Object.isFrozen(TRAFFIC_HISTORY_WINDOWS_MINUTES));
+  assert.deepEqual(TRAFFIC_HISTORY_WINDOWS_MINUTES, [5, 15, 30, 60]);
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  const fixture = inspectionFixture(controller.snapshot());
+  fixture.bind();
+  const cleanup = bindTrafficHistory(fixture.host, controller);
+  const markup = renderTrafficHistory(controller.snapshot(), {language: "de"});
+  assert.match(markup, /<select[^>]+data-traffic-window aria-label="Zeitraum des Datenverkehrs"/);
+  assert.match(markup, /value="15" selected>Letzte 15 Minuten/);
+  assert.equal((markup.match(/<option /g) ?? []).length, 4);
+  fixture.at(END, "pointerdown", {pointerType: "touch"});
+  const select = fixture.dom().select;
+  for (const value of ["0", "1440", " 60", "NaN", "", "60.0"]) {
+    select.value = value; fixture.event("change", {target: select});
+  }
+  fixture.event("change", {target: {value: "60"}});
+  assert.equal(calls.length, 1);
+  select.value = "60"; fixture.event("change", {target: select});
+  await Promise.resolve();
+  assert.equal(calls.length, 2);
+  assert.equal(controller.snapshot().windowMinutes, 60);
+  assert.equal(fixture.dom().tooltip.hidden, true);
+  assert.equal(fixture.dom().plot.released, 1);
+  fixture.event("change", {target: select}); await Promise.resolve();
+  assert.equal(calls.length, 2);
+  cleanup(); select.value = "5"; fixture.event("change", {target: select});
+  assert.equal(calls.length, 2);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-window\{max-width:100%;min-height:40px/);
+});
+
+test("all selectable windows retain correct inspection positions and keyboard boundaries", () => {
+  for (const minutes of TRAFFIC_HISTORY_WINDOWS_MINUTES) {
+    const start = END - minutes * 60000;
+    const view = {...inspectionView([point(start, 2), point(start + 1000, 3), point(END, 4)]), start};
+    const fixture = inspectionFixture(view);
+    fixture.at(start); assert.equal(fixture.dom().line.style.left, "0%");
+    assert.match(fixture.dom().tooltip.textContent, /Download: 2 Mbit\/s/);
+    fixture.event("keydown", {key: "End"}); assert.equal(fixture.dom().line.style.left, "100%");
+    fixture.event("keydown", {key: "Home"}); assert.equal(fixture.dom().line.style.left, "0%");
+    fixture.event("keydown", {key: "ArrowRight"});
+    assert.match(fixture.dom().tooltip.textContent, /Download: 3 Mbit\/s/);
+    fixture.at(start + 60000);
+    assert.match(fixture.dom().tooltip.textContent, /Download: No sample/);
+    const nextMinutes = minutes === 60 ? 15 : 60;
+    fixture.setView({...view, start: END - nextMinutes * 60000});
+    fixture.bind.refresh(); assert.equal(fixture.dom().tooltip.hidden, true);
+    fixture.bind();
+  }
+});
+
+test("focused graph refresh replaces only data content and never detaches the native selector", async () => {
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  const selectors = [".sp-traffic-metrics", ".sp-traffic-chart", ".sp-traffic-note"];
+  const replacements = [];
+  let markup;
+  const existing = Object.fromEntries(selectors.map((selector) => [selector, {replaceWith(node) {replacements.push([selector, node]);}}]));
+  const next = Object.fromEntries(selectors.map((selector) => [selector, {part: selector}]));
+  const host = {querySelector: (selector) => existing[selector], ownerDocument: {
+    createElement(tag) {assert.equal(tag, "template"); return {set innerHTML(value) {markup = value;}, content: {querySelector: (selector) => next[selector]}};},
+  }};
+  assert.equal(refreshTrafficHistoryContent(host, controller.snapshot()), true);
+  assert.deepEqual(replacements, selectors.map((selector) => [selector, next[selector]]));
+  assert.equal(calls.length, 1);
+  assert.match(markup, /Latest sample/);
+  controller.update({...SCOPE, states: states(END), stale: true});
+  assert.equal(refreshTrafficHistoryContent(host, controller.snapshot()), true);
+  assert.match(markup, /No recent sample/);
+  await controller.setWindowMinutes(60);
+  assert.equal(refreshTrafficHistoryContent(host, controller.snapshot()), true);
+  assert.match(markup, /60 min ago/);
+  assert.equal(calls.length, 2);
+  replacements.length = 0;
+  delete existing[selectors[0]];
+  assert.equal(refreshTrafficHistoryContent(host, controller.snapshot()), false);
+  assert.deepEqual(replacements, []);
+  assert.equal(refreshTrafficHistoryContent({}, controller.snapshot()), false);
+  assert.equal(refreshTrafficHistoryContent(host, null), false);
 });

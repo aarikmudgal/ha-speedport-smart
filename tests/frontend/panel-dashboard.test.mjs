@@ -4,7 +4,8 @@ import test from "node:test";
 class TestElement {
   constructor() { this.isConnected = true; }
   attachShadow() {
-    this.shadowRoot = {innerHTML: "", activeElement: undefined, addEventListener() {}, querySelector() {}, querySelectorAll() { return []; }};
+    this.shadowRoot = {innerHTML: "", activeElement: undefined, listeners: new Map(),
+      addEventListener(name, handler) {this.listeners.set(name, handler);}, querySelector() {}, querySelectorAll() { return []; }};
     return this.shadowRoot;
   }
   dispatchEvent() {}
@@ -29,7 +30,7 @@ function fixture(options = {}) {
   const panel = new SpeedportSmartPanel();
   const calls = [];
   const first = router(); const second = router("entry-b", "b");
-  panel._metadata = {schema_version: 28, routers: [first, second]};
+  panel._metadata = {schema_version: 29, routers: [first, second]};
   panel._selectedEntry = first.entry_id;
   panel._platformIcons = {}; panel._componentIcons = {};
   panel._scheduleRender = () => {}; panel._render = () => {};
@@ -314,6 +315,67 @@ test("WAN readouts delegate more-info to their actual HA entities without router
   assert.equal(calls.length, sent);
 });
 
+test("focused native timeframe selection survives WAN rerenders and drains once on blur", async () => {
+  const {panel, calls} = fixture();
+  panel._syncTrafficHistory(); await settle();
+  const selector = {matches: (value) => value === "[data-traffic-window]"};
+  const parts = [".sp-traffic-metrics", ".sp-traffic-chart", ".sp-traffic-note"];
+  let latestMarkup; let refreshed = 0; const replacements = [];
+  const nodes = Object.fromEntries(parts.map((part) => [part, {replaceWith(node) {replacements.push([part, node]);}}]));
+  panel._trafficHost = {querySelector: (value) => value === "[data-traffic-window]" ? selector : nodes[value],
+    ownerDocument: {createElement: () => ({set innerHTML(value) {latestMarkup = value;},
+      content: {querySelector: (value) => ({part: value})}})}};
+  panel._trafficBinding = Object.assign(() => {}, {refresh: () => {refreshed++;}});
+  panel.shadowRoot.activeElement = selector;
+  panel.shadowRoot.innerHTML = "native selector stays connected";
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(panel.shadowRoot.innerHTML, "native selector stays connected");
+  assert.equal(panel._trafficWindowRenderPending, true);
+  assert.equal(refreshed, 1);
+  assert.deepEqual(replacements.map(([part]) => part), parts);
+  await panel._trafficHistory.setWindowMinutes(60);
+  panel._syncTrafficHistory(); await settle();
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.equal(calls.length, 2);
+  assert.equal(panel._trafficHistory.snapshot().windowMinutes, 60);
+  assert.equal(panel.shadowRoot.innerHTML, "native selector stays connected");
+  assert.match(latestMarkup, /60 min ago/);
+  assert.equal(refreshed, 2);
+  panel._trafficHistory.update({entryId: "entry-a", userId: "user-a", stale: true, states: panel._hass.states});
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.match(latestMarkup, /No recent sample/);
+  assert.equal(refreshed, 3);
+  let renders = 0;
+  panel._scheduleRender = () => {renders++;};
+  panel.shadowRoot.activeElement = undefined;
+  panel.shadowRoot.listeners.get("focusout")({target: selector});
+  panel.shadowRoot.listeners.get("focusout")({target: selector});
+  assert.equal(renders, 1);
+  assert.equal(panel._trafficWindowRenderPending, false);
+  SpeedportSmartPanel.prototype._render.call(panel);
+  assert.ok(panel.shadowRoot.innerHTML.includes('<option value="60" selected>'));
+  assert.equal(calls.length, 2);
+});
+
+test("timeframe focus cannot delay clearing another user, router, view or unloaded scope", async () => {
+  for (const change of [
+    (panel) => {panel._hass = {...panel._hass, user: {id: "user-b"}};},
+    (panel) => {panel._selectedEntry = "entry-b";},
+    (panel) => {panel._activeView = "connection";},
+    (panel) => {panel.isConnected = false;},
+  ]) {
+    const {panel} = fixture(); panel._syncTrafficHistory(); await settle();
+    const selector = {};
+    panel._trafficHost = {querySelector: () => selector, innerHTML: "private old data"};
+    panel.shadowRoot.activeElement = selector;
+    SpeedportSmartPanel.prototype._render.call(panel);
+    assert.equal(panel._trafficWindowRenderPending, true);
+    change(panel); panel._syncTrafficHistory();
+    assert.equal(panel._trafficWindowRenderPending, false);
+    assert.equal(panel._trafficHost, undefined);
+  }
+});
+
 test("actual panel keeps one graph binding on a stable host and disposes it on every scope exit", async () => {
   const {panel, calls} = fixture();
   const shadow = panel.shadowRoot;
@@ -337,7 +399,7 @@ test("actual panel keeps one graph binding on a stable host and disposes it on e
   SpeedportSmartPanel.prototype._render.call(panel);
   const first = panel._trafficHost;
   const binding = panel._trafficBinding;
-  assert.equal(first.listeners.size, 8);
+  assert.equal(first.listeners.size, 9);
   const listeners = [...first.listeners];
   SpeedportSmartPanel.prototype._render.call(panel);
   assert.equal(panel._trafficHost, first);
@@ -350,7 +412,7 @@ test("actual panel keeps one graph binding on a stable host and disposes it on e
   SpeedportSmartPanel.prototype._render.call(panel);
   const second = panel._trafficHost;
   assert.notEqual(second, first);
-  assert.equal(second.listeners.size, 8);
+  assert.equal(second.listeners.size, 9);
   panel.hass = {...panel._hass, user: {id: "user-b", is_admin: false}};
   assert.equal(second.listeners.size, 0);
   SpeedportSmartPanel.prototype._render.call(panel);

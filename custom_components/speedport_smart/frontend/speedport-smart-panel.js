@@ -1,24 +1,24 @@
-import { requestPrivateApi } from "./private-api.js?schema=28";
-import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=28";
-import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, TRAFFIC_HISTORY_STYLES } from "./traffic-history.js?schema=28";
+import { requestPrivateApi } from "./private-api.js?schema=29";
+import { renderDashboardOverview, DASHBOARD_OVERVIEW_STYLES } from "./dashboard-overview.js?schema=29";
+import { createTrafficHistoryController, renderTrafficHistory, bindTrafficHistory, refreshTrafficHistoryContent, TRAFFIC_HISTORY_STYLES, LIVE_TRAFFIC_CLOCK_SKEW_MS } from "./traffic-history.js?schema=29";
 import {
   NATIVE_ADMIN_TABS, resolveAdminPage, adminPageSettings, adminPageFeatures, adminPageSettingSections,
-} from "./admin-navigation.js?schema=28";
-import { keepDialogFocus } from "./accessibility.js?schema=28";
+} from "./admin-navigation.js?schema=29";
+import { keepDialogFocus } from "./accessibility.js?schema=29";
 import {
   createCallHistoryViewController, renderCallHistoryView, bindCallHistoryView,
-} from "./call-history-view.js?schema=28";
+} from "./call-history-view.js?schema=29";
 import {
   createFileTransferEditorController, renderFileTransferEditor, bindFileTransferEditor,
-} from "./file-transfer-editor.js?schema=28";
+} from "./file-transfer-editor.js?schema=29";
 import {
   createMaintenanceEditorController, renderMaintenanceEditor, bindMaintenanceEditor,
-} from "./maintenance-editor.js?schema=28";
+} from "./maintenance-editor.js?schema=29";
 import {
   createConfigurationEditorController,
   renderConfigurationEditor,
   bindConfigurationEditor,
-} from "./configuration-editor.js?schema=28";
+} from "./configuration-editor.js?schema=29";
 import {
   controlConfirmationPhrase,
   controlConfirmationPolicyMatches,
@@ -33,22 +33,22 @@ import {
   textControlServiceCall,
   typedConfirmationMatches,
   validateTextControlValue,
-} from "./controls.js?schema=28";
+} from "./controls.js?schema=29";
 import {
   aggregateAvailability,
   entityDisplayName,
   entityAvailability,
-} from "./entity-state.js?schema=28";
+} from "./entity-state.js?schema=29";
 import {
   captureRenderState,
   restoreDetailsState,
   restoreFocusState,
-} from "./render-state.js?schema=28";
+} from "./render-state.js?schema=29";
 import {
   formatPanelDurationSeconds,
   panelTranslate,
   resolvePanelLanguage,
-} from "./translations.js?schema=28";
+} from "./translations.js?schema=29";
 
 const API_TYPE = "speedport_smart/panel";
 const ADMIN_READ_API_TYPE = `${API_TYPE}/admin_read`;
@@ -234,7 +234,7 @@ const ADMIN_ACTION_PBX_TARGET_STATUSES = new Set([
 ]);
 const DECT_HANDSET_TARGETS_API_TYPE = `${API_TYPE}/action/dect_handset_targets`;
 const VOIP_LINE_TARGETS_API_TYPE = `${API_TYPE}/action/voip_line_targets`;
-const PANEL_SCHEMA_VERSION = 28;
+const PANEL_SCHEMA_VERSION = 29;
 const METADATA_REFRESH_INTERVAL_MS = 10_000;
 const HERO_KEYS = new Set(["wan_download_rate", "wan_upload_rate"]);
 const WAN_CUMULATIVE_KEYS = new Set([
@@ -3468,6 +3468,12 @@ export class SpeedportSmartPanel extends HTMLElement {
     this.shadowRoot.addEventListener("input", (event) => this._handleInput(event));
     this.shadowRoot.addEventListener("keydown", (event) => this._handleKeyDown(event));
     this.shadowRoot.addEventListener("submit", (event) => this._handleSubmit(event));
+    this.shadowRoot.addEventListener("focusout", (event) => {
+      if (event.target?.matches?.("[data-traffic-window]") && this._trafficWindowRenderPending) {
+        this._trafficWindowRenderPending = false;
+        this._scheduleRender();
+      }
+    });
     this.shadowRoot.addEventListener("toggle", (event) => this._handleToggle(event), true);
   }
 
@@ -3766,12 +3772,13 @@ export class SpeedportSmartPanel extends HTMLElement {
     );
     const sampleMeta = router.entities?.find((meta) => meta.translation_key === "wan_last_sample");
     // The diagnostic sensor is minute-rounded. Prefer the newest real sample
-    // from either source, never a render-time heartbeat or a future timestamp.
+    // from either source, never a render-time heartbeat. HA can be slightly
+    // ahead of the browser; preserve the actual clock within a bounded margin.
     const now = Date.now();
     const observationTimes = [source?.last_sampled_at,
       sampleMeta ? this._hass.states?.[sampleMeta.entity_id]?.state : undefined]
       .map((value) => typeof value === "string" ? Date.parse(value) : NaN)
-      .filter((time) => Number.isFinite(time) && time <= now);
+      .filter((time) => Number.isFinite(time) && time <= now + LIVE_TRAFFIC_CLOCK_SKEW_MS);
     const sampledAt = observationTimes.length ? Math.max(...observationTimes) : undefined;
     this._trafficHistory.open({entryId: router.entry_id, userId, entities, states: this._hass.states,
       stale: source?.available === false || source?.retrying === true || source?.state === "cooldown" || source?.supported === false,
@@ -3780,6 +3787,7 @@ export class SpeedportSmartPanel extends HTMLElement {
   }
 
   _clearTrafficBinding() {
+    this._trafficWindowRenderPending = false;
     this._trafficBinding?.();
     this._trafficBinding = undefined;
     this._trafficScope = undefined;
@@ -7934,6 +7942,19 @@ export class SpeedportSmartPanel extends HTMLElement {
     this._flushAdminSessionInvalidation();
     if (!this.shadowRoot) return;
     const activeEditorElement = this.shadowRoot.activeElement;
+    const trafficView = this._trafficHistory.snapshot();
+    if (this.isConnected && this._activeView === "dashboard" && this._currentRouter()?.entry_state === "loaded" &&
+        trafficView?.entryId === this._currentRouter()?.entry_id && trafficView?.userId === this._hass?.user?.id &&
+        activeEditorElement && activeEditorElement === this._trafficHost?.querySelector?.("[data-traffic-window]")) {
+      // Keep the native select connected while still refreshing graph data and
+      // stale/cooldown readouts. Repaint the rest of the page after focus leaves.
+      if (refreshTrafficHistoryContent(this._trafficHost, trafficView, {language: this._language()})) {
+        this._trafficBinding?.refresh();
+      }
+      this._trafficWindowRenderPending = true;
+      return;
+    }
+    this._trafficWindowRenderPending = false;
     const privateFocus = activeEditorElement &&
       [this._settingsHost, ...[...this._settingsEditors.values()].map((record) => record.host), this._maintenanceHost, this._fileTransferHost, this._callHistoryHost]
         .some((host) => host?.contains?.(activeEditorElement)) ? activeEditorElement : undefined;

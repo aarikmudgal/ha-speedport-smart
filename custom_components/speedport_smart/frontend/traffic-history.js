@@ -5,7 +5,11 @@
  * Keep attributes in this two-entity query so historical unit changes stay honest.
  */
 export const TRAFFIC_HISTORY_WINDOW_MS = 15 * 60 * 1000;
+export const TRAFFIC_HISTORY_WINDOWS_MINUTES = Object.freeze([5, 15, 30, 60]);
 export const TRAFFIC_HISTORY_MAX_POINTS = 1024;
+// HA and the browser use independent clocks. Tolerate a small live-only lead
+// without rewriting observation times or accepting future Recorder history.
+export const LIVE_TRAFFIC_CLOCK_SKEW_MS = 5000;
 const MAX_HISTORY_ROWS = 4096;
 const DEFAULT_STALE_MS = 120000;
 const SERIES = ["download", "upload"];
@@ -19,6 +23,8 @@ const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
 })[char]);
 const entityValid = (value) => typeof value === "string" && value.length <= 255 && /^sensor\.[a-z0-9_]+$/.test(value);
 const identityValid = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
+const windowValid = (value) => TRAFFIC_HISTORY_WINDOWS_MINUTES.includes(value);
+const windowDuration = (view) => windowValid((view?.end - view?.start) / 60000) ? view.end - view.start : null;
 
 export function trafficRateMbit(value, unit) {
   if (typeof unit !== "string" || !Object.hasOwn(FACTORS, unit) ||
@@ -39,32 +45,37 @@ function timestamp(row) {
   return typeof value === "string" ? Date.parse(value) : NaN;
 }
 
-function sample(row, start, end, sampledAt) {
+function sample(row, start, end, sampledAt, futureTolerance = 0) {
   let time = timestamp(row);
   // HA does not emit a new state for an unchanged rate. The caller may provide
   // the integration's successful WAN sample clock, never a render-time clock.
   const observed = typeof sampledAt === "string" ? Date.parse(sampledAt) : sampledAt;
-  if (Number.isFinite(time) && Number.isFinite(observed) && observed >= time && observed <= end) time = observed;
-  if (!Number.isFinite(time) || time < start || time > end) return null;
+  if (Number.isFinite(time) && Number.isFinite(observed) && observed >= time && observed <= end + futureTolerance) time = observed;
+  if (!Number.isFinite(time) || time < start || time > end + futureTolerance) return null;
   const compact = Object.hasOwn(row, "s");
   const attributes = compact ? row.a : row.attributes;
   return {time, value: trafficRateMbit(compact ? row.s : row.state, attributes?.unit_of_measurement), breakBefore: false};
 }
 
-// At most one actual observation per second, keeping its original timestamp.
+// Retain actual observations across the whole window, never just its tail.
+// Longer windows use wider buckets; values and timestamps are never averaged.
 // Unknown observations inside a bucket must still break the next line segment.
 function bounded(points, start, end) {
   const buckets = new Map();
+  const width = Math.max(1000, Math.ceil((end - start) / (TRAFFIC_HISTORY_MAX_POINTS - 1) / 1000) * 1000);
   for (const point of points.sort((a, b) => a.time - b.time)) {
-    if (point.time < start || point.time > end) continue;
-    const key = Math.floor(point.time / 1000);
+    // Retain slightly ahead live samples until the plot's clock catches up.
+    // The plot and hover window still end at the browser's actual current time.
+    if (point.time < start || point.time > end + LIVE_TRAFFIC_CLOCK_SKEW_MS) continue;
+    const key = Math.floor(point.time / width);
     const previous = buckets.get(key);
     buckets.set(key, {...point, breakBefore: point.breakBefore || previous?.breakBefore || previous?.value === null});
   }
   return [...buckets.values()].slice(-TRAFFIC_HISTORY_MAX_POINTS);
 }
 
-/** open() reads once per scope. update() never performs I/O. close() clears it all.
+/** open() reads once per scope. Explicit timeframe changes read history once.
+ * update() never performs I/O. close() clears it all.
  * The caller must close on view exit/unload and include the current user and entry
  * in every update. Snapshot and notification callbacks never retain HA objects.
  */
@@ -84,7 +95,7 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
   };
   const matches = (value) => state && value?.entryId === state.entryId && value?.userId === state.userId;
   const prune = (end) => {
-    for (const key of SERIES) points[key] = bounded(points[key], end - TRAFFIC_HISTORY_WINDOW_MS, end);
+    for (const key of SERIES) points[key] = bounded(points[key], end - state.windowMinutes * 60000, end);
   };
   function update(value, notify = true) {
     if (!matches(value)) return false;
@@ -95,7 +106,7 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
     for (const key of SERIES) {
       const id = state.entities[key];
       const row = id && value.states?.[id];
-      const next = row ? sample(row, end - TRAFFIC_HISTORY_WINDOW_MS, end, value.sampledAt) : null;
+      const next = row ? sample(row, end - state.windowMinutes * 60000, end, value.sampledAt, LIVE_TRAFFIC_CLOCK_SKEW_MS) : null;
       if (state.stale) { breaks[key] = true; continue; }
       if (!next) { live[key] = null; breaks[key] = true; continue; }
       if (live[key] && next.time < live[key].time) continue;
@@ -111,10 +122,11 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
   }
   async function load(generation, end) {
     const ids = SERIES.map((key) => state.entities[key]).filter(Boolean);
+    const start = end - state.windowMinutes * 60000;
     if (!ids.length) { state.historyStatus = "empty"; onChange(); return false; }
     try {
       const response = await request({type: "history/history_during_period",
-        start_time: new Date(end - TRAFFIC_HISTORY_WINDOW_MS).toISOString(), end_time: new Date(end).toISOString(),
+        start_time: new Date(start).toISOString(), end_time: new Date(end).toISOString(),
         entity_ids: ids, include_start_time_state: false, significant_changes_only: false,
         minimal_response: false, no_attributes: false});
       if (generation !== epoch) return false;
@@ -127,7 +139,7 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
         if (!Array.isArray(rows) || rows.length > MAX_HISTORY_ROWS) throw new Error("invalid_history");
         incoming[key] = [];
         for (const row of rows) {
-          const point = sample(row, end - TRAFFIC_HISTORY_WINDOW_MS, end);
+          const point = sample(row, start, end);
           if (!point) throw new Error("invalid_history");
           incoming[key].push(point);
           if (point.value !== null) count++;
@@ -158,8 +170,22 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
       }
       clear();
       state = {entryId: value.entryId, userId: value.userId, entities,
-        historyStatus: "loading", stale: false, staleAfterMs: DEFAULT_STALE_MS};
+        windowMinutes: 15, historyStatus: "loading", stale: false, staleAfterMs: DEFAULT_STALE_MS};
       update(value, false); onChange();
+      pending = load(epoch, now());
+      return pending;
+    },
+    setWindowMinutes(minutes) {
+      if (!state || !windowValid(minutes)) return Promise.resolve(false);
+      if (state.windowMinutes === minutes) return pending ?? Promise.resolve(true);
+      epoch++;
+      state.windowMinutes = minutes;
+      state.historyStatus = "loading";
+      // The latest live observation remains useful while history reloads. Do
+      // not carry downsampled historical buckets into a different resolution.
+      for (const key of SERIES) points[key] = live[key] ? [{...live[key], breakBefore: breaks[key]}] : [];
+      prune(now());
+      onChange();
       pending = load(epoch, now());
       return pending;
     },
@@ -171,12 +197,13 @@ export function createTrafficHistoryController({request, onChange = () => {}, no
       for (const key of SERIES) {
         const current = live[key];
         const fresh = !state.stale && current?.value !== null && current &&
-          current.time <= end && end - current.time <= state.staleAfterMs;
+          current.time <= end + LIVE_TRAFFIC_CLOCK_SKEW_MS && end - current.time <= state.staleAfterMs;
         series[key] = {entityId: state.entities[key], points: points[key].map((point) => ({...point})),
           current: fresh ? current.value : null, stale: !fresh,
           lastSampleAt: current?.time ?? points[key].at(-1)?.time ?? null};
       }
-      return {entryId: state.entryId, userId: state.userId, start: end - TRAFFIC_HISTORY_WINDOW_MS, end,
+      return {entryId: state.entryId, userId: state.userId, windowMinutes: state.windowMinutes,
+        start: end - state.windowMinutes * 60000, end,
         historyStatus: state.historyStatus, staleAfterMs: state.staleAfterMs, series};
     },
     close() { clear(); onChange(); },
@@ -188,13 +215,13 @@ const LABELS = Object.freeze({
   en: {title: "WAN traffic", download: "Download", upload: "Upload", loading: "Loading recorded history…",
     ready: "Recorded changes and observed live samples. Gaps are not zero traffic.", empty: "No recorded changes in this window. Collecting live samples.",
     unavailable: "History unavailable. Showing only samples received in this view.", waiting: "Waiting for usable samples.",
-    stale: "No recent sample", latest: "Latest sample", window: "Last 15 minutes", ago: "15 min ago", now: "Now",
+    stale: "No recent sample", latest: "Latest sample", window: (minutes) => `Last ${minutes} minutes`, ago: (minutes) => `${minutes} min ago`, now: "Now", timeframe: "Traffic history timeframe",
     inspect: "Hover or touch to inspect samples. Arrow keys move between samples; Home and End jump; Escape clears.",
     sample: "Observed samples", missing: "No sample", selected: "Selected time", moreInfo: "Open entity details"},
   de: {title: "WAN-Datenverkehr", download: "Download", upload: "Upload", loading: "Gespeicherter Verlauf wird geladen…",
     ready: "Gespeicherte Änderungen und beobachtete Messwerte. Lücken bedeuten nicht null Datenverkehr.", empty: "Keine gespeicherten Änderungen in diesem Zeitraum. Neue Messwerte werden gesammelt.",
     unavailable: "Verlauf nicht verfügbar. Nur in dieser Ansicht empfangene Messwerte werden angezeigt.", waiting: "Warten auf nutzbare Messwerte.",
-    stale: "Kein aktueller Messwert", latest: "Letzter Messwert", window: "Letzte 15 Minuten", ago: "Vor 15 Min.", now: "Jetzt",
+    stale: "Kein aktueller Messwert", latest: "Letzter Messwert", window: (minutes) => `Letzte ${minutes} Minuten`, ago: (minutes) => `Vor ${minutes} Min.`, now: "Jetzt", timeframe: "Zeitraum des Datenverkehrs",
     inspect: "Mit Maus oder Berührung Messwerte prüfen. Pfeiltasten wechseln Messwerte; Pos1 und Ende springen; Escape schließt.",
     sample: "Beobachtete Messwerte", missing: "Kein Messwert", selected: "Gewählter Zeitpunkt", moreInfo: "Entitätsdetails öffnen"},
 });
@@ -219,8 +246,10 @@ function chartSegments(series, start, end, staleAfterMs) {
 }
 
 export function renderTrafficHistory(snapshot, {language = "en", title, downloadLabel, uploadLabel} = {}) {
+  const duration = windowDuration(snapshot);
   if (!snapshot || !Number.isFinite(snapshot.start) || !Number.isFinite(snapshot.end) ||
-      snapshot.end - snapshot.start !== TRAFFIC_HISTORY_WINDOW_MS) return "";
+      !duration) return "";
+  const minutes = duration / 60000;
   const words = LABELS[language?.toLowerCase().startsWith("de") ? "de" : "en"];
   const format = new Intl.NumberFormat(language?.toLowerCase().startsWith("de") ? "de" : "en", {maximumFractionDigits: 2});
   const labels = {download: downloadLabel ?? words.download, upload: uploadLabel ?? words.upload};
@@ -229,7 +258,7 @@ export function renderTrafficHistory(snapshot, {language = "en", title, download
   let maximum = 1;
   for (const key of SERIES) for (const segment of segments[key]) for (const point of segment) maximum = Math.max(maximum, point.value);
   const ceiling = Math.ceil(maximum * 1.1 * 100) / 100;
-  const x = (time) => 52 + (time - snapshot.start) / TRAFFIC_HISTORY_WINDOW_MS * 688;
+  const x = (time) => 52 + (time - snapshot.start) / duration * 688;
   const y = (value) => 174 - value / ceiling * 148;
   const fixed = (value) => value.toFixed(2);
   const paths = SERIES.map((key) => segments[key].map((segment) =>
@@ -250,20 +279,38 @@ export function renderTrafficHistory(snapshot, {language = "en", title, download
   }).join("");
   const grid = [0, 0.5, 1].map((fraction) => `<line x1="52" x2="740" y1="${fixed(y(ceiling * fraction))}" y2="${fixed(y(ceiling * fraction))}"/>`).join("");
   const axis = [1, 0.5, 0].map((fraction) => `<span>${escape(format.format(ceiling * fraction))}</span>`).join("");
-  return `<section class="sp-traffic-history"><header><h2>${escape(title ?? words.title)}</h2><span>${words.window}</span></header><div class="sp-traffic-metrics">${legends}</div>` +
+  const options = TRAFFIC_HISTORY_WINDOWS_MINUTES.map((value) => `<option value="${value}"${value === minutes ? " selected" : ""}>${words.window(value)}</option>`).join("");
+  return `<section class="sp-traffic-history"><header><h2>${escape(title ?? words.title)}</h2><select class="sp-traffic-window" data-traffic-window aria-label="${words.timeframe}">${options}</select></header><div class="sp-traffic-metrics">${legends}</div>` +
     `<div class="sp-traffic-chart"><div class="sp-traffic-y-axis" aria-hidden="true">${axis}</div>` +
     `<div class="sp-traffic-plot" data-traffic-plot data-traffic-language="${language?.toLowerCase().startsWith("de") ? "de" : "en"}" data-traffic-download="${escape(labels.download)}" data-traffic-upload="${escape(labels.upload)}" tabindex="0" role="group" aria-label="${escape(`${title ?? words.title}. ${words.inspect}`)}" aria-describedby="sp-traffic-inspection">` +
-    `<svg viewBox="52 26 688 148" preserveAspectRatio="none" role="img" aria-label="${escape(`${title ?? words.title}: ${labels.download}, ${labels.upload}. ${words.window}. Mbit/s.`)}"><g class="sp-traffic-grid">${grid}</g>${paths}</svg>` +
+    `<svg viewBox="52 26 688 148" preserveAspectRatio="none" role="img" aria-label="${escape(`${title ?? words.title}: ${labels.download}, ${labels.upload}. ${words.window(minutes)}. Mbit/s.`)}"><g class="sp-traffic-grid">${grid}</g>${paths}</svg>` +
     `<div class="sp-traffic-crosshair" data-traffic-crosshair aria-hidden="true" hidden></div><div id="sp-traffic-inspection" class="sp-traffic-tooltip" data-traffic-tooltip role="status" aria-live="off" aria-atomic="true" hidden></div></div>` +
-    `<div class="sp-traffic-x-axis" aria-hidden="true"><span>${words.ago}</span><span>${words.now}</span></div></div>` +
+    `<div class="sp-traffic-x-axis" aria-hidden="true"><span>${words.ago(minutes)}</span><span>${words.now}</span></div></div>` +
     `<p class="sp-traffic-note">${words[snapshot.historyStatus] ?? words.unavailable}${paths ? "" : ` ${words.waiting}`}</p></section>`;
 }
 
 function inspectionSegments(view) {
   if (!view || !Number.isFinite(view.start) || !Number.isFinite(view.end) ||
-      view.end - view.start !== TRAFFIC_HISTORY_WINDOW_MS) return null;
+      !windowDuration(view)) return null;
   const gap = Number.isFinite(view.staleAfterMs) ? Math.max(5000, Math.min(300000, view.staleAfterMs)) : DEFAULT_STALE_MS;
   return Object.fromEntries(SERIES.map((key) => [key, chartSegments(view.series?.[key], view.start, view.end, gap)]));
+}
+
+/** Refresh live graph content without detaching the native timeframe select.
+ * The caller owns scope validation and refreshes the inspection binding after
+ * replacing the plot. No event binding, focus changes or I/O occurs here.
+ */
+export function refreshTrafficHistoryContent(host, snapshot, options) {
+  if (!host?.ownerDocument?.createElement) return false;
+  const markup = renderTrafficHistory(snapshot, options);
+  if (!markup) return false;
+  const template = host.ownerDocument.createElement("template");
+  template.innerHTML = markup;
+  const replacements = [".sp-traffic-metrics", ".sp-traffic-chart", ".sp-traffic-note"]
+    .map((selector) => [host.querySelector(selector), template.content.querySelector(selector)]);
+  if (replacements.some(([current, next]) => !current?.replaceWith || !next)) return false;
+  for (const [current, next] of replacements) current.replaceWith(next);
+  return true;
 }
 
 function nearestSample(segments, time, tolerance) {
@@ -275,7 +322,8 @@ function nearestSample(segments, time, tolerance) {
   return candidates.reduce((best, point) => !best || Math.abs(point.time - time) < Math.abs(best.time - time) ? point : best, null);
 }
 
-/** Bind only local inspection events. No reads, writes, timers or persistent data.
+/** Bind inspection and explicit timeframe selection. Only selection reads HA
+ * history once; no router requests, writes, timers or persistent data.
  * Keep this host stable across renders, then call cleanup.refresh() after updating
  * its markup. Selection is an absolute timestamp, never an extrapolated value.
  */
@@ -309,7 +357,7 @@ export function bindTrafficHistory(host, controllerOrSnapshotGetter) {
     try { view = getSnapshot(); } catch { clear(); return null; }
     const segments = inspectionSegments(view);
     if (!segments) { scope = null; clear(); return null; }
-    const nextScope = JSON.stringify([view.entryId, view.userId]);
+    const nextScope = JSON.stringify([view.entryId, view.userId, windowDuration(view)]);
     if (scope !== nextScope) { clear(); scope = nextScope; }
     return {view, segments};
   }
@@ -328,7 +376,7 @@ export function bindTrafficHistory(host, controllerOrSnapshotGetter) {
     const chosen = SERIES.map((key) => samples[key]).filter(Boolean)
       .sort((a, b) => Math.abs(a.time - selectedTime) - Math.abs(b.time - selectedTime))[0];
     const position = chosen?.time ?? selectedTime;
-    const ratio = (position - view.start) / TRAFFIC_HISTORY_WINDOW_MS * 100;
+    const ratio = (position - view.start) / (view.end - view.start) * 100;
     line.style.left = `${ratio}%`; line.hidden = false;
     tooltip.style.left = `${ratio}%`;
     tooltip.style.transform = `translateX(-${ratio}%)`;
@@ -352,8 +400,9 @@ export function bindTrafficHistory(host, controllerOrSnapshotGetter) {
     const rect = plot.getBoundingClientRect();
     if (!Number.isFinite(rect.width) || rect.width <= 0) return;
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    selectedTime = value.view.start + fraction * TRAFFIC_HISTORY_WINDOW_MS;
-    selectionTolerance = Math.min(15000, TRAFFIC_HISTORY_WINDOW_MS / rect.width * 6);
+    const duration = value.view.end - value.view.start;
+    selectedTime = value.view.start + fraction * duration;
+    selectionTolerance = Math.min(15000, duration / rect.width * 6);
     keyboard = false;
     show(value);
   }
@@ -401,8 +450,17 @@ export function bindTrafficHistory(host, controllerOrSnapshotGetter) {
     else selectedTime = times.find((time) => time > selectedTime) ?? times.at(-1);
     keyboard = true; selectionTolerance = 0; show(value);
   }
+  function changeWindow(event) {
+    if (disposed || !event.target || event.target !== host.querySelector("[data-traffic-window]") || !context() ||
+        typeof controllerOrSnapshotGetter?.setWindowMinutes !== "function") return;
+    const minutes = Number(event.target.value);
+    if (!windowValid(minutes) || String(minutes) !== event.target.value) return;
+    clear();
+    // A rejected history read is handled by the controller, never retried here.
+    void controllerOrSnapshotGetter.setWindowMinutes(minutes);
+  }
   const listeners = {pointermove: pointer, pointerdown: pointerDown, pointerup: pointerUp,
-    pointercancel: clear, pointerout: pointerOut, focusin: focus, focusout: blur, keydown};
+    pointercancel: clear, pointerout: pointerOut, focusin: focus, focusout: blur, keydown, change: changeWindow};
   for (const [name, handler] of Object.entries(listeners)) host.addEventListener(name, handler);
   const cleanup = () => {
     if (disposed) return;
@@ -424,6 +482,7 @@ export function bindTrafficHistory(host, controllerOrSnapshotGetter) {
 export const TRAFFIC_HISTORY_STYLES = `
   .sp-traffic-history{padding:22px;border:1px solid var(--divider-color,#ddd);border-radius:var(--ha-card-border-radius,16px);background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color,#222);min-width:0}
   .sp-traffic-history header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}.sp-traffic-history h2{font-size:18px;margin:0}.sp-traffic-history header>span,.sp-traffic-note{color:var(--secondary-text-color,#666);font-size:12px}
+  .sp-traffic-window{max-width:100%;min-height:40px;padding:8px 30px 8px 12px;border:1px solid var(--divider-color,#ddd);border-radius:8px;background:var(--secondary-background-color,#f5f5f5);color:var(--primary-text-color,#222);font:inherit;font-size:13px}.sp-traffic-window:focus-visible{outline:2px solid var(--primary-color,#e20074);outline-offset:2px}
   .sp-traffic-metrics{display:flex;gap:40px;margin:20px 0 10px;flex-wrap:wrap}.sp-traffic-metric{display:grid;gap:6px;flex:1 1 140px;min-width:0;text-align:start;padding:8px 0;border:0;border-radius:6px;background:none;font:inherit}.sp-traffic-metric>span{font-size:16px;font-weight:600;line-height:1.4}.sp-traffic-metric strong{font-size:clamp(28px,2.6vw,36px);font-weight:600;line-height:1.2;letter-spacing:-.025em;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}.sp-traffic-metric small{font-size:12px;font-weight:400;color:var(--secondary-text-color,#666)}.sp-traffic-metric strong small{font-size:clamp(13px,1.2vw,16px);letter-spacing:normal}.sp-traffic-metric[data-more-info]{cursor:pointer}.sp-traffic-metric[data-more-info]:hover{background:var(--secondary-background-color,#0001)}.sp-traffic-metric:focus-visible{outline:2px solid var(--primary-color,#e20074);outline-offset:4px}
   .sp-traffic-download{color:var(--sp-magenta,#e20074);stroke:var(--sp-magenta,#e20074)}.sp-traffic-upload{color:var(--info-color,#039be5);stroke:var(--info-color,#039be5)}
   .sp-traffic-chart{display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:220px auto;gap:12px 10px;margin-top:22px}.sp-traffic-y-axis,.sp-traffic-x-axis{font-size:11px;line-height:1;color:var(--secondary-text-color,#666);font-variant-numeric:tabular-nums}.sp-traffic-y-axis{display:flex;flex-direction:column;justify-content:space-between;text-align:right}.sp-traffic-y-axis>span:first-child{transform:translateY(-50%)}.sp-traffic-y-axis>span:last-child{transform:translateY(50%)}.sp-traffic-x-axis{grid-column:2;display:flex;justify-content:space-between;gap:12px}
