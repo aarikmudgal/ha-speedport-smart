@@ -493,8 +493,8 @@ test("WAN headline buttons use the exact scoped rate entities and accessible lab
   const buttons = [...output.matchAll(/<button\b[^>]*data-more-info="([^"]+)"[^>]*>[\s\S]*?<\/button>/g)];
   assert.deepEqual(buttons.map((match) => match[1]), [DOWN, UP]);
   assert.match(buttons[0][0], /type="button"/);
-  assert.match(buttons[0][0], /aria-label="Download: 48\.2 Mbit\/s\. Latest sample\. Open entity details"/);
-  assert.match(buttons[1][0], /aria-label="Upload: 6\.3 Mbit\/s\. Latest sample\. Open entity details"/);
+  assert.match(buttons[0][0], /aria-label="Download: 48\.2 Mbit\/s\. Open entity details"/);
+  assert.match(buttons[1][0], /aria-label="Upload: 6\.3 Mbit\/s\. Open entity details"/);
   assert.equal(calls.length, 1, "rendering buttons does not request anything");
 });
 
@@ -525,7 +525,7 @@ test("WAN readout targets reject malformed IDs and snapshot changes cannot alter
 
 test("WAN headline typography is prominent, responsive and keyboard-focusable", () => {
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric>span\{[^}]*font-size:16px/);
-  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{[^}]*font-size:clamp\(28px,2\.6vw,36px\)/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{[^}]*font-size:clamp\(18px,20cqi,36px\)/);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric:focus-visible\{/);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*min-width:0/);
   assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{font-size:22px/);
@@ -948,7 +948,8 @@ test("focused graph refresh replaces only data content and never detaches the na
   assert.equal(refreshTrafficHistoryContent(host, controller.snapshot()), true);
   assert.deepEqual(replacements, selectors.map((selector) => [selector, next[selector]]));
   assert.equal(calls.length, 1);
-  assert.match(markup, /Latest sample/);
+  assert.doesNotMatch(markup, /Latest sample/);
+  assert.match(markup, /sp-traffic-value">12<\/span><small>Mbit\/s<\/small><\/strong><\/button>/);
   controller.update({...SCOPE, states: states(END), stale: true});
   assert.equal(refreshTrafficHistoryContent(host, controller.snapshot()), true);
   assert.match(markup, /No recent sample/);
@@ -970,7 +971,7 @@ test("mobile WAN readouts remain two equal shrinkable columns without reducing c
   assert.ok(rules.every((rule) => !/flex-wrap|display:flex|grid-template-columns:1fr/.test(rule)));
   assert.match(TRAFFIC_HISTORY_STYLES, /@media\(max-width:480px\).*\.sp-traffic-metrics\{gap:16px\}/s);
   assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*min-width:0/);
-  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{font-size:clamp\(28px,2\.6vw,36px\)[^}]*overflow-wrap:anywhere/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{[^}]*font-size:clamp\(18px,20cqi,36px\)/);
   const {controller, calls} = setup();
   await controller.open({...SCOPE, states: states(END, "987654.32", "unavailable")});
   const html = renderTrafficHistory(controller.snapshot());
@@ -978,4 +979,43 @@ test("mobile WAN readouts remain two equal shrinkable columns without reducing c
   assert.match(html, new RegExp(`data-more-info="${DOWN}"`));
   assert.match(html, new RegExp(`data-more-info="${UP}"`));
   assert.equal(calls.length, 1);
+});
+
+test("fresh WAN metrics have no redundant subtitle while missing or stale metrics retain their warning", async () => {
+  const {controller} = setup();
+  await controller.open({...SCOPE, states: states(END, "0", "unavailable")});
+  for (const [language, warning, removed] of [["en", "No recent sample", "Latest sample"], ["de", "Kein aktueller Messwert", "Letzter Messwert"]]) {
+    const html = renderTrafficHistory(controller.snapshot(), {language});
+    assert.ok(!html.includes(removed));
+    const buttons = [...html.matchAll(/<button\b[^>]*class="sp-traffic-metric[^>]*>[\s\S]*?<\/button>/g)].map((match) => match[0]);
+    assert.match(buttons[0], /<strong><span class="sp-traffic-value">0<\/span><small>Mbit\/s<\/small><\/strong><\/button>/);
+    assert.ok(!buttons[0].includes(warning));
+    assert.ok(buttons[1].includes(`<small>${warning}</small>`));
+  }
+  controller.update({...SCOPE, states: states(END), stale: true});
+  const stale = renderTrafficHistory(controller.snapshot());
+  assert.equal((stale.match(/<small>No recent sample<\/small>/g) ?? []).length, 2);
+});
+
+test("one to four digit WAN values use a fixed numeric row above independently positioned units", async () => {
+  const {controller, calls} = setup();
+  await controller.open({...SCOPE, states: states(END)});
+  for (const [value, display] of [["1", "1"], ["9", "9"], ["10", "10"], ["999", "999"], ["9999.99", "9,999.99"]]) {
+    controller.update({...SCOPE, states: states(END, value, value)});
+    const html = renderTrafficHistory(controller.snapshot());
+    const numericRows = [...html.matchAll(/<strong><span class="sp-traffic-value">([^<]+)<\/span><small>Mbit\/s<\/small><\/strong>/g)];
+    assert.deepEqual(numericRows.map((match) => match[1]), [display, display]);
+  }
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric\{[^}]*align-content:start[^}]*container-type:inline-size/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong\{display:grid;gap:4px;min-width:0;font-size:22px;font-size:clamp\(18px,20cqi,36px\)[^}]*font-variant-numeric:tabular-nums/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-value\{[^}]*white-space:nowrap[^}]*line-height:1.2/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-metric strong small\{display:block;[^}]*line-height:1.4/);
+  assert.equal(calls.length, 1);
+});
+
+test("timeframe selector stays content-sized in the top-right header cell on narrow layouts", () => {
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-history header\{display:grid;grid-template-columns:minmax\(0,1fr\) max-content;align-items:start;gap:8px\}/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-window\{[^}]*width:fit-content;justify-self:end;[^}]*font-size:12px/);
+  assert.match(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-history h2\{[^}]*min-width:0;[^}]*overflow-wrap:anywhere/);
+  assert.doesNotMatch(TRAFFIC_HISTORY_STYLES, /\.sp-traffic-history header\{[^}]*flex-wrap/);
 });
